@@ -1,0 +1,65 @@
+synapse_server:
+  server_name: matrix.company.org
+  public_url: https://matrix.company.org
+  admin_api_url: http://localhost.com/_synapse/admin/
+  bot_user_id: "@welcome-bot:matrix.company.org"
+  access_token: Bearer xxx
+
+authentik_server:
+  public_api_url: https://authentik.company.org/api/v3
+  api_key: xxx
+  sync_interval_seconds: 120
+
+# The bot will invite the new user to a direct chat and send following message
+welcome_new_users_message: "Welcome to the company chat. I am the company bot. I will invite you to the groups you are assigned. If you have any technical questions write a message to @admin-person:matrix.company.org."
+
+create_matrix_rooms_based_on_authentik_groups: true
+invite_group_members_to_matrix_room: true
+kick_users_from_matrix_room_if_removed_from_authentik_group: true
+# the source of the username (@<username>:matrix.company.org) part in the matrix ID (MXID)
+# The default value in authentik is username. but also can be a custom attribute e.g. "attribute.account_name" if you have a custom setup
+authentik_username_attribute: username
+
+create_matrix_rooms_in_a_matrix_space:
+  enabled: true
+  space_id: "!NhgrblIRUGMTpzBUnb:matrix.company.org"
+  create_space_if_not_exists:
+    enabled: true
+    name: MyCompanySpace
+    topic: The Company Space
+    create_request_params:
+      # https://spec.matrix.org/v1.6/client-server-api/#post_matrixclientv3createroom
+      # enum. one of [public_chat,private_chat,trusted_private_chat]
+      - preset: private_chat
+
+      # A public visibility indicates that the room will be shown in the published room list. A private visibility will hide the room from the published room list.
+      # enum. One of: [public,private]
+      - visibility: private
+
+create_matrix_rooms_only_for_groups_with_authentik_attribute:
+  enabled: true
+  attribute_key: chatroom
+  attribute_val: true
+  reverse_rule: false
+
+create_matrix_rooms_only_for_groups_starting_with:
+  enabled: false
+  value: chatgroup
+  reverse_rule: false
+
+matrix_room_default_settings:
+  topic_authentik_attribute: attributes.chatroom_topic
+  create_request_params:
+    # https://spec.matrix.org/v1.6/client-server-api/#post_matrixclientv3createroom
+
+    # enum. one of [public_chat,private_chat,trusted_private_chat]
+    preset: private_chat
+
+    # A public visibility indicates that the room will be shown in the published room list. A private visibility will hide the room from the published room list.
+    # enum. One of: [public,private]
+    visibility: private
+
+user_ignore_list:
+  - "@admin:matrix.company.org"
+group_ignore_list:
+  - internal_company_group
