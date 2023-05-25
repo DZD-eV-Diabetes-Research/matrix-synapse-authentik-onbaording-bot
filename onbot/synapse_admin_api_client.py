@@ -1,4 +1,4 @@
-class SynapseAdminApi:
+class SynapseAdminApiClient:
     def __init__(
         self,
         user: str,
@@ -21,4 +21,3 @@ class SynapseAdminApi:
             in_space (_type_): _description_
         """
         self._call("rooms")
-    
