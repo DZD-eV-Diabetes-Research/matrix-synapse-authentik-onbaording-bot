@@ -6,7 +6,7 @@ import logging
 log = logging.getLogger(__name__)
 
 
-class AuthentikApi:
+class AuthentikApiClient:
     def __init__(self, access_token: str, server_api_base_url: str):
         self.access_token = access_token
         self.server_api_base_url = (
@@ -58,7 +58,7 @@ class AuthentikApi:
         return r.json()
 
 
-ac = AuthentikApi(
+ac = AuthentikApiClient(
     access_token="Bearer xxx",
     server_api_base_url="https://auth.dzd-ev.org/api/v3",
 )
