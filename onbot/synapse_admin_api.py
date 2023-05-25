@@ -21,3 +21,4 @@ class SynapseAdminApi:
             in_space (_type_): _description_
         """
         self._call("rooms")
+    

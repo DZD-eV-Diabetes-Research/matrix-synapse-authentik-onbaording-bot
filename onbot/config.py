@@ -1,4 +1,4 @@
-from typing import List, Dict
+from typing import List, Dict, Optional
 import yaml
 
 from pydantic import BaseModel
@@ -7,8 +7,9 @@ from pydantic import BaseModel
 class ConfigDefaultModel(BaseModel):
     class SynapseServer(BaseModel):
         server_name: str = "matrix.company.org"
-        public_url: str = "https://matrix.company.org"
-        admin_api_url: str = "http://localhost.com/_synapse/admin/"
+        server_host: str = "matrix.internal"
+        api_path: str = "_synapse/admin/"
+        admin_api_path: str = "_synapse/admin/"
         bot_user_id: str = "@welcome-bot:matrix.company.org"
         access_token: str = "Bearer xxx"
 
@@ -36,7 +37,7 @@ class ConfigDefaultModel(BaseModel):
 
         class CreateMatrixSpaceIfNotExists(BaseModel):
             enabled: bool = True
-            name: str = "MyCompanySpace"
+            alias: str = "MyCompanySpace"
             topic: str = "The Company Space"
 
             # https://spec.matrix.org/v1.6/client-server-api/#post_matrixclientv3createroom
