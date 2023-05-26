@@ -18,15 +18,34 @@ class AuthentikApiClient:
     def list_users(
         self,
         filter_groups_by_name: Union[str, List[str]] = None,
+        filter_groups_by_pk: Union[str, List[str]] = None,
         filter_by_attribute: Dict = None,
-        filter_is_active: bool = True,
         filter_is_superuser: bool = None,
+        filter_is_active: bool = True,
     ) -> Dict:
         query = {
             "groups_by_name": filter_groups_by_name,
+            "groups_by_pk": filter_groups_by_pk,
             "attributes": json.dumps(filter_by_attribute),
+            "is_superuser": filter_is_superuser,
+            "is_active": filter_is_active,
         }
         return self._get("/core/users/", query)["results"]
+
+    def list_groups(
+        self,
+        filter_members_by_username: Union[str, List[str]] = None,
+        filter_members_by_pk: Union[str, List[str]] = None,
+        filter_by_attribute: Dict = None,
+        filter_is_superuser: bool = None,
+    ) -> Dict:
+        query = {
+            "members_by_username": filter_members_by_username,
+            "members_by_pk": filter_members_by_pk,
+            "attributes": json.dumps(filter_by_attribute),
+            "is_superuser": filter_is_superuser,
+        }
+        return self._get("/core/groups/", query)["results"]
 
     def _build_api_call_url(self, path: str):
         if path.startswith("/"):
