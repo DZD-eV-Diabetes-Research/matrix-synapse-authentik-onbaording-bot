@@ -3,6 +3,7 @@ synapse_server:
   public_url: https://matrix.company.org
   admin_api_url: http://localhost.com/_synapse/admin/
   bot_user_id: "@welcome-bot:matrix.company.org"
+  bot_device_id: device_id
   access_token: Bearer xxx
 
 authentik_server:

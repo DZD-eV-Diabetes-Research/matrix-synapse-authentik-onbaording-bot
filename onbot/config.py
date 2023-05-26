@@ -1,17 +1,23 @@
 from typing import List, Dict, Optional
 import yaml
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class ConfigDefaultModel(BaseModel):
     class SynapseServer(BaseModel):
-        server_name: str = "matrix.company.org"
+        server_name: str = Field(
+            default=None,
+            title="Synapse's public facing domain https://matrix-org.github.io/synapse/latest/usage/configuration/config_documentation.html#server_name",
+            example="matrix.company.org",
+            default_deactivated=True,
+        )
         server_host: str = "matrix.internal"
         api_path: str = "_synapse/admin/"
         admin_api_path: str = "_synapse/admin/"
         bot_user_id: str = "@welcome-bot:matrix.company.org"
-        access_token: str = "Bearer xxx"
+        bot_device_id: str = "ZSIBBRS"
+        bot_access_token: str = "Bearer xxx"
 
     synapse_server: SynapseServer = SynapseServer()
 
@@ -19,6 +25,7 @@ class ConfigDefaultModel(BaseModel):
         public_api_url: str = "https://authentik.company.org/api/v3"
         api_key: str = "xxx"
         sync_interval_seconds: int = 120
+        account_pathes: List[str] = ["users"]
 
     authentik_server: AuthentikServer = AuthentikServer()
 
@@ -27,26 +34,35 @@ class ConfigDefaultModel(BaseModel):
     create_matrix_rooms_based_on_authentik_groups: bool = True
     invite_group_members_to_matrix_room: bool = True
     kick_users_from_matrix_room_if_removed_from_authentik_group: bool = True
+
     # the source of the username (@<username>:matrix.company.org) part in the matrix ID (MXID)
-    # The default value in authentik is username. but also can be a custom attribute e.g. "attribute.account_name" if you have a custom setup
-    authentik_username_attribute: str = "username"
+    # The default value in authentik is username. but also can be a custom attribute e.g. "attribute.account_name" if you have a custom configuration
+    authentik_username_mapping_attribute: str = "username"
 
     class CreateMatrixRoomsInAMatrixSpace(BaseModel):
         enabled: bool = True
-        space_id: str = "!NhgrblIRUGMTpzBUnb:matrix.company.org"
+        alias: str = "MyCompanySpace"  # the name part of a "canonical_alias". e.g. if the room canonical alias is (or should be) "#MyCompanySpace:matrix.company.org", enter "MyCompanySpace" here
 
         class CreateMatrixSpaceIfNotExists(BaseModel):
             enabled: bool = True
-            alias: str = "MyCompanySpace"
+            name: str = "Our cozy space"
             topic: str = "The Company Space"
 
             # https://spec.matrix.org/v1.6/client-server-api/#post_matrixclientv3createroom
+            # all available params at https://matrix-nio.readthedocs.io/en/latest/nio.html?highlight=room_create#nio.AsyncClient.room_create
+            #
+            # preset:
             # enum. one of [public_chat,private_chat,trusted_private_chat]
             # preset: private_chat
+            #
+            # visibility
             # A public visibility indicates that the room will be shown in the published room list. A private visibility will hide the room from the published room list.
             # enum. One of: [public,private]
             # visibility: private
-            create_request_params: Dict = {
+            #
+            # extra_params
+
+            extra_params: Dict = {
                 "preset": "private_chat",
                 "visibility": "private",
             }
@@ -59,14 +75,13 @@ class ConfigDefaultModel(BaseModel):
         CreateMatrixRoomsInAMatrixSpace()
     )
 
-    class CreateMatrixRoomsOnlyForGroupsWithAuthentikAttribute(BaseModel):
+    class CreateMatrixRoomsOnlyForAuthentikGroupsWithAttribute(BaseModel):
         enabled: bool = True
         attribute_key: str = "chatroom"
         attribute_val: bool = True
-        reverse_rule: bool = False
 
-    create_matrix_rooms_only_for_groups_with_authentik_attribute: CreateMatrixRoomsOnlyForGroupsWithAuthentikAttribute = (
-        CreateMatrixRoomsOnlyForGroupsWithAuthentikAttribute()
+    create_matrix_rooms_only_for_authentik_groups_with_attribute: CreateMatrixRoomsOnlyForAuthentikGroupsWithAttribute = (
+        CreateMatrixRoomsOnlyForAuthentikGroupsWithAttribute()
     )
 
     class CreateMatrixRoomsOnlyForAuthentikGroupsStartingWith(BaseModel):
