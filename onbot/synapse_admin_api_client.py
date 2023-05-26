@@ -5,6 +5,10 @@ import requests
 log = logging.getLogger(__name__)
 
 
+class SynapseAdminApiError(Exception):
+    pass
+
+
 class SynapseAdminApiClient:
     def __init__(
         self,
@@ -16,18 +20,32 @@ class SynapseAdminApiClient:
         self.access_token = access_token
         self.api_base_url = f"{protocol}://{server_domain}{api_base_path}/"
 
-    def list_room(self, in_space: str = None) -> List[Dict]:
+    def list_room(self, in_space_with_canonical_alias: str = None) -> List[Dict]:
         """https://matrix-org.github.io/synapse/latest/admin_api/rooms.html#list-room-api
 
         Args:
             in_space (_type_): _description_
         """
+        if (
+            in_space_with_canonical_alias
+            and not in_space_with_canonical_alias.startswith("#")
+        ):
+            raise ValueError(
+                f"Expected canonical space name like '#<your-alias>:<your-synapse-server-name>' got '{in_space_with_canonical_alias}'"
+            )
         rooms = []
 
         for room in self._get("rooms")["rooms"]:
+            # if in_space_with_canonical_alias and
             if room["room_type"] != "m.space":
                 rooms.append(room)
         return rooms
+
+    def list_room_members(self, room_id: str):
+        return self._get(f"/rooms/{room_id}/members")["members"]
+
+    def list_room_state(self, room_id: str):
+        return self._get(f"/rooms/{room_id}/state")["state"]
 
     def list_space(self) -> List[Dict]:
         """https://matrix-org.github.io/synapse/latest/admin_api/rooms.html#list-room-api
@@ -37,8 +55,18 @@ class SynapseAdminApiClient:
         """
         spaces = []
         for room in self._get("rooms")["rooms"]:
-            if room["room_type"] == "m.space":
+            if 1 == 1:  # room["room_type"] == "m.space":
+                if room["room_id"] in [
+                    "!DbJRSjtmVTxctLHYVX:dzd-ev.org",
+                    "!WVHWIMQpGbFbQXRRAY:dzd-ev.org",
+                ]:
+                    print("#######")
+                    print("ROOM NAME", room["name"])
+                    print("ROOM MEMBERS", self.list_room_members(room["room_id"]))
+                    print("ROOM STATE", self.list_room_state(room["room_id"]))
+
                 spaces.append(room)
+        exit()
         return spaces
 
     def _build_api_call_url(self, path: str):

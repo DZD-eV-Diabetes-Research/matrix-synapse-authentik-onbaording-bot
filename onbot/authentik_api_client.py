@@ -6,6 +6,10 @@ import logging
 log = logging.getLogger(__name__)
 
 
+class AuthentikApiError(Exception):
+    pass
+
+
 class AuthentikApiClient:
     def __init__(self, access_token: str, server_api_base_url: str):
         self.access_token = access_token

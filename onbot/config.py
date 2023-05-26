@@ -93,8 +93,13 @@ class ConfigDefaultModel(BaseModel):
         CreateMatrixRoomsOnlyForAuthentikGroupsStartingWith()
     )
 
-    class MatrixRoomDefaultSettings(BaseModel):
-        matrix_room_topic_from_authentik_attribute: str = "attributes.chatroom_topic"
+    class MatrixRoomSettings(BaseModel):
+        alias_prefix: str = None
+        alias_from_authentik_attribute: str = "pk"
+        name_prefix: str = None
+        name_from_authentik_attribute: str = "name"
+        topic_default_prefix: str = None
+        topic_from_authentik_attribute: str = "attributes.chatroom_topic"
 
         # https://spec.matrix.org/v1.6/client-server-api/#post_matrixclientv3createroom
         # enum. one of [public_chat,private_chat,trusted_private_chat]
@@ -102,10 +107,19 @@ class ConfigDefaultModel(BaseModel):
         # A public visibility indicates that the room will be shown in the published room list. A private visibility will hide the room from the published room list.
         # enum. One of: [public,private]
         # visibility: private
-        create_request_params: Dict = {
+        extra_params: Dict = {
             "preset": "private_chat",
             "visibility": "private",
         }
+
+    matrix_room_default_settings: MatrixRoomSettings = MatrixRoomSettings()
+
+    per_authentik_group_pk_matrix_room_settings: Dict[str, MatrixRoomSettings] = {
+        "80439f0d-d936-4118-8017-52a95d6dd1bc": MatrixRoomSettings(
+            alias_from_authentik_attribute="attribute.custom",
+            topic_default_prefix="TOPIC PREFIX FOR ALL ROOMS:",
+        )
+    }
 
     matrix_user_ignore_list: List[str] = ["@admin:matrix.company.org"]
     authentik_user_ignore_list: List[str] = ["admin"]
