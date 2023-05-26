@@ -2,7 +2,8 @@ from typing import List, Dict, Union
 import logging
 import asyncio
 from nio import (
-    HttpClient as MatrixClient,
+    HttpClient as MatrixNioClient,
+    ErrorResponse,
     RoomCreateResponse,
     RoomCreateError,
     RoomVisibility,
@@ -13,8 +14,19 @@ from nio import (
 from onbot.config import ConfigDefaultModel
 from onbot.authentik_api_client import AuthentikApiClient
 from onbot.synapse_admin_api_client import SynapseAdminApiClient
+from onbot.matrix_api_client import MatrixApiClient
 
 log = logging.getLogger(__name__)
+
+
+class SynapseApiError(Exception):
+    @classmethod
+    def from_nio_response_error(cls, nio_response_error: ErrorResponse):
+        # Tim Todo: add_note with python 3.11. will awesome!
+        # https://docs.python.org/3.11/library/exceptions.html#BaseException.add_note
+        return cls(
+            f"{type(nio_response_error)} - status_code: '{nio_response_error.status_code}' Message: '{nio_response_error.message}'"
+        )
 
 
 class Bot:
@@ -22,13 +34,15 @@ class Bot:
         self,
         config: ConfigDefaultModel,
         authentik_client: AuthentikApiClient,
-        synapse_admin_client: SynapseAdminApiClient,
-        synapse_client: MatrixClient,
+        synapse_admin_api_client: SynapseAdminApiClient,
+        matrix_nio_client: MatrixNioClient,
+        matrix_api_client: MatrixApiClient,
     ):
         self.config = config
         self.authentik_client = authentik_client
-        self.synapse_admin_client = synapse_admin_client
-        self.synapse_client = synapse_client
+        self.synapse_admin_client = synapse_admin_api_client
+        self.synapse_client = matrix_nio_client
+        self.synpase_api_client = matrix_api_client
 
     def server_tik(self):
         pass
@@ -85,7 +99,7 @@ class Bot:
             )
 
         # we need to create the space
-        async def create_room():
+        async def create_space():
             return await self.synapse_client.room_create(
                 space=True,
                 alias=self.config.create_matrix_rooms_in_a_matrix_space.alias,
@@ -94,15 +108,31 @@ class Bot:
                 **self.config.create_matrix_rooms_in_a_matrix_space.create_matrix_space_if_not_exists.extra_params,
             )
 
-        room: Union[RoomCreateResponse, RoomCreateError] = asyncio.run(create_room())
-        if type(room) == RoomCreateError:
+        space: Union[RoomCreateResponse, RoomCreateError] = asyncio.run(create_space())
+        if type(space) == RoomCreateError:
             log.error(
-                f"Could not create the parent space with the alias '{target_space_canonical_alias}'. Dont know what to do. Here is the error:"
+                f"Could not create the parent space with the alias '{target_space_canonical_alias}'. Don't know what to do. Here is the error:"
             )
-            raise RoomCreateError
+            raise SynapseApiError.from_nio_response_error(space.message)
         else:
             # we now can just recall the function because the room exists now.
             return self.get_parent_space_if_needed()
+
+    def get_room_and_create_if_not_exists(self, alias: str) -> Dict:
+        existent_rooms: List[Dict] = None
+        if self.config.create_matrix_rooms_in_a_matrix_space.enabled:
+            self.synapse_admin_client.list_room(
+                in_space=self.config.create_matrix_rooms_in_a_matrix_space.alias
+            )
+
+        async def create_room():
+            return await self.synapse_client.room_create(
+                space=False,
+                alias=self.config.create_matrix_rooms_in_a_matrix_space.alias,
+                name=self.config.create_matrix_rooms_in_a_matrix_space.create_matrix_space_if_not_exists.name,
+                topic=self.config.create_matrix_rooms_in_a_matrix_space.create_matrix_space_if_not_exists.topic,
+                **self.config.create_matrix_rooms_in_a_matrix_space.create_matrix_space_if_not_exists.extra_params,
+            )
 
     def get_synapse_accounts_with_authentik_account(self) -> List[Dict]:
         # todo
