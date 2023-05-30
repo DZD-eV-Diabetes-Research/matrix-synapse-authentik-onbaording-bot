@@ -1,6 +1,7 @@
 from typing import List, Dict, Union
 import logging
 import asyncio
+from pydantic import BaseModel
 from nio import (
     HttpClient as MatrixNioClient,
     ErrorResponse,
@@ -17,6 +18,13 @@ from onbot.synapse_admin_api_client import SynapseAdminApiClient
 from onbot.matrix_api_client import MatrixApiClient
 
 log = logging.getLogger(__name__)
+
+
+class MatrixRoomAttributes(BaseModel):
+    canonical_alias: str
+    name: str = None
+    topic: str = None
+    extra_params: dict = None
 
 
 class SynapseApiError(Exception):
@@ -74,6 +82,17 @@ class Bot:
                     groups_filtered.append(group)
             groups = groups_filtered
         return groups
+
+    def get_matrix_room_attr_from_authentik_group(
+        self, group: Dict
+    ) -> MatrixRoomAttributes:
+        if group["pk"] in self.config.per_authentik_group_pk_matrix_room_settings:
+            room_settings = self.config.per_authentik_group_pk_matrix_room_settings[
+                group["pk"]
+            ]
+        else:
+            room_settings = self.config.matrix_room_default_settings
+        # todo
 
     def get_parent_space_if_needed(self) -> Dict | None:
         if not self.config.create_matrix_rooms_in_a_matrix_space.enabled:
