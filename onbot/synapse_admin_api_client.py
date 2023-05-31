@@ -14,7 +14,7 @@ class SynapseAdminApiClient:
         self,
         access_token: str,
         server_domain: str,
-        api_base_path: str = "/_synapse/admin/v1",
+        api_base_path: str = "/_synapse/admin",
         protocol: str = "http",
     ):
         self.access_token = access_token
@@ -34,18 +34,21 @@ class SynapseAdminApiClient:
                 f"Expected canonical space name like '#<your-alias>:<your-synapse-server-name>' got '{in_space_with_canonical_alias}'"
             )
         rooms = []
-
-        for room in self._get("rooms")["rooms"]:
+        # https://matrix-org.github.io/synapse/latest/admin_api/rooms.html#list-room-api
+        for room in self._get("v1/rooms")["rooms"]:
             # if in_space_with_canonical_alias and
             if room["room_type"] != "m.space":
                 rooms.append(room)
         return rooms
 
     def list_room_members(self, room_id: str):
-        return self._get(f"/rooms/{room_id}/members")["members"]
+        # https://matrix-org.github.io/synapse/latest/admin_api/rooms.html#room-members-api
+        return self._get(f"/v1/rooms/{room_id}/members")["members"]
 
     def list_room_state(self, room_id: str):
-        return self._get(f"/rooms/{room_id}/state")["state"]
+        # TODO: Can be removed?
+        # https://matrix-org.github.io/synapse/latest/admin_api/rooms.html#room-state-api
+        return self._get(f"v1/rooms/{room_id}/state")["state"]
 
     def list_space(self) -> List[Dict]:
         """https://matrix-org.github.io/synapse/latest/admin_api/rooms.html#list-room-api
@@ -54,20 +57,35 @@ class SynapseAdminApiClient:
             List[Dict]: _description_
         """
         spaces = []
-        for room in self._get("rooms")["rooms"]:
-            if 1 == 1:  # room["room_type"] == "m.space":
-                if room["room_id"] in [
-                    "!DbJRSjtmVTxctLHYVX:dzd-ev.org",
-                    "!WVHWIMQpGbFbQXRRAY:dzd-ev.org",
-                ]:
-                    print("#######")
-                    print("ROOM NAME", room["name"])
-                    print("ROOM MEMBERS", self.list_room_members(room["room_id"]))
-                    print("ROOM STATE", self.list_room_state(room["room_id"]))
-
+        # https://matrix-org.github.io/synapse/latest/admin_api/rooms.html#list-room-api
+        for room in self._get("v1/rooms2")["rooms"]:
+            if room["room_type"] == "m.space":
                 spaces.append(room)
-        exit()
         return spaces
+
+    def add_user_to_room(self, room_id: str, user_id: str):
+        # https://matrix-org.github.io/synapse/latest/admin_api/room_membership.html
+        if not room_id in self.get_user_rooms_joined(user_id):
+            self._post(f"v1/join/{room_id}", json_body={"user_id": user_id})
+
+    def get_user_rooms_joined(self, user_id: str):
+        # https://matrix-org.github.io/synapse/develop/admin_api/user_admin_api.html#list-room-memberships-of-a-user
+        return self._get(f"v1/users/{user_id}/joined_rooms")["joined_rooms"]
+
+    def set_user_server_admin_state(self, user_id: str, admin: bool):
+        # https://matrix-org.github.io/synapse/develop/admin_api/user_admin_api.html#change-whether-a-user-is-a-server-administrator-or-not
+        raise NotImplementedError()
+
+    def deactivate_account(self, user_id: str, gdpr_erease: bool):
+        # https://matrix-org.github.io/synapse/develop/admin_api/user_admin_api.html#deactivate-account
+        self._post(f"deactivate/{user_id}", json_body={"erase": gdpr_erease})
+
+    def logout_account(self, user_id):
+        # https://matrix-org.github.io/synapse/latest/admin_api/user_admin_api.html#list-all-devices
+        # https://matrix-org.github.io/synapse/latest/admin_api/user_admin_api.html#delete-a-device
+        devices = self._get(f"v2/users/{user_id}/devices")
+        for device in devices:
+            self._delete(f"v2/users/{user_id}/devices/{device['device_id']}")
 
     def _build_api_call_url(self, path: str):
         if path.startswith("/"):
@@ -77,7 +95,6 @@ class SynapseAdminApiClient:
     def _get(self, path: str, query: Dict = None) -> Dict:
         if query is None:
             query = {}
-        print(self._build_api_call_url(path))
         r = requests.get(
             self._build_api_call_url(path),
             params=query,
@@ -87,11 +104,43 @@ class SynapseAdminApiClient:
                 "Content-Type": "application/json; charset=utf-8",
             },
         )
+        return self._http_call_response_handler(r)
+
+    def _post(self, path: str, json_body: Dict = None) -> Dict:
+        if json_body is None:
+            json_body = {}
+        r = requests.post(
+            self._build_api_call_url(path),
+            json=json_body,
+            headers={
+                "Authorization": self.access_token,
+                "Accept": "application/json",
+                "Content-Type": "application/json; charset=utf-8",
+            },
+        )
+        return self._http_call_response_handler(r)
+
+    def _delete(self, path: str) -> Dict:
+        if json_body is None:
+            json_body = {}
+        r = requests.delete(
+            self._build_api_call_url(path),
+            json=json_body,
+            headers={
+                "Authorization": self.access_token,
+                "Accept": "application/json",
+                "Content-Type": "application/json; charset=utf-8",
+            },
+        )
+        return self._http_call_response_handler(r)
+
+    def _http_call_response_handler(self, r: requests.Response):
         try:
             r.raise_for_status()
         except:
+            log.error(f"Error for {r.request.method}-request at '{r.url}'")
             try:
-                #  if possible Authentik puts some helpful debuging info into the payload. lets output it before raising the error
+                #  if possible log the payload, there may be some helpfull informations for debuging. lets output it before raising the error
                 log.error(r.json())
             except:
                 pass
