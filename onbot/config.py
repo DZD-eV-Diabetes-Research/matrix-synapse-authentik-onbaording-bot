@@ -35,6 +35,7 @@ class ConfigDefaultModel(BaseModel):
     class SyncAuthentikUsersWithMatrix(BaseModel):
         enabled: bool = True
         # the source of the username (@<username>:matrix.company.org) part in the matrix ID (MXID)
+        # can be json path (seperated by ".")
         # The default value in authentik is username. but also can be a custom attribute e.g. "attribute.my_matrix_account_name" if you have a custom configuration
         authentik_username_mapping_attribute: str = "username"
 
@@ -94,11 +95,11 @@ class ConfigDefaultModel(BaseModel):
 
     class MatrixRoomSettings(BaseModel):
         alias_prefix: str = None
-        alias_from_authentik_attribute: str = "pk"
+        matrix_alias_from_authentik_attribute: str = "pk"
         name_prefix: str = None
-        name_from_authentik_attribute: str = "name"
+        matrix_name_from_authentik_attribute: str = "name"
         topic_prefix: str = None
-        topic_from_authentik_attribute: str = "attributes.chatroom_topic"
+        matrix_topic_from_authentik_attribute: str = "attributes.chatroom_topic"
 
         # https://spec.matrix.org/v1.6/client-server-api/#post_matrixclientv3createroom
         # enum. one of [public_chat,private_chat,trusted_private_chat]
@@ -115,7 +116,7 @@ class ConfigDefaultModel(BaseModel):
 
     per_authentik_group_pk_matrix_room_settings: Dict[str, MatrixRoomSettings] = {
         "80439f0d-d936-4118-8017-52a95d6dd1bc": MatrixRoomSettings(
-            alias_from_authentik_attribute="attribute.custom",
+            matrix_alias_from_authentik_attribute="attribute.custom",
             topic_prefix="TOPIC PREFIX FOR ALL ROOMS:",
         )
     }
