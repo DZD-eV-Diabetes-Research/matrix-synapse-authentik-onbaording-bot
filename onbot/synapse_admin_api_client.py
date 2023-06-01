@@ -20,6 +20,10 @@ class SynapseAdminApiClient:
         self.access_token = access_token
         self.api_base_url = f"{protocol}://{server_domain}{api_base_path}/"
 
+    def list_users(self) -> Dict: 
+        # https://matrix-org.github.io/synapse/latest/admin_api/user_admin_api.html#list-accounts
+        return self._get("v2/users")["users"]
+
     def list_room(self, in_space_with_canonical_alias: str = None) -> List[Dict]:
         """https://matrix-org.github.io/synapse/latest/admin_api/rooms.html#list-room-api
 
@@ -40,6 +44,8 @@ class SynapseAdminApiClient:
             if room["room_type"] != "m.space":
                 rooms.append(room)
         return rooms
+
+
 
     def list_room_members(self, room_id: str):
         # https://matrix-org.github.io/synapse/latest/admin_api/rooms.html#room-members-api
