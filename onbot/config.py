@@ -1,23 +1,68 @@
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Annotated
 import yaml
 
 from pydantic import BaseModel, Field
 
+# Field(default=None, description="", example="matrix.internal")
+
+# Annotated[str,Field(description="", example=)]
+
 
 class ConfigDefaultModel(BaseModel):
     class SynapseServer(BaseModel):
-        server_name: str = Field(
-            default=None,
-            title="Synapse's public facing domain https://matrix-org.github.io/synapse/latest/usage/configuration/config_documentation.html#server_name",
-            example="matrix.company.org",
-            default_deactivated=True,
-        )
-        server_host: str = "matrix.internal"
-        api_path: str = "_synapse/admin/"
-        admin_api_path: str = "_synapse/admin/"
-        bot_user_id: str = "@welcome-bot:matrix.company.org"
-        bot_device_id: str = "ZSIBBRS"
-        bot_access_token: str = "Bearer xxx"
+        server_name: Annotated[
+            str,
+            Field(
+                description="Synapse's public facing domain https://matrix-org.github.io/synapse/latest/usage/configuration/config_documentation.html#server_name",
+                example="company.org",
+            ),
+        ] = None
+
+        server_url: Annotated[
+            str,
+            Field(
+                description="Url to reach the synapse server. This can (and should) be an internal url. This will prevent you from make your synapse admin api public. But the bot will work with the public URL as well.",
+                example="http://internal.matrix",
+            ),
+        ] = None
+        api_path: Annotated[
+            str,
+            Field(
+                description="If your Synapse server API is reachable in a subpath you can adapt this here. If you dont know that this is for; keep the default value.",
+                example="_synapse/admin/",
+            ),
+        ] = "_synapse/admin/"
+        admin_api_path: Annotated[
+            str,
+            Field(
+                description="If your Synapse server admin API is reachable in a subpath you can adapt this here. If you dont know that this is for; keep the default value.",
+                example="_synapse/admin/",
+            ),
+        ] = "_synapse/admin/"
+
+        bot_user_id: Annotated[
+            str,
+            Field(
+                description="The full Matrix user ID for an existing matrix user account. The Bot will interact as this account.",
+                example="@welcome-bot:company.org",
+            ),
+        ] = None
+
+        # TODO: provide an curl example to get a devide id and access token
+        bot_device_id: Annotated[
+            str,
+            Field(
+                description="A device ID the Bot account can provide, to access the API. You will get an device_id via https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3login",
+                example="ZSIBBRS",
+            ),
+        ] = None
+        bot_access_token: Annotated[
+            str,
+            Field(
+                description="A Bearer token to authorize the Bot access to the Synapse APIs. You will get an Bearer token via https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3login",
+                example="Bearer q7289zhwoieuhrfq279ugdfq3_ONLY_A_EXMAPLE_TOKEN_sadaw4",
+            ),
+        ] = None
 
     synapse_server: SynapseServer = SynapseServer()
 
@@ -30,7 +75,10 @@ class ConfigDefaultModel(BaseModel):
     authentik_server: AuthentikServer = AuthentikServer()
 
     # The bot will invite the new user to a direct chat and send following message
-    welcome_new_users_message: str = "Welcome to the company chat. I am the company bot. I will invite you to the groups you are assigned. If you have any technical questions write a message to @admin-person:matrix.company.org."
+    welcome_new_users_messages: List[str] = [
+        "Welcome to the company chat. I am the company bot. I will invite you to the groups you are assigned. If you have any technical questions write a message to @admin-person:matrix.company.org.",
+        "The Chat software will ask you to setup a Security Key Backup. This is very important. Otherwise you can lose access older messages later. Please follow the request.",
+    ]
 
     class SyncAuthentikUsersWithMatrix(BaseModel):
         enabled: bool = True
@@ -40,8 +88,16 @@ class ConfigDefaultModel(BaseModel):
         authentik_username_mapping_attribute: str = "username"
 
         kick_matrix_room_members_not_in_mapped_authentik_group_anymore: bool = True
-        sync_users_with_attributes: Dict = None
-        sync_users_of_groups_with_id: List[str]
+
+        # only sync user from specific pathes.
+        # e.g. '["users"]'
+        sync_only_users_in_authentik_pathes: List[str] = None
+
+        # works only for custom attributes in the authentik "attribute"-field. must be provided as dict/json.
+        # e.g. '{"is_chat_user":true}'
+        sync_only_users_with_authentik_attributes: Dict = None
+
+        sync_only_users_of_groups_with_id: List[str] = None
 
     sync_authentik_users_with_matrix_rooms: SyncAuthentikUsersWithMatrix = (
         SyncAuthentikUsersWithMatrix()
@@ -68,9 +124,9 @@ class ConfigDefaultModel(BaseModel):
             # enum. One of: [public,private]
             # visibility: private
             #
-            # extra_params
+            # default_room_params
 
-            extra_params: Dict = {
+            space_params: Dict = {
                 "preset": "private_chat",
                 "visibility": "private",
             }
@@ -93,7 +149,7 @@ class ConfigDefaultModel(BaseModel):
         CreateMatrixRoomsBasedOnAuthentikGroups()
     )
 
-    class MatrixRoomSettings(BaseModel):
+    class MatrixDynamicRoomSettings(BaseModel):
         alias_prefix: str = None
         matrix_alias_from_authentik_attribute: str = "pk"
         name_prefix: str = None
@@ -101,23 +157,35 @@ class ConfigDefaultModel(BaseModel):
         topic_prefix: str = None
         matrix_topic_from_authentik_attribute: str = "attributes.chatroom_topic"
 
+        # An authentik attribute that can contains parameters for the "room_create" event.
+        # see https://matrix-nio.readthedocs.io/en/latest/nio.html#nio.AsyncClient.room_create for possible params
+        # params need to be provided as json
+        # e.g. '{"preset": "private_chat", "visibility": "private", "federate": false}'
+        matrix_room_create_params_from_authentik_attribute: str = (
+            "attribute.chatroom_params"
+        )
+
         # https://spec.matrix.org/v1.6/client-server-api/#post_matrixclientv3createroom
         # enum. one of [public_chat,private_chat,trusted_private_chat]
         # preset: private_chat
         # A public visibility indicates that the room will be shown in the published room list. A private visibility will hide the room from the published room list.
         # enum. One of: [public,private]
         # visibility: private
-        extra_params: Dict = {
+        default_room_create_params: Dict = {
             "preset": "private_chat",
             "visibility": "private",
         }
 
-    matrix_room_default_settings: MatrixRoomSettings = MatrixRoomSettings()
+    matrix_room_default_settings: MatrixDynamicRoomSettings = (
+        MatrixDynamicRoomSettings()
+    )
 
-    per_authentik_group_pk_matrix_room_settings: Dict[str, MatrixRoomSettings] = {
-        "80439f0d-d936-4118-8017-52a95d6dd1bc": MatrixRoomSettings(
+    per_authentik_group_pk_matrix_room_settings: Dict[
+        str, MatrixDynamicRoomSettings
+    ] = {
+        "80439f0d-d936-4118-8017-52a95d6dd1bc": MatrixDynamicRoomSettings(
             matrix_alias_from_authentik_attribute="attribute.custom",
-            topic_prefix="TOPIC PREFIX FOR ALL ROOMS:",
+            topic_prefix="TOPIC PREFIX FOR SPECIFIC ROOM:",
         )
     }
 
@@ -138,5 +206,9 @@ class ConfigDefaultModel(BaseModel):
     )
 
 
-c = ConfigDefaultModel()
-print(yaml.dump(c.dict(), sort_keys=False))
+import toml
+
+# c = ConfigDefaultModel()
+# print(yaml.dump(c.dict(), sort_keys=False))
+# print(yaml.dump(toml.loads(toml.dumps(c.dict()))))
+# print(yaml.dump(ConfigDefaultModel.SynapseServer.schema(), sort_keys=False))

@@ -23,16 +23,21 @@ class AuthentikApiClient:
         self,
         filter_groups_by_name: Union[str, List[str]] = None,
         filter_groups_by_pk: Union[str, List[str]] = None,
-        filter_by_attribute: Dict = None,
+        filter_by_path: str = None,
+        filter_by_attribute: Union[str, Dict] = None,
         filter_is_superuser: bool = None,
         filter_is_active: bool = True,
     ) -> Dict:
+        if isinstance(filter_by_attribute, dict):
+            filter_by_attribute = json.dumps(filter_by_attribute)
+
         query = {
             "groups_by_name": filter_groups_by_name,
             "groups_by_pk": filter_groups_by_pk,
-            "attributes": json.dumps(filter_by_attribute),
+            "attributes": filter_by_attribute,
             "is_superuser": filter_is_superuser,
             "is_active": filter_is_active,
+            "path": filter_by_path,
         }
         return self._get("/core/users/", query)["results"]
 
