@@ -1,4 +1,16 @@
-from typing import List, Any, Dict, Union, Literal, Tuple, Type, Generator
+import typing
+from typing import (
+    List,
+    Any,
+    Dict,
+    Union,
+    Literal,
+    Tuple,
+    Type,
+    Generator,
+    get_type_hints,
+    Optional,
+)
 
 from functools import singledispatch
 from pydantic import BaseModel
@@ -20,9 +32,9 @@ def get_nested_dict_attr_by_path(
         Any: _description_
     """
 
-    # i know `default` solution as optional is hacky. Overloading in python is hard :)
-    # thanks to https://stackoverflow.com/a/47969823/12438690
+    # i know. the `fallback_val` solution with Any as default value to emulate an optional parameter is hacky. Overloading in python is hard :)
     try:
+        # thanks to https://stackoverflow.com/a/47969823/12438690
         return (
             get_nested_dict_attr_by_path(data[keys[0]], keys[1:], fallback_val)
             if keys
@@ -35,23 +47,101 @@ def get_nested_dict_attr_by_path(
             raise
 
 
+def create_nested_dict(path: str, value: Any, path_seperator: str = ".") -> Dict:
+    """_summary_
+
+    Args:
+        path (str): _description_
+        value (Any): _description_
+
+    Returns:
+        Dict: _description_
+    """
+    keys = path.split(path_seperator)
+    nested_dict = {}
+    current_dict = nested_dict
+
+    for key in keys[:-1]:
+        current_dict[key] = {}
+        current_dict = current_dict[key]
+
+    current_dict[keys[-1]] = value
+
+    return nested_dict
+
+
+class ConfigValueNotSet:
+    pass
+
+
 class ConfigFieldProps:
     def __init__(
         self,
         name: str,
         pydantic_schema_item_properties: Dict,
+        type_hint,
+        parent_config_chapter: "ConfigChapterMetaContainer" = None,
+        set_value: Any = ConfigValueNotSet,
     ):
         self.name = name
+        self._pydantic_schema_item_properties = pydantic_schema_item_properties
+        self.title = None
         if "title" in pydantic_schema_item_properties:
             self.title = pydantic_schema_item_properties["title"]
+
+        self.description = None
         if "description" in pydantic_schema_item_properties:
             self.description = pydantic_schema_item_properties["description"]
+
+        self.example = None
         if "example" in pydantic_schema_item_properties:
             self.example = pydantic_schema_item_properties["example"]
+
+        self.alias = None
         if "alias" in pydantic_schema_item_properties:
             self.alias = pydantic_schema_item_properties["alias"]
+
+        self.type = None
         if "type" in pydantic_schema_item_properties:
             self.type = pydantic_schema_item_properties["type"]
+
+        self.enum = None
+        if "enum" in pydantic_schema_item_properties:
+            self.enum = pydantic_schema_item_properties["enum"]
+
+        if "default" in pydantic_schema_item_properties:
+            self.default = pydantic_schema_item_properties["default"]
+        print(parent_config_chapter.get_path(), pydantic_schema_item_properties)
+        self.parent_config_chapter = parent_config_chapter
+        self.type_hint = type_hint
+        self.set_value = set_value
+
+    @property
+    def value(self):
+        if self.set_value == ConfigValueNotSet and not self.has_default():
+            # TODO: You are here. problem is that config var with ..."= None" are not accepded as default = None
+            raise ValueError(
+                f"No value for {self.parent_config_chapter.get_path_as_str()}"
+            )
+        elif self.set_value != ConfigValueNotSet:
+            return self.set_value
+        else:
+            return self.default
+
+    def get_env_name(self, prefix: str):
+        env_name = "_".join(
+            [
+                "".join(c for c in path_node if c.isalnum())
+                for path_node in self.parent_config_chapter.get_path()
+            ]
+        ).upper()
+        return f"{prefix.upper()}_{env_name}" if prefix else env_name
+
+    def has_default(self):
+        return hasattr(self, "default")
+
+    def has_to_be_set(self):
+        return not self.has_default()
 
 
 class ConfigChapterMetaContainer:
@@ -63,30 +153,48 @@ class ConfigChapterMetaContainer:
         parent_key: str = None,
         parent_index: int = None,
         field_props: ConfigFieldProps = None,
+        depth: int = 0,
     ):
-        self.config_chapter = config_object
-        self.parent_object = parent
+        self.config_object = config_object
+        self.parent_container = parent
         self.parent_attr = parent_attr
         self.parent_key = parent_key
         self.parent_index = parent_index
         self.field_props = field_props
+        if field_props is not None:
+            self.field_props.parent_config_chapter = self
+        self.depth = depth
 
-    def get_path(self, base_only: bool = False) -> str:
-        path = ""
-        if self.parent_object:
-            path = self.parent_object.get_path()
+    def get_path(self) -> List[Union[str, int]]:
+        path = []
+        if self.parent_container:
+            path.extend(self.parent_container.get_path())
             if self.parent_attr:
-                path += f"[{self.parent_attr}]"
+                path.append(self.parent_attr)
             if self.parent_key:
-                path += f"[{self.parent_key}]"
+                path.append(self.parent_key)
             if self.parent_index:
-                path += f"[{self.parent_index}]"
+                path.append(self.parent_index)
         return path
 
+    def get_path_as_str(self, seperator: str = ".") -> str:
+        return seperator.join(self.get_path())
 
-class default(BaseModel):
-    hello: int = 1
-    l = list[1, 2, 3]
+    def is_value_field(self) -> bool:
+        return isinstance(self.field_props, ConfigFieldProps)
+
+    def get_name(self):
+        return self.parent_attr or self.parent_key or self.parent_index
+
+    def is_optional(self):
+        if self.is_value_field():
+            return self.field_props.has_to_be_set()
+        else:
+            for child_obj in ConfigHandler()._walk_config(
+                self.config_object, max_depth=1
+            ):
+                if not child_obj.is_optional():
+                    return False
 
 
 class ConfigHandler:
@@ -111,30 +219,64 @@ class ConfigHandler:
         Args:
             reload (bool, optional): If set to True; reload data from config file and env variables. Defaults to False.
         """
+        if self._resulting_config is None or reload:
+            # load default config
+            # self._resulting_config = self.config_model_class.construct()
 
-        # load default config
-        self._resulting_config = self.config_model_class()
+            # load file to override default config
+            config_file_content = None
 
-        # load file to override default config
-        config_file_content = None
+            with open(self.config_file, "r") as stream:
+                config_file_content = yaml.safe_load(stream)
 
-        with open(self.config_file, "r") as stream:
-            config_file_content = yaml.safe_load(stream)
-
-        # merge config from file onto default config
-        self._resulting_config = self.config_model_class.parse_obj(
-            self.config_model_class().dict() | config_file_content
-        )
+            # merge config from file onto default config
+            self._resulting_config = self.config_model_class.parse_obj(
+                config_file_content
+            )
+            # merge config from environment variables on top
+            self._resulting_config = self.config_model_class.parse_obj(
+                self._resulting_config.dict()
+                | self.load_config_from_environment_var(self._resulting_config)
+            )
 
         # TODO_: YOU ARE HERE!!!! You try to deconstruct the config object to reconstruct a yaml file field by field and add comments from the field object
         for obj in self._walk_config(self._resulting_config):
-            print("###")
-            print(type(obj))
-            # this make no sense, we always get the full config instead of single chapers
-            print(obj.config_chapter)
+            print("#" * (obj.depth + 1))
 
-    def load_config_from_environment_var(self):
-        pass
+            print(
+                type(obj),
+                obj.get_path(),
+                obj.field_props.name if obj.is_value_field() else None,
+            )
+
+            if obj.is_value_field():
+                print("####field")
+                print(obj.field_props.get_env_name(self.environment_var_prefix))
+                print(obj.field_props._pydantic_schema_item_properties)
+                print(obj.field_props.type_hint)
+                print("SET_VALUE", obj.field_props.set_value)
+                print(
+                    "DEF_VALUE",
+                    obj.field_props.default if obj.field_props.has_default() else "",
+                )
+                print("VALUE", obj.field_props.value)
+
+                # exit()
+            # this make no sense, we always get the full config instead of single chapers
+
+    def load_config_from_environment_var(self, config: BaseModel) -> Dict:
+        values: Dict = {}
+        for obj in self._walk_config(config):
+            if obj.is_value_field():
+                environment_var_name = obj.field_props.get_env_name(
+                    self.environment_var_prefix
+                )
+                if environment_var_name in os.environ:
+                    value = os.getenv(environment_var_name)
+                    values = values | create_nested_dict(
+                        path=obj.get_path_as_str(), value=value
+                    )
+        return values
 
     def _walk_config(
         self,
@@ -144,7 +286,11 @@ class ConfigHandler:
         parent_key: str = None,
         parent_index: int = None,
         field_props: ConfigFieldProps = None,
+        depth: int = 0,
+        max_depth: int = None,
     ) -> Generator[ConfigChapterMetaContainer, None, None]:
+        if max_depth and depth > max_depth:
+            return
         this = ConfigChapterMetaContainer(
             config_obj,
             parent,
@@ -152,42 +298,66 @@ class ConfigHandler:
             parent_key=parent_key,
             parent_index=parent_index,
             field_props=field_props,
+            depth=depth,
         )
         yield this
         if isinstance(config_obj, list):
-            yield this
             for index, child_obj in enumerate(config_obj):
-                self._walk_config(child_obj, parent=this, parent_index=index)
+                yield from self._walk_config(
+                    child_obj, parent=this, parent_index=index, depth=depth + 1
+                )
         elif isinstance(config_obj, dict):
-            yield this
             for key, child_obj in config_obj.items():
-                self._walk_config(child_obj, parent=this, parent_key=key)
-        elif isinstance(config_obj, BaseModel):
-            pydantic_field_props: Dict = this.config_chapter.schema()["properties"]
-            yield this
+                yield from self._walk_config(
+                    child_obj, parent=this, parent_key=key, depth=depth + 1
+                )
 
-            for attr, child_obj in config_obj.dict().items():
-                self._walk_config(
+        elif isinstance(config_obj, BaseModel):
+            pydantic_field_props: Dict = this.config_object.schema()["properties"]
+            type_hints = get_type_hints(config_obj)
+            set_values = config_obj.dict(exclude_unset=True, exclude_defaults=True)
+            for attr, child_obj in config_obj._iter():
+                field_prop = None
+                if (
+                    "type" in pydantic_field_props[attr]
+                    and pydantic_field_props[attr]["type"] != "object"
+                ):
+                    set_value = ConfigValueNotSet
+                    if attr in set_values:
+                        set_value = set_values[attr]
+
+                    field_prop = ConfigFieldProps(
+                        name=attr,
+                        pydantic_schema_item_properties=pydantic_field_props[attr],
+                        type_hint=type_hints[attr],
+                        parent_config_chapter=this,
+                        set_value=set_value,
+                    )
+
+                yield from self._walk_config(
                     child_obj,
                     parent=this,
                     parent_attr=attr,
-                    field_props=ConfigFieldProps(
-                        attr, pydantic_schema_item_properties=pydantic_field_props[attr]
-                    ),
+                    field_props=field_prop,
+                    depth=depth + 1,
                 )
 
     def get_config(self) -> BaseModel:
         return self._resulting_config
 
-    def generate_default_config(
+    def generate_config_file(
         self,
+        config_obj: Union[BaseModel, List, Dict] = None,
         target_path: Union[str, Path] = None,
         overwrite_existing: bool = False,
         generate_with_optional_fields: bool = True,
-        generate_with_example_values: bool = False,
+        comment_out_optional_fields: bool = True,
         generate_with_comment_desc_header: bool = True,
+        generate_with_example_values: bool = True,
         format: Literal["yaml"] = "yaml",
     ):
+        if config_obj is None:
+            config_obj = self.config_model_class()
         target_path: Path = (
             self.config_file
             if target_path is None
@@ -200,28 +370,39 @@ class ConfigHandler:
             raise FileExistsError(
                 f"Can not generate config file at {target_path}. File allready exists."
             )
+        file_content: List[str] = []
+        for obj in self._walk_config(config_obj):
+            # typing help
+            obj: ConfigChapterMetaContainer = obj
+            is_optional = obj.is_optional()
+            line_prefix = "  " * obj.depth
+            if is_optional and generate_with_optional_fields:
+                line_prefix += "#" if comment_out_optional_fields else ""
+            elif is_optional and not generate_with_optional_fields:
+                continue
 
-    def _generate_comment_header(
-        self, pydantic_schema_item_properties: Tuple, item_base_path: str = None
-    ) -> List[str]:
-        if item_base_path is None:
-            item_base_path = ""
-        config_var_name = pydantic_schema_item_properties[0]
-        config_var_info = pydantic_schema_item_properties[1]
+            comment_section: str = None
+            line = f"{obj.get_name()}: "
+            if obj.is_value_field():
+                if obj:
+                    yamlfied_val = yaml.dump(
+                        {"PLCHLDR_VAL": obj.field_props.set_value}
+                    ).lstrip("PLCHLDR_VAL: ")
+                line
+                comment = self._generate_comment_header(obj.field_props)
+
+    def _generate_comment_header(self, field: ConfigFieldProps) -> List[str]:
         header_lines: List[str] = []
-        header_lines.append(f"## {config_var_name} - {config_var_info['type']} \n")
-        if "description" in config_var_info:
-            header_lines.append(f"## Description: {config_var_info['description']} \n")
-        if "enum" in config_var_info:
-            header_lines.append(f"## allowed values: {config_var_info['enum']} \n")
-        if "default" in config_var_info:
-            header_lines.append(f"## defaults to {config_var_info['default']} \n")
-        if "example" in config_var_info:
-            header_lines.append(
-                f"## example: `{self.environment_var_prefix}_{config_var_name}={config_var_info['example']}`\n"
-            )
-        env_var_name: str = f"{self.environment_var_prefix + '_' if self.environment_var_prefix else ''}{item_base_path + '_' if item_base_path else ''}{config_var_name}".upper()
-        header_lines.append(f"# Env var name to override: '{env_var_name}'\n")
+        header_lines.append(f"## {field.name} - {field.type} \n")
+        if field.description:
+            header_lines.append(f"## Description: {field.description} \n")
+        if field.enum:
+            header_lines.append(f"## allowed values: {field.enum} \n")
+        if field.default:
+            header_lines.append(f"## defaults to {field.default} \n")
+        if field.example:
+            header_lines.append(f"## example: `{field.example}`\n")
+        header_lines.append(f"# EnvVar name to override: '{field.get_env_name()}'\n")
         return header_lines
 
 

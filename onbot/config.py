@@ -3,15 +3,33 @@ import yaml
 
 from pydantic import BaseModel, Field
 
-# Field(default=None, description="", example="matrix.internal")
-
-# Annotated[str,Field(description="", example=)]
-
 
 class ConfigDefaultModel(BaseModel):
+    test_VAL: Annotated[
+        Optional[str],
+        Field(
+            description="Synapse's public facing domain https://matrix-org.github.io/synapse/latest/usage/configuration/config_documentation.html#server_name",
+            example="company.org",
+        ),
+    ] = "FUCK"
+
+    test_VAL_field_as_val: Optional[str] = Field(
+        description="Synapse's public facing domain https://matrix-org.github.io/synapse/latest/usage/configuration/config_documentation.html#server_name",
+        example="company.org",
+        default="f",
+    )
+
+    test_VAL_no_default: Annotated[
+        str,
+        Field(
+            description="Synapse's public facing domain https://matrix-org.github.io/synapse/latest/usage/configuration/config_documentation.html#server_name",
+            example="company.org",
+        ),
+    ]
+
     class SynapseServer(BaseModel):
         server_name: Annotated[
-            str,
+            Optional[str],
             Field(
                 description="Synapse's public facing domain https://matrix-org.github.io/synapse/latest/usage/configuration/config_documentation.html#server_name",
                 example="company.org",
@@ -26,12 +44,12 @@ class ConfigDefaultModel(BaseModel):
             ),
         ] = None
         api_path: Annotated[
-            str,
+            Optional[str],
             Field(
                 description="If your Synapse server API is reachable in a subpath you can adapt this here. If you dont know that this is for; keep the default value.",
                 example="_synapse/admin/",
             ),
-        ] = "_synapse/admin/"
+        ] = "_matrix/"
         admin_api_path: Annotated[
             str,
             Field(
@@ -207,8 +225,11 @@ class ConfigDefaultModel(BaseModel):
 
 
 import toml
+import yaml
 
 # c = ConfigDefaultModel()
 # print(yaml.dump(c.dict(), sort_keys=False))
 # print(yaml.dump(toml.loads(toml.dumps(c.dict()))))
 # print(yaml.dump(ConfigDefaultModel.SynapseServer.schema(), sort_keys=False))
+# print(ConfigDefaultModel.SynapseServer.__dict__)
+# exit()
