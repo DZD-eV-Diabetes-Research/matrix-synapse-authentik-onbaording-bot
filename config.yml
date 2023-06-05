@@ -1,3 +1,4 @@
+test_VAL_no_default: 1
 synapse_server:
   server_name: "FUCK_YEA"
   server_url: null
