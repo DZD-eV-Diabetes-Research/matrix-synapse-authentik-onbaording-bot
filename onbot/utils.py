@@ -10,16 +10,17 @@ from typing import (
     Generator,
     get_type_hints,
     Optional,
+    Mapping,
 )
-
+import inspect
 from functools import singledispatch
-from pydantic import BaseModel
+from pydantic import BaseModel, fields, BaseSettings
 from pathlib import Path, PurePath
 import yaml
 
 
 def get_nested_dict_attr_by_path(
-    data: Dict, keys: List[str], fallback_val: Any = Any
+    data: Dict, key_path: List[str], fallback_val: Any = Any
 ) -> Any:
     """Provide multiple dict keys as a list to acces a nested dict attribute.
 
@@ -36,8 +37,8 @@ def get_nested_dict_attr_by_path(
     try:
         # thanks to https://stackoverflow.com/a/47969823/12438690
         return (
-            get_nested_dict_attr_by_path(data[keys[0]], keys[1:], fallback_val)
-            if keys
+            get_nested_dict_attr_by_path(data[key_path[0]], key_path[1:], fallback_val)
+            if key_path
             else data
         )
     except KeyError:
@@ -47,7 +48,9 @@ def get_nested_dict_attr_by_path(
             raise
 
 
-def create_nested_dict(path: str, value: Any, path_seperator: str = ".") -> Dict:
+def create_nested_dict_by_path(
+    path: str, value: Any, path_seperator: str = "."
+) -> Dict:
     """_summary_
 
     Args:
@@ -68,6 +71,144 @@ def create_nested_dict(path: str, value: Any, path_seperator: str = ".") -> Dict
     current_dict[keys[-1]] = value
 
     return nested_dict
+
+
+#######################
+##### experiments #####
+#######################
+
+
+class YamlConfigFileHandler:
+    def __init__(self, model: Type[BaseSettings], file_path: Union[str, Path] = None):
+        self.config_file: Path = (
+            file_path if isinstance(file_path, Path) else Path(file_path)
+        )
+        self.model = model
+
+    def generate_example_config_file(self):
+        config = self.model.parse_obj(
+            self._get_fields_filler(
+                required_only=False,
+                use_example_values_if_exists=True,
+            )
+        )
+        self._generate_file(config, generate_with_example_values=True)
+
+    def generate_existing_config_file(self, config: BaseSettings):
+        self._generate_file(config)
+
+    def generate_minimal_config_file(self):
+        config = self.model.parse_obj(
+            self._get_fields_filler(
+                required_only=True,
+                use_example_values_if_exists=True,
+            )
+        )
+        self._generate_file(config, generate_with_optional_fields=False)
+
+    def generate_markdown_doc(self):
+        pass
+
+    def _generate_file(
+        self,
+        config: BaseSettings,
+        overwrite_existing: bool = False,
+        generate_with_optional_fields: bool = True,
+        comment_out_optional_fields: bool = True,
+        generate_with_comment_desc_header: bool = True,
+        generate_with_example_values: bool = False,
+    ):
+        self.config_file.parent.mkdir(exist_ok=True, parents=True)
+        if self.config_file.is_file() and not overwrite_existing:
+            raise FileExistsError(
+                f"Can not generate config file at {self.config_file}. File allready exists."
+            )
+        yaml_content: str = yaml.dump(config.dict())
+        yaml_content_with_comment: List[str] = []
+        previous_depth = 0
+        previous_key: str = None
+        current_path: List[str] = []
+        in_multiline_block: bool = False
+        for line in yaml_content.split("\n"):
+            line_no_indent = line.lstrip()
+
+            depth = int((len(line) - len(line_no_indent)) / 2)
+            if previous_depth < depth:
+                current_path.append(previous_key)
+            elif depth < previous_depth:
+                for i in range(depth, previous_depth):
+                    current_path.pop()
+            field = None
+            if line_no_indent.startswith("- "):
+                # we are in list element
+                pass
+
+            elif ": " in line:
+                key, val = line.split(": ")
+                key = key.strip()
+                # field = self._get_field_info(key, current_path)
+                yaml_content_with_comment.append(
+                    self.generate_field_header(self._get_field_info(key, current_path))
+                )
+                previous_key = key
+            elif line.endswith(":"):
+                # sub chapter or line start
+                previous_key = line.split(":")[0]
+            previous_depth = depth
+            yaml_content_with_comment.append(line)
+        for line in yaml_content_with_comment:
+            print(line)
+
+    def _get_field_info(self, key: str, path: List[str]) -> fields.ModelField:
+        current_obj = self.model
+        print(path + [key])
+        for parent_key in path + [key]:
+            if isinstance(current_obj, fields.ModelField):
+                current_obj = current_obj.type_.__fields__[parent_key]
+            else:
+                current_obj = current_obj.__fields__[parent_key]
+        return current_obj  # if isinstance(current_obj, fields.ModelField) else None
+
+    def generate_field_header(self, field_meta_data: fields.ModelField):
+        return f"# {field_meta_data}\n# BLABLA"
+
+    def _get_fields_filler(
+        self,
+        required_only: bool = True,
+        use_example_values_if_exists: bool = False,
+        fallback_fill_value: Any = None,
+    ) -> Dict:
+        """Needed for creating dummy values for non nullable values. Otherwise we are not able to initialize a living config from the model
+
+        Args:
+            required_only (bool, optional): _description_. Defaults to True.
+            use_example_values_if_exists (bool, optional): _description_. Defaults to False.
+            fallback_fill_value (Any, optional): _description_. Defaults to None.
+
+        Returns:
+            Dict: _description_
+        """
+
+        def parse_model_class(m_cls: Type[BaseModel]) -> Dict:
+            result: Dict = {}
+            for key, field in m_cls.__fields__.items():
+                if not required_only or field.required:
+                    if inspect.isclass(field.annotation) and issubclass(
+                        field.annotation, BaseModel
+                    ):
+                        result[key] = parse_model_class(field.type_)
+                    elif (
+                        use_example_values_if_exists
+                        and "example" in field.field_info.extra
+                    ):
+                        result[key] = field.field_info.extra["example"]
+                    else:
+                        result[key] = (
+                            fallback_fill_value if field.required else field.default
+                        )
+            return result
+
+        return parse_model_class(self.model)
 
 
 class ConfigValueNotSet:
@@ -111,7 +252,6 @@ class ConfigFieldProps:
 
         if "default" in pydantic_schema_item_properties:
             self.default = pydantic_schema_item_properties["default"]
-        print(parent_config_chapter.get_path(), pydantic_schema_item_properties)
         self.parent_config_chapter = parent_config_chapter
         self.type_hint = type_hint
         self.set_value = set_value
@@ -119,7 +259,6 @@ class ConfigFieldProps:
     @property
     def value(self):
         if self.set_value == ConfigValueNotSet and not self.has_default():
-            # TODO: You are here. problem is that config var with ..."= None" are not accepded as default = None
             raise ValueError(
                 f"No value for {self.parent_config_chapter.get_path_as_str()}"
             )
@@ -169,12 +308,8 @@ class ConfigChapterMetaContainer:
         path = []
         if self.parent_container:
             path.extend(self.parent_container.get_path())
-            if self.parent_attr:
-                path.append(self.parent_attr)
-            if self.parent_key:
-                path.append(self.parent_key)
-            if self.parent_index:
-                path.append(self.parent_index)
+        if self.get_name():
+            path.append(self.get_name())
         return path
 
     def get_path_as_str(self, seperator: str = ".") -> str:
@@ -190,28 +325,65 @@ class ConfigChapterMetaContainer:
         if self.is_value_field():
             return self.field_props.has_to_be_set()
         else:
-            for child_obj in ConfigHandler()._walk_config(
+            for child_obj in ConfigHandler(self.config_object)._walk_config(
                 self.config_object, max_depth=1
             ):
-                if not child_obj.is_optional():
-                    return False
+                child_path = child_obj.get_path()
+                if self.parent_container:
+                    child_path = self.parent_container.get_path() + child_path
+
+                if len(child_path) > len(self.get_path()):
+                    if not child_obj.is_optional():
+                        return False
 
 
 class ConfigHandler:
     def __init__(
         self,
         config_model_class: Type[BaseModel],
-        config_file: Union[str, Path],
+        config_file: Union[str, Path, None] = None,
         environment_var_prefix: str = None,
     ):
         self.config_model_class = config_model_class
-        self.config_file: Path = (
-            config_file if isinstance(config_file, Path) else Path(config_file)
-        )
+        self.config_file = None
+        if config_file:
+            self.config_file: Path = (
+                config_file if isinstance(config_file, Path) else Path(config_file)
+            )
         self.environment_var_prefix: str = (
             environment_var_prefix if environment_var_prefix else ""
         )
         self._resulting_config: BaseModel = None
+
+    def get_fields_filler(
+        self,
+        config_model_class: Type[BaseModel] = None,
+        required_only: bool = True,
+        use_example_values_if_exists: bool = False,
+        fallback_fill_value: Any = None,
+    ) -> Dict:
+        def parse_model_class(m_cls: Type[BaseModel]) -> Dict:
+            result: Dict = {}
+            for key, field in m_cls.__fields__.items():
+                if not required_only or field.required:
+                    if inspect.isclass(field.annotation) and issubclass(
+                        field.annotation, BaseModel
+                    ):
+                        result[key] = parse_model_class(field.type_)
+                    elif (
+                        use_example_values_if_exists
+                        and "example" in field.field_info.extra
+                    ):
+                        result[key] = field.field_info.extra["example"]
+                    else:
+                        result[key] = (
+                            fallback_fill_value if field.required else field.default
+                        )
+            return result
+
+        if config_model_class is None:
+            config_model_class = self.config_model_class
+        return parse_model_class(config_model_class)
 
     def load_config(self, reload: bool = False):
         """_summary_
@@ -222,24 +394,18 @@ class ConfigHandler:
         if self._resulting_config is None or reload:
             # load default config
             # self._resulting_config = self.config_model_class.construct()
-
+            config_values: Dict = {}
             # load file to override default config
-            config_file_content = None
-
-            with open(self.config_file, "r") as stream:
-                config_file_content = yaml.safe_load(stream)
+            if self.config_file:
+                with open(self.config_file, "r") as stream:
+                    config_values = yaml.safe_load(stream)
+            config_values = config_values | self.load_config_from_environment_var(
+                self._resulting_config
+            )
 
             # merge config from file onto default config
-            self._resulting_config = self.config_model_class.parse_obj(
-                config_file_content
-            )
-            # merge config from environment variables on top
-            self._resulting_config = self.config_model_class.parse_obj(
-                self._resulting_config.dict()
-                | self.load_config_from_environment_var(self._resulting_config)
-            )
+            self._resulting_config = self.config_model_class.parse_obj(config_values)
 
-        # TODO_: YOU ARE HERE!!!! You try to deconstruct the config object to reconstruct a yaml file field by field and add comments from the field object
         for obj in self._walk_config(self._resulting_config):
             print("#" * (obj.depth + 1))
 
@@ -261,9 +427,6 @@ class ConfigHandler:
                 )
                 print("VALUE", obj.field_props.value)
 
-                # exit()
-            # this make no sense, we always get the full config instead of single chapers
-
     def load_config_from_environment_var(self, config: BaseModel) -> Dict:
         values: Dict = {}
         for obj in self._walk_config(config):
@@ -273,7 +436,7 @@ class ConfigHandler:
                 )
                 if environment_var_name in os.environ:
                     value = os.getenv(environment_var_name)
-                    values = values | create_nested_dict(
+                    values = values | create_nested_dict_by_path(
                         path=obj.get_path_as_str(), value=value
                     )
         return values
@@ -290,6 +453,8 @@ class ConfigHandler:
         max_depth: int = None,
     ) -> Generator[ConfigChapterMetaContainer, None, None]:
         if max_depth and depth > max_depth:
+            return
+        if isinstance(config_obj, (int, str, float, bool, complex, type(None))):
             return
         this = ConfigChapterMetaContainer(
             config_obj,
@@ -357,7 +522,13 @@ class ConfigHandler:
         format: Literal["yaml"] = "yaml",
     ):
         if config_obj is None:
-            config_obj = self.config_model_class()
+            config_obj = self.config_model_class.parse_obj(
+                self.get_fields_filler(
+                    config_model_class=self.config_model_class,
+                    required_only=not generate_with_example_values,
+                    use_example_values_if_exists=generate_with_example_values,
+                )
+            )
         target_path: Path = (
             self.config_file
             if target_path is None
@@ -398,11 +569,13 @@ class ConfigHandler:
             header_lines.append(f"## Description: {field.description} \n")
         if field.enum:
             header_lines.append(f"## allowed values: {field.enum} \n")
-        if field.default:
+        if field.has_default():
             header_lines.append(f"## defaults to {field.default} \n")
         if field.example:
             header_lines.append(f"## example: `{field.example}`\n")
-        header_lines.append(f"# EnvVar name to override: '{field.get_env_name()}'\n")
+        header_lines.append(
+            f"# EnvVar name to override: '{field.get_env_name(self.environment_var_prefix)}'\n"
+        )
         return header_lines
 
 
@@ -416,12 +589,18 @@ if __name__ == "__main__":
     sys.path.insert(0, os.path.normpath(MODULE_ROOT_DIR))
 from onbot.config import ConfigDefaultModel
 
+y = YamlConfigFileHandler(ConfigDefaultModel, "ccc.yml")
+y.generate_example_config_file()
+"""
 c = ConfigHandler(
-    config_model_class=ConfigDefaultModel,
+    config_model_class=ConfigDefaultModelDEMO,
     config_file="config.yml",
     environment_var_prefix="TEST",
 )
-c.load_config()
-config = c.get_config()
+"""
+# c.get_fields_filler()
+# c.generate_config_file(target_path="exampl.yml")
+# c.load_config()
+# config = c.get_config()
 # print(type(config))
 # print(yaml.dump(config.dict(), sort_keys=False))

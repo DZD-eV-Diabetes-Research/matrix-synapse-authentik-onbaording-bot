@@ -1,7 +1,7 @@
 test_VAL_no_default: 1
 synapse_server:
   server_name: "FUCK_YEA"
-  server_url: null
+  server_url: "ITs A VAL"
   api_path: _synapse/admin/
   admin_api_path: _synapse/admin/
   bot_user_id: null
