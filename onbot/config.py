@@ -1,32 +1,10 @@
 from typing import List, Dict, Optional, Annotated
 import yaml
+import datetime
+from pydantic import BaseModel, Field, BaseSettings, fields
 
-from pydantic import BaseModel, Field
 
-
-class ConfigDefaultModel(BaseModel):
-    test_VAL: Annotated[
-        Optional[str],
-        Field(
-            description="Synapse's public facing domain https://matrix-org.github.io/synapse/latest/usage/configuration/config_documentation.html#server_name",
-            example="company.org",
-        ),
-    ] = "FUCK"
-
-    test_VAL_field_as_val: Optional[str] = Field(
-        description="Synapse's public facing domain https://matrix-org.github.io/synapse/latest/usage/configuration/config_documentation.html#server_name",
-        example="company.org",
-        default="f",
-    )
-
-    test_VAL_no_default: Annotated[
-        str,
-        Field(
-            description="Synapse's public facing domain https://matrix-org.github.io/synapse/latest/usage/configuration/config_documentation.html#server_name",
-            example="company.org",
-        ),
-    ]
-
+class ConfigDefaultModel(BaseSettings):
     class SynapseServer(BaseModel):
         server_name: Annotated[
             Optional[str],
@@ -222,14 +200,3 @@ class ConfigDefaultModel(BaseModel):
     deactivate_disabled_authentik_users_in_matrix: DeactivateDisabledAuthentikUsersInMatrix = (
         DeactivateDisabledAuthentikUsersInMatrix()
     )
-
-
-import toml
-import yaml
-
-# c = ConfigDefaultModel()
-# print(yaml.dump(c.dict(), sort_keys=False))
-# print(yaml.dump(toml.loads(toml.dumps(c.dict()))))
-# print(yaml.dump(ConfigDefaultModel.SynapseServer.schema(), sort_keys=False))
-# print(ConfigDefaultModel.SynapseServer.__dict__)
-# exit()
