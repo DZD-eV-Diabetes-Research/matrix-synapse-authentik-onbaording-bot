@@ -1,4 +1,4 @@
-from typing import List, Dict, Optional, Annotated
+from typing import List, Dict, Optional, Annotated, Literal
 import yaml
 import datetime
 from pydantic import BaseModel, Field, BaseSettings, fields
@@ -9,6 +9,7 @@ class ConfigDefaultModel(BaseSettings):
         server_name: Annotated[
             Optional[str],
             Field(
+                max_length=100,
                 description="Synapse's public facing domain https://matrix-org.github.io/synapse/latest/usage/configuration/config_documentation.html#server_name",
                 example="company.org",
             ),
@@ -60,7 +61,15 @@ class ConfigDefaultModel(BaseSettings):
             ),
         ] = None
 
-    synapse_server: SynapseServer = SynapseServer()
+        test_enum: Annotated[Literal["A", "b"], Field(description="THIS IS TEST")] = "A"
+
+    synapse_server: Annotated[
+        SynapseServer,
+        Field(
+            title="### Synapse Server Configuration ###",
+            description="DESC FOR SYNAPSE SERVER",
+        ),
+    ]
 
     class AuthentikServer(BaseModel):
         public_api_url: str = "https://authentik.company.org/api/v3"
@@ -146,20 +155,22 @@ class ConfigDefaultModel(BaseSettings):
     )
 
     class MatrixDynamicRoomSettings(BaseModel):
-        alias_prefix: str = None
-        matrix_alias_from_authentik_attribute: str = "pk"
-        name_prefix: str = None
-        matrix_name_from_authentik_attribute: str = "name"
-        topic_prefix: str = None
-        matrix_topic_from_authentik_attribute: str = "attributes.chatroom_topic"
+        alias_prefix: Optional[str] = None
+        matrix_alias_from_authentik_attribute: Optional[str] = "pk"
+        name_prefix: Optional[str] = None
+        matrix_name_from_authentik_attribute: Optional[str] = "name"
+        topic_prefix: Optional[str] = None
+        matrix_topic_from_authentik_attribute: Optional[
+            str
+        ] = "attributes.chatroom_topic"
 
         # An authentik attribute that can contains parameters for the "room_create" event.
         # see https://matrix-nio.readthedocs.io/en/latest/nio.html#nio.AsyncClient.room_create for possible params
         # params need to be provided as json
         # e.g. '{"preset": "private_chat", "visibility": "private", "federate": false}'
-        matrix_room_create_params_from_authentik_attribute: str = (
-            "attribute.chatroom_params"
-        )
+        matrix_room_create_params_from_authentik_attribute: Optional[
+            str
+        ] = "attribute.chatroom_params"
 
         # https://spec.matrix.org/v1.6/client-server-api/#post_matrixclientv3createroom
         # enum. one of [public_chat,private_chat,trusted_private_chat]
@@ -167,7 +178,7 @@ class ConfigDefaultModel(BaseSettings):
         # A public visibility indicates that the room will be shown in the published room list. A private visibility will hide the room from the published room list.
         # enum. One of: [public,private]
         # visibility: private
-        default_room_create_params: Dict = {
+        default_room_create_params: Optional[Dict] = {
             "preset": "private_chat",
             "visibility": "private",
         }
@@ -176,14 +187,17 @@ class ConfigDefaultModel(BaseSettings):
         MatrixDynamicRoomSettings()
     )
 
-    per_authentik_group_pk_matrix_room_settings: Dict[
-        str, MatrixDynamicRoomSettings
-    ] = {
-        "80439f0d-d936-4118-8017-52a95d6dd1bc": MatrixDynamicRoomSettings(
-            matrix_alias_from_authentik_attribute="attribute.custom",
-            topic_prefix="TOPIC PREFIX FOR SPECIFIC ROOM:",
-        )
-    }
+    per_authentik_group_pk_matrix_room_settings: Annotated[
+        Optional[Dict[str, MatrixDynamicRoomSettings]],
+        Field(
+            example={
+                "80439f0d-d936-4118-8017-52a95d6dd1bc": MatrixDynamicRoomSettings(
+                    matrix_alias_from_authentik_attribute="attribute.custom",
+                    topic_prefix="TOPIC PREFIX FOR SPECIFIC ROOM:",
+                )
+            }
+        ),
+    ]
 
     matrix_user_ignore_list: List[str] = ["@admin:matrix.company.org"]
     authentik_user_ignore_list: List[str] = ["admin"]
