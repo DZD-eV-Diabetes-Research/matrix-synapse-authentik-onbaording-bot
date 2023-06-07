@@ -1,4 +1,4 @@
-from typing import List, Dict, Optional, Annotated, Literal
+from typing import List, Dict, Optional, Annotated, Literal, Set, Tuple
 import yaml
 import datetime
 from pydantic import BaseModel, Field, BaseSettings, fields
@@ -7,13 +7,13 @@ from pydantic import BaseModel, Field, BaseSettings, fields
 class ConfigDefaultModel(BaseSettings):
     class SynapseServer(BaseModel):
         server_name: Annotated[
-            Optional[str],
+            str,
             Field(
                 max_length=100,
                 description="Synapse's public facing domain https://matrix-org.github.io/synapse/latest/usage/configuration/config_documentation.html#server_name",
                 example="company.org",
             ),
-        ] = None
+        ]
 
         server_url: Annotated[
             str,
@@ -43,7 +43,7 @@ class ConfigDefaultModel(BaseSettings):
                 description="The full Matrix user ID for an existing matrix user account. The Bot will interact as this account.",
                 example="@welcome-bot:company.org",
             ),
-        ] = None
+        ]
 
         # TODO: provide an curl example to get a devide id and access token
         bot_device_id: Annotated[
@@ -197,9 +197,12 @@ class ConfigDefaultModel(BaseSettings):
                 )
             }
         ),
-    ]
+    ] = {}
 
-    matrix_user_ignore_list: List[str] = ["@admin:matrix.company.org"]
+    matrix_user_ignore_list: Annotated[
+        Optional[List[str]], Field(example={"@admin:company.org", "@root:company.org"})
+    ] = []
+
     authentik_user_ignore_list: List[str] = ["admin"]
     authentik_group_ignore_list: List[str] = ["internal_company_group"]
 
