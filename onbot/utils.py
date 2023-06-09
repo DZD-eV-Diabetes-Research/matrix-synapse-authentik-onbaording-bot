@@ -17,9 +17,10 @@ from functools import singledispatch
 from pydantic import BaseModel, fields, BaseSettings, schema
 from pathlib import Path, PurePath
 import yaml
+from dataclasses import dataclass
 
 
-def get_nested_dict_attr_by_path(
+def get_nested_dict_val_by_path(
     data: Dict, key_path: List[str], fallback_val: Any = Any
 ) -> Any:
     """Provide multiple dict keys as a list to acces a nested dict attribute.
@@ -37,7 +38,7 @@ def get_nested_dict_attr_by_path(
     try:
         # thanks to https://stackoverflow.com/a/47969823/12438690
         return (
-            get_nested_dict_attr_by_path(data[key_path[0]], key_path[1:], fallback_val)
+            get_nested_dict_val_by_path(data[key_path[0]], key_path[1:], fallback_val)
             if key_path
             else data
         )
@@ -73,7 +74,17 @@ def create_nested_dict_by_path(
     return nested_dict
 
 
+# ToDo: Wrap that class up and migrate that into a proper selfcontained python module
+# * Add environment variables to doc headers https://docs.pydantic.dev/latest/usage/settings/#parsing-environment-variable-values
+# * Add generate markdown function
+# * complete _generate_file() with all parameters
 class YamlConfigFileHandler:
+    @dataclass
+    class FieldInfoContainer:
+        field_schema: fields.ModelField = None
+        container_model: BaseModel = None
+        env_var_name: str = None
+
     def __init__(self, model: Type[BaseSettings], file_path: Union[str, Path] = None):
         self.config_file: Path = (
             file_path if isinstance(file_path, Path) else Path(file_path)
@@ -91,8 +102,6 @@ class YamlConfigFileHandler:
         dummy_values = self._get_fields_filler(
             required_only=False, use_example_values_if_exists=False
         )
-        print(dummy_values["matrix_user_ignore_list"])
-
         config = self.model.parse_obj(dummy_values)
         self._generate_file(
             config,
@@ -152,7 +161,6 @@ class YamlConfigFileHandler:
             elif depth < previous_depth:
                 for i in range(depth, previous_depth):
                     current_path.pop()
-            field = None
             if line_no_indent.startswith("- "):
                 # we are in list element
                 pass
@@ -160,12 +168,10 @@ class YamlConfigFileHandler:
             elif ": " in line:
                 key, val = line.split(": ")
                 key = key.strip()
-                field_info, parent_model = self._get_field_info(key, current_path)
-                if field_info:
-                    # field = self._get_field_info(key, current_path)
+                field = self._get_field_info(key, current_path)
+                if field:
                     comment = self.generate_field_header(
-                        field_info,
-                        parent_model,
+                        field,
                         indent_size=depth * 2,
                     )
                     if comment:
@@ -173,11 +179,10 @@ class YamlConfigFileHandler:
                 previous_key = key
             elif line.endswith(":"):
                 key = line.split(":")[0].strip()
-                field_info, parent_model = self._get_field_info(key, current_path)
-                if field_info:
+                field = self._get_field_info(key, current_path)
+                if field:
                     comment = self.generate_field_header(
-                        field_info,
-                        parent_model,
+                        field,
                         indent_size=depth * 2,
                     )
                     if comment:
@@ -189,36 +194,39 @@ class YamlConfigFileHandler:
         with open(self.config_file, "w") as file:
             file.writelines(f"{s}\n" for s in yaml_content_with_comment)
 
-    def _get_field_info(
-        self, key: str, path: List[str]
-    ) -> Tuple[fields.ModelField, BaseModel] | Tuple[None, None]:
-        parent_model = self.model
-        current_obj = self.model
+    def _get_field_info(self, key: str, path: List[str]) -> FieldInfoContainer | None:
+        info = YamlConfigFileHandler.FieldInfoContainer()
+        info.container_model = self.model
+        info.field_schema = self.model
+        env_var_delimiter = (
+            self.model.Config.env_nested_delimiter
+            if self.model.Config.env_nested_delimiter
+            else "__"
+        )
         for parent_key in path + [key]:
-            if isinstance(current_obj, fields.ModelField):
+            if isinstance(info.field_schema, fields.ModelField):
                 if (
-                    inspect.isclass(current_obj.type_)
-                    and issubclass(current_obj.type_, BaseModel)
-                    and parent_key in current_obj.type_.__fields__
+                    inspect.isclass(info.field_schema.type_)
+                    and issubclass(info.field_schema.type_, BaseModel)
+                    and parent_key in info.field_schema.type_.__fields__
                 ):
-                    parent_model = current_obj.type_
-                    current_obj = current_obj.type_.__fields__[parent_key]
+                    info.container_model = info.field_schema.type_
+                    info.field_schema = info.field_schema.type_.__fields__[parent_key]
                 else:
-                    return None, None
+                    return None
             else:
-                parent_model = current_obj
-                current_obj = current_obj.__fields__[parent_key]
-        return current_obj, parent_model
+                info.container_model = info.field_schema
+                info.field_schema = info.field_schema.__fields__[parent_key]
+        info.env_var_name = env_var_delimiter.join([k.upper() for k in path + [key]])
+        return info
 
-    def generate_field_header(
-        self, field: fields.ModelField, parent_model: BaseModel, indent_size: int = 0
-    ):
-        if not isinstance(field, fields.ModelField):
+    def generate_field_header(self, field: FieldInfoContainer, indent_size: int = 0):
+        if not isinstance(field.field_schema, fields.ModelField):
             return None
         indent = f"{' '*indent_size}"
-        field_info = field.field_info
-        parent_schema = schema.model_schema(parent_model)
-        field_schema = parent_schema["properties"][field.name]
+        field_info = field.field_schema.field_info
+        parent_schema = schema.model_schema(field.container_model)
+        field_schema = parent_schema["properties"][field.field_schema.name]
         """ value examples
         field: name='server_name' type=Optional[ConstrainedStrValue] required=False default=None
         field_info: description="Synapse's public facing domain https://matrix-org.github.io/synapse/latest/usage/configuration/config_documentation.html#server_name" max_length=100 extra={'example': 'company.org'}
@@ -232,29 +240,32 @@ class YamlConfigFileHandler:
         """
         # YOU ARE HERE. seems all good :)
         header_lines: List[str] = []
-        header_lines.append(f"### {field_schema['title']} - '{field.name}'###")
+        header_lines.append(
+            f"### {field_schema['title']} - '{field.field_schema.name}'###"
+        )
         if "type" in field_schema:
             header_lines.append(f"# Type: {field_schema['type']}")
         if field_info.description:
             desc = field_info.description.replace("\n", f"\n{indent}#")
             header_lines.append(f"# Description: {desc}")
-        header_lines.append(f"# Required: {field.required}")
+
+        header_lines.append(f"# Required: {field.field_schema.required}")
         if "enum" in field_schema:
             header_lines.append(f"# Allowed values: {field_schema['enum']}")
-        if field.default:
-            header_lines.append(f"# Defaults to {field.default}")
+        if field.field_schema.default:
+            header_lines.append(f"# Defaults to {field.field_schema.default}")
+        header_lines.append(f"# EnvVar name to override: '{field.env_var_name}'")
         if "example" in field_info.extra:
             exmpl = f"\n" + yaml.dump(
-                {field.name: self.jsonfy_example(field_info.extra["example"])}
+                {
+                    field.field_schema.name: self.jsonfy_example(
+                        field_info.extra["example"]
+                    )
+                }
             )
             exmpl = exmpl.rstrip("\n")
             exmpl = exmpl.replace("\n", f"\n{indent}# >{indent}")
             header_lines.append(f"# Example: {exmpl}")
-        """
-        header_lines.append(
-            f"# EnvVar name to override: '{field.get_env_name(self.environment_var_prefix)}'"
-        )
-        """
 
         return "\n" + "\n".join([f"{indent}{line}" for line in header_lines])
 
@@ -318,7 +329,6 @@ class YamlConfigFileHandler:
         elif isinstance(val, BaseModel):
             return val.json()
         else:
-            # if isinstance(val, tuple):
             return val
 
 
@@ -332,7 +342,7 @@ if __name__ == "__main__":
     sys.path.insert(0, os.path.normpath(MODULE_ROOT_DIR))
 from onbot.config import ConfigDefaultModel
 
-y = YamlConfigFileHandler(ConfigDefaultModel, "ccc.yml")
+y = YamlConfigFileHandler(ConfigDefaultModel, "config.yml")
 y.generate_config_file(overwrite_existing=True)
 print(y.get_config())
 """

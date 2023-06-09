@@ -1,63 +1,367 @@
-test_VAL_no_default: 1
+### ### Synapse Server Configuration ### - 'synapse_server'###
+# Description: DESC FOR SYNAPSE SERVER
+# Required: True
+# EnvVar name to override: 'SYNAPSE_SERVER'
 synapse_server:
-  server_name: "FUCK_YEA"
-  server_url: "ITs A VAL"
-  api_path: _synapse/admin/
+  ### Server Name - 'server_name'###
+  # Type: string
+  # Description: Synapse's public facing domain https://matrix-org.github.io/synapse/latest/usage/configuration/config_documentation.html#server_name
+  # Required: True
+  # EnvVar name to override: 'SYNAPSE_SERVER__SERVER_NAME'
+  # Example:
+  # >  server_name: company.org
+  server_name: ""
+
+  ### Server Url - 'server_url'###
+  # Type: string
+  # Description: Url to reach the synapse server. This can (and should) be an internal url. This will prevent you from make your synapse admin api public. But the bot will work with the public URL as well.
+  # Required: False
+  # EnvVar name to override: 'SYNAPSE_SERVER__SERVER_URL'
+  # Example:
+  # >  server_url: http://internal.matrix
+  server_url: null
+
+  ### Api Path - 'api_path'###
+  # Type: string
+  # Description: If your Synapse server API is reachable in a subpath you can adapt this here. If you dont know that this is for; keep the default value.
+  # Required: False
+  # Defaults to _matrix/
+  # EnvVar name to override: 'SYNAPSE_SERVER__API_PATH'
+  # Example:
+  # >  api_path: _synapse/admin/
+  api_path: _matrix/
+
+  ### Admin Api Path - 'admin_api_path'###
+  # Type: string
+  # Description: If your Synapse server admin API is reachable in a subpath you can adapt this here. If you dont know that this is for; keep the default value.
+  # Required: False
+  # Defaults to _synapse/admin/
+  # EnvVar name to override: 'SYNAPSE_SERVER__ADMIN_API_PATH'
+  # Example:
+  # >  admin_api_path: _synapse/admin/
   admin_api_path: _synapse/admin/
-  bot_user_id: null
+
+  ### Bot User Id - 'bot_user_id'###
+  # Type: string
+  # Description: The full Matrix user ID for an existing matrix user account. The Bot will interact as this account.
+  # Required: True
+  # EnvVar name to override: 'SYNAPSE_SERVER__BOT_USER_ID'
+  # Example:
+  # >  bot_user_id: '@welcome-bot:company.org'
+  bot_user_id: ""
+
+  ### Bot Device Id - 'bot_device_id'###
+  # Type: string
+  # Description: A device ID the Bot account can provide, to access the API. You will get an device_id via https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3login
+  # Required: False
+  # EnvVar name to override: 'SYNAPSE_SERVER__BOT_DEVICE_ID'
+  # Example:
+  # >  bot_device_id: ZSIBBRS
   bot_device_id: null
+
+  ### Bot Access Token - 'bot_access_token'###
+  # Type: string
+  # Description: A Bearer token to authorize the Bot access to the Synapse APIs. You will get an Bearer token via https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3login
+  # Required: False
+  # EnvVar name to override: 'SYNAPSE_SERVER__BOT_ACCESS_TOKEN'
+  # Example:
+  # >  bot_access_token: Bearer q7289zhwoieuhrfq279ugdfq3_ONLY_A_EXMAPLE_TOKEN_sadaw4
   bot_access_token: null
+
+### Authentik Server - 'authentik_server'###
+# Required: False
+# Defaults to public_api_url='https://authentik.company.org/api/v3' api_key='xxx' sync_interval_seconds=120 account_pathes=['users']
+# EnvVar name to override: 'AUTHENTIK_SERVER'
 authentik_server:
+  ### Public Api Url - 'public_api_url'###
+  # Type: string
+  # Required: False
+  # Defaults to https://authentik.company.org/api/v3
+  # EnvVar name to override: 'AUTHENTIK_SERVER__PUBLIC_API_URL'
   public_api_url: https://authentik.company.org/api/v3
+
+  ### Api Key - 'api_key'###
+  # Type: string
+  # Required: False
+  # Defaults to xxx
+  # EnvVar name to override: 'AUTHENTIK_SERVER__API_KEY'
   api_key: xxx
+
+  ### Sync Interval Seconds - 'sync_interval_seconds'###
+  # Type: integer
+  # Required: False
+  # Defaults to 120
+  # EnvVar name to override: 'AUTHENTIK_SERVER__SYNC_INTERVAL_SECONDS'
   sync_interval_seconds: 120
+
+  ### Account Pathes - 'account_pathes'###
+  # Type: array
+  # Required: False
+  # Defaults to ['users']
+  # EnvVar name to override: 'AUTHENTIK_SERVER__ACCOUNT_PATHES'
   account_pathes:
     - users
+
+### Welcome New Users Messages - 'welcome_new_users_messages'###
+# Type: array
+# Required: False
+# Defaults to ['Welcome to the company chat. I am the company bot. I will invite you to the groups you are assigned. If you have any technical questions write a message to @admin-person:matrix.company.org.', 'The Chat software will ask you to setup a Security Key Backup. This is very important. Otherwise you can lose access older messages later. Please follow the request.']
+# EnvVar name to override: 'WELCOME_NEW_USERS_MESSAGES'
 welcome_new_users_messages:
   - Welcome to the company chat. I am the company bot. I will invite you to the groups you are assigned. If you have any technical questions write a message to @admin-person:matrix.company.org.
+  - The Chat software will ask you to setup a Security Key Backup. This is very important. Otherwise you can lose access older messages later. Please follow the request.
+
+### Sync Authentik Users With Matrix Rooms - 'sync_authentik_users_with_matrix_rooms'###
+# Required: False
+# Defaults to enabled=True authentik_username_mapping_attribute='username' kick_matrix_room_members_not_in_mapped_authentik_group_anymore=True sync_only_users_in_authentik_pathes=None sync_only_users_with_authentik_attributes=None sync_only_users_of_groups_with_id=None
+# EnvVar name to override: 'SYNC_AUTHENTIK_USERS_WITH_MATRIX_ROOMS'
 sync_authentik_users_with_matrix_rooms:
+  ### Enabled - 'enabled'###
+  # Type: boolean
+  # Required: False
+  # Defaults to True
+  # EnvVar name to override: 'SYNC_AUTHENTIK_USERS_WITH_MATRIX_ROOMS__ENABLED'
   enabled: true
+
+  ### Authentik Username Mapping Attribute - 'authentik_username_mapping_attribute'###
+  # Type: string
+  # Required: False
+  # Defaults to username
+  # EnvVar name to override: 'SYNC_AUTHENTIK_USERS_WITH_MATRIX_ROOMS__AUTHENTIK_USERNAME_MAPPING_ATTRIBUTE'
   authentik_username_mapping_attribute: username
+
+  ### Kick Matrix Room Members Not In Mapped Authentik Group Anymore - 'kick_matrix_room_members_not_in_mapped_authentik_group_anymore'###
+  # Type: boolean
+  # Required: False
+  # Defaults to True
+  # EnvVar name to override: 'SYNC_AUTHENTIK_USERS_WITH_MATRIX_ROOMS__KICK_MATRIX_ROOM_MEMBERS_NOT_IN_MAPPED_AUTHENTIK_GROUP_ANYMORE'
   kick_matrix_room_members_not_in_mapped_authentik_group_anymore: true
+
+  ### Sync Only Users In Authentik Pathes - 'sync_only_users_in_authentik_pathes'###
+  # Type: array
+  # Required: False
+  # EnvVar name to override: 'SYNC_AUTHENTIK_USERS_WITH_MATRIX_ROOMS__SYNC_ONLY_USERS_IN_AUTHENTIK_PATHES'
   sync_only_users_in_authentik_pathes: null
+
+  ### Sync Only Users With Authentik Attributes - 'sync_only_users_with_authentik_attributes'###
+  # Type: object
+  # Required: False
+  # EnvVar name to override: 'SYNC_AUTHENTIK_USERS_WITH_MATRIX_ROOMS__SYNC_ONLY_USERS_WITH_AUTHENTIK_ATTRIBUTES'
   sync_only_users_with_authentik_attributes: null
+
+  ### Sync Only Users Of Groups With Id - 'sync_only_users_of_groups_with_id'###
+  # Type: array
+  # Required: False
+  # EnvVar name to override: 'SYNC_AUTHENTIK_USERS_WITH_MATRIX_ROOMS__SYNC_ONLY_USERS_OF_GROUPS_WITH_ID'
   sync_only_users_of_groups_with_id: null
-create_matrix_rooms_based_on_authentik_groups:
+
+### Create Matrix Rooms In A Matrix Space - 'create_matrix_rooms_in_a_matrix_space'###
+# Required: False
+# Defaults to enabled=True alias='MyCompanySpace' create_matrix_space_if_not_exists=CreateMatrixSpaceIfNotExists(enabled=True, name='Our cozy space', topic='The Company Space', space_params={'preset': 'private_chat', 'visibility': 'private'})
+# EnvVar name to override: 'CREATE_MATRIX_ROOMS_IN_A_MATRIX_SPACE'
+create_matrix_rooms_in_a_matrix_space:
+  ### Enabled - 'enabled'###
+  # Type: boolean
+  # Required: False
+  # Defaults to True
+  # EnvVar name to override: 'CREATE_MATRIX_ROOMS_IN_A_MATRIX_SPACE__ENABLED'
   enabled: true
+
+  ### Alias - 'alias'###
+  # Type: string
+  # Required: False
+  # Defaults to MyCompanySpace
+  # EnvVar name to override: 'CREATE_MATRIX_ROOMS_IN_A_MATRIX_SPACE__ALIAS'
+  alias: MyCompanySpace
+
+  ### Create Matrix Space If Not Exists - 'create_matrix_space_if_not_exists'###
+  # Required: False
+  # Defaults to enabled=True name='Our cozy space' topic='The Company Space' space_params={'preset': 'private_chat', 'visibility': 'private'}
+  # EnvVar name to override: 'CREATE_MATRIX_ROOMS_IN_A_MATRIX_SPACE__CREATE_MATRIX_SPACE_IF_NOT_EXISTS'
+  create_matrix_space_if_not_exists:
+    ### Enabled - 'enabled'###
+    # Type: boolean
+    # Required: False
+    # Defaults to True
+    # EnvVar name to override: 'CREATE_MATRIX_ROOMS_IN_A_MATRIX_SPACE__CREATE_MATRIX_SPACE_IF_NOT_EXISTS__ENABLED'
+    enabled: true
+
+    ### Name - 'name'###
+    # Type: string
+    # Required: False
+    # Defaults to Our cozy space
+    # EnvVar name to override: 'CREATE_MATRIX_ROOMS_IN_A_MATRIX_SPACE__CREATE_MATRIX_SPACE_IF_NOT_EXISTS__NAME'
+    name: Our cozy space
+
+    ### Topic - 'topic'###
+    # Type: string
+    # Required: False
+    # Defaults to The Company Space
+    # EnvVar name to override: 'CREATE_MATRIX_ROOMS_IN_A_MATRIX_SPACE__CREATE_MATRIX_SPACE_IF_NOT_EXISTS__TOPIC'
+    topic: The Company Space
+
+    ### Space Params - 'space_params'###
+    # Type: object
+    # Required: False
+    # Defaults to {'preset': 'private_chat', 'visibility': 'private'}
+    # EnvVar name to override: 'CREATE_MATRIX_ROOMS_IN_A_MATRIX_SPACE__CREATE_MATRIX_SPACE_IF_NOT_EXISTS__SPACE_PARAMS'
+    space_params:
+      preset: private_chat
+      visibility: private
+
+### Create Matrix Rooms Based On Authentik Groups - 'create_matrix_rooms_based_on_authentik_groups'###
+# Required: False
+# Defaults to enabled=True only_for_children_of_groups_with_uid=None only_groups_with_attributes={'attribute.chatroom': True} only_for_groupnames_starting_with=None
+# EnvVar name to override: 'CREATE_MATRIX_ROOMS_BASED_ON_AUTHENTIK_GROUPS'
+create_matrix_rooms_based_on_authentik_groups:
+  ### Enabled - 'enabled'###
+  # Type: boolean
+  # Required: False
+  # Defaults to True
+  # EnvVar name to override: 'CREATE_MATRIX_ROOMS_BASED_ON_AUTHENTIK_GROUPS__ENABLED'
+  enabled: true
+
+  ### Only For Children Of Groups With Uid - 'only_for_children_of_groups_with_uid'###
+  # Type: array
+  # Required: False
+  # EnvVar name to override: 'CREATE_MATRIX_ROOMS_BASED_ON_AUTHENTIK_GROUPS__ONLY_FOR_CHILDREN_OF_GROUPS_WITH_UID'
   only_for_children_of_groups_with_uid: null
+
+  ### Only Groups With Attributes - 'only_groups_with_attributes'###
+  # Type: object
+  # Required: False
+  # Defaults to {'attribute.chatroom': True}
+  # EnvVar name to override: 'CREATE_MATRIX_ROOMS_BASED_ON_AUTHENTIK_GROUPS__ONLY_GROUPS_WITH_ATTRIBUTES'
   only_groups_with_attributes:
     attribute.chatroom: true
+
+  ### Only For Groupnames Starting With - 'only_for_groupnames_starting_with'###
+  # Type: string
+  # Required: False
+  # EnvVar name to override: 'CREATE_MATRIX_ROOMS_BASED_ON_AUTHENTIK_GROUPS__ONLY_FOR_GROUPNAMES_STARTING_WITH'
   only_for_groupnames_starting_with: null
+
+### Matrix Room Default Settings - 'matrix_room_default_settings'###
+# Required: False
+# Defaults to alias_prefix=None matrix_alias_from_authentik_attribute='pk' name_prefix=None matrix_name_from_authentik_attribute='name' topic_prefix=None matrix_topic_from_authentik_attribute='attributes.chatroom_topic' matrix_room_create_params_from_authentik_attribute='attribute.chatroom_params' default_room_create_params={'preset': 'private_chat', 'visibility': 'private'}
+# EnvVar name to override: 'MATRIX_ROOM_DEFAULT_SETTINGS'
 matrix_room_default_settings:
+  ### Alias Prefix - 'alias_prefix'###
+  # Type: string
+  # Required: False
+  # EnvVar name to override: 'MATRIX_ROOM_DEFAULT_SETTINGS__ALIAS_PREFIX'
   alias_prefix: null
+
+  ### Matrix Alias From Authentik Attribute - 'matrix_alias_from_authentik_attribute'###
+  # Type: string
+  # Required: False
+  # Defaults to pk
+  # EnvVar name to override: 'MATRIX_ROOM_DEFAULT_SETTINGS__MATRIX_ALIAS_FROM_AUTHENTIK_ATTRIBUTE'
   matrix_alias_from_authentik_attribute: pk
+
+  ### Name Prefix - 'name_prefix'###
+  # Type: string
+  # Required: False
+  # EnvVar name to override: 'MATRIX_ROOM_DEFAULT_SETTINGS__NAME_PREFIX'
   name_prefix: null
+
+  ### Matrix Name From Authentik Attribute - 'matrix_name_from_authentik_attribute'###
+  # Type: string
+  # Required: False
+  # Defaults to name
+  # EnvVar name to override: 'MATRIX_ROOM_DEFAULT_SETTINGS__MATRIX_NAME_FROM_AUTHENTIK_ATTRIBUTE'
   matrix_name_from_authentik_attribute: name
+
+  ### Topic Prefix - 'topic_prefix'###
+  # Type: string
+  # Required: False
+  # EnvVar name to override: 'MATRIX_ROOM_DEFAULT_SETTINGS__TOPIC_PREFIX'
   topic_prefix: null
+
+  ### Matrix Topic From Authentik Attribute - 'matrix_topic_from_authentik_attribute'###
+  # Type: string
+  # Required: False
+  # Defaults to attributes.chatroom_topic
+  # EnvVar name to override: 'MATRIX_ROOM_DEFAULT_SETTINGS__MATRIX_TOPIC_FROM_AUTHENTIK_ATTRIBUTE'
   matrix_topic_from_authentik_attribute: attributes.chatroom_topic
+
+  ### Matrix Room Create Params From Authentik Attribute - 'matrix_room_create_params_from_authentik_attribute'###
+  # Type: string
+  # Required: False
+  # Defaults to attribute.chatroom_params
+  # EnvVar name to override: 'MATRIX_ROOM_DEFAULT_SETTINGS__MATRIX_ROOM_CREATE_PARAMS_FROM_AUTHENTIK_ATTRIBUTE'
   matrix_room_create_params_from_authentik_attribute: attribute.chatroom_params
+
+  ### Default Room Create Params - 'default_room_create_params'###
+  # Type: object
+  # Required: False
+  # Defaults to {'preset': 'private_chat', 'visibility': 'private'}
+  # EnvVar name to override: 'MATRIX_ROOM_DEFAULT_SETTINGS__DEFAULT_ROOM_CREATE_PARAMS'
   default_room_create_params:
     preset: private_chat
     visibility: private
-per_authentik_group_pk_matrix_room_settings:
-  80439f0d-d936-4118-8017-52a95d6dd1bc:
-    alias_prefix: null
-    matrix_alias_from_authentik_attribute: attribute.custom._FUCK_YEA
-    name_prefix: null
-    matrix_name_from_authentik_attribute: name
-    topic_prefix: "TOPIC PREFIX FOR SPECIFIC ROOM:"
-    matrix_topic_from_authentik_attribute: attributes.chatroom_topic
-    matrix_room_create_params_from_authentik_attribute: attribute.chatroom_params
-    default_room_create_params:
-      preset: private_chat
-      visibility: private
-matrix_user_ignore_list:
-  - "@admin:matrix.company.org"
+
+### Per Authentik Group Pk Matrix Room Settings - 'per_authentik_group_pk_matrix_room_settings'###
+# Type: object
+# Required: False
+# EnvVar name to override: 'PER_AUTHENTIK_GROUP_PK_MATRIX_ROOM_SETTINGS'
+# Example:
+# >per_authentik_group_pk_matrix_room_settings:
+# >  80439f0d-d936-4118-8017-52a95d6dd1bc: '{"alias_prefix": null, "matrix_alias_from_authentik_attribute":
+# >    "attribute.custom", "name_prefix": null, "matrix_name_from_authentik_attribute":
+# >    "name", "topic_prefix": "TOPIC PREFIX FOR SPECIFIC ROOM:", "matrix_topic_from_authentik_attribute":
+# >    "attributes.chatroom_topic", "matrix_room_create_params_from_authentik_attribute":
+# >    "attribute.chatroom_params", "default_room_create_params": {"preset": "private_chat",
+# >    "visibility": "private"}}'
+per_authentik_group_pk_matrix_room_settings: {}
+
+### Matrix User Ignore List - 'matrix_user_ignore_list'###
+# Type: array
+# Required: False
+# EnvVar name to override: 'MATRIX_USER_IGNORE_LIST'
+# Example:
+# >matrix_user_ignore_list:
+# >- '@admin:company.org'
+# >- '@root:company.org'
+matrix_user_ignore_list: []
+
+### Authentik User Ignore List - 'authentik_user_ignore_list'###
+# Type: array
+# Required: False
+# Defaults to ['admin']
+# EnvVar name to override: 'AUTHENTIK_USER_IGNORE_LIST'
 authentik_user_ignore_list:
   - admin
+
+### Authentik Group Ignore List - 'authentik_group_ignore_list'###
+# Type: array
+# Required: False
+# Defaults to ['internal_company_group']
+# EnvVar name to override: 'AUTHENTIK_GROUP_IGNORE_LIST'
 authentik_group_ignore_list:
   - internal_company_group
+
+### Deactivate Disabled Authentik Users In Matrix - 'deactivate_disabled_authentik_users_in_matrix'###
+# Required: False
+# Defaults to enabled=True erase=False gdpr_erase=True
+# EnvVar name to override: 'DEACTIVATE_DISABLED_AUTHENTIK_USERS_IN_MATRIX'
 deactivate_disabled_authentik_users_in_matrix:
+  ### Enabled - 'enabled'###
+  # Type: boolean
+  # Required: False
+  # Defaults to True
+  # EnvVar name to override: 'DEACTIVATE_DISABLED_AUTHENTIK_USERS_IN_MATRIX__ENABLED'
   enabled: true
+
+  ### Erase - 'erase'###
+  # Type: boolean
+  # Required: False
+  # EnvVar name to override: 'DEACTIVATE_DISABLED_AUTHENTIK_USERS_IN_MATRIX__ERASE'
   erase: false
+
+  ### Gdpr Erase - 'gdpr_erase'###
+  # Type: boolean
+  # Required: False
+  # Defaults to True
+  # EnvVar name to override: 'DEACTIVATE_DISABLED_AUTHENTIK_USERS_IN_MATRIX__GDPR_ERASE'
   gdpr_erase: true
