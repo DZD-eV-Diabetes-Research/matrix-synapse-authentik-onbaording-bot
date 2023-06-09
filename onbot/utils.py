@@ -75,7 +75,6 @@ def create_nested_dict_by_path(
 
 
 # ToDo: Wrap that class up and migrate that into a proper selfcontained python module
-# * Add environment variables to doc headers https://docs.pydantic.dev/latest/usage/settings/#parsing-environment-variable-values
 # * Add generate markdown function
 # * complete _generate_file() with all parameters
 class YamlConfigFileHandler:
@@ -92,21 +91,25 @@ class YamlConfigFileHandler:
         self.model = model
 
     def get_config(self):
-        raw_yaml: str = None
         with open(self.config_file) as file:
             raw_yaml_object = file.read()
         obj: Dict = yaml.safe_load(raw_yaml_object)
         return self.model.parse_obj(obj)
 
-    def generate_config_file(self, overwrite_existing: bool = False):
+    def generate_config_file(self, overwrite_existing: bool = False, exists_ok=True):
+        null_placeholder = "NULL_PLACEHOLDER_328472384623746012386389621948"
         dummy_values = self._get_fields_filler(
-            required_only=False, use_example_values_if_exists=False
+            required_only=False,
+            use_example_values_if_exists=False,
+            fallback_fill_value=null_placeholder,
         )
         config = self.model.parse_obj(dummy_values)
         self._generate_file(
             config,
             overwrite_existing=overwrite_existing,
             generate_with_example_values=True,
+            exists_ok=exists_ok,
+            replace_pattern={null_placeholder: "null"},
         )
 
     def generate_example_config_file(self):
@@ -136,16 +139,23 @@ class YamlConfigFileHandler:
         self,
         config: BaseSettings,
         overwrite_existing: bool = False,
+        exists_ok: bool = False,
         generate_with_optional_fields: bool = True,
         comment_out_optional_fields: bool = True,
         generate_with_comment_desc_header: bool = True,
         generate_with_example_values: bool = False,
+        replace_pattern: Dict = None,
     ):
         self.config_file.parent.mkdir(exist_ok=True, parents=True)
         if self.config_file.is_file() and not overwrite_existing:
-            raise FileExistsError(
-                f"Can not generate config file at {self.config_file}. File allready exists."
-            )
+            if exists_ok:
+                return
+            else:
+                raise FileExistsError(
+                    f"Can not generate config file at {self.config_file}. File allready exists."
+                )
+        if replace_pattern is None:
+            replace_pattern = {}
         yaml_content: str = yaml.dump(config.dict(), sort_keys=False)
         yaml_content_with_comment: List[str] = []
         previous_depth = 0
@@ -192,17 +202,22 @@ class YamlConfigFileHandler:
             previous_depth = depth
             yaml_content_with_comment.append(line)
         with open(self.config_file, "w") as file:
-            file.writelines(f"{s}\n" for s in yaml_content_with_comment)
+            lines = []
+            for line in yaml_content_with_comment:
+                for key, val in replace_pattern.items():
+                    lines.append(f"{line.replace(key, val)}\n")
+            file.writelines(lines)
 
     def _get_field_info(self, key: str, path: List[str]) -> FieldInfoContainer | None:
         info = YamlConfigFileHandler.FieldInfoContainer()
         info.container_model = self.model
         info.field_schema = self.model
-        env_var_delimiter = (
+        env_var_delimiter: str = (
             self.model.Config.env_nested_delimiter
             if self.model.Config.env_nested_delimiter
             else "__"
         )
+        env_var_prefix: str = self.model.Config.env_prefix
         for parent_key in path + [key]:
             if isinstance(info.field_schema, fields.ModelField):
                 if (
@@ -217,7 +232,9 @@ class YamlConfigFileHandler:
             else:
                 info.container_model = info.field_schema
                 info.field_schema = info.field_schema.__fields__[parent_key]
-        info.env_var_name = env_var_delimiter.join([k.upper() for k in path + [key]])
+        info.env_var_name = env_var_delimiter.join(
+            [env_var_prefix + k.upper() for k in path + [key]]
+        )
         return info
 
     def generate_field_header(self, field: FieldInfoContainer, indent_size: int = 0):
@@ -246,7 +263,7 @@ class YamlConfigFileHandler:
         if "type" in field_schema:
             header_lines.append(f"# Type: {field_schema['type']}")
         if field_info.description:
-            desc = field_info.description.replace("\n", f"\n{indent}#")
+            desc = field_info.description.replace("\n", f"\n{indent}#   ")
             header_lines.append(f"# Description: {desc}")
 
         header_lines.append(f"# Required: {field.field_schema.required}")
@@ -330,31 +347,3 @@ class YamlConfigFileHandler:
             return val.json()
         else:
             return val
-
-
-import os, sys
-
-if __name__ == "__main__":
-    SCRIPT_DIR = os.path.dirname(
-        os.path.realpath(os.path.join(os.getcwd(), os.path.expanduser(__file__)))
-    )
-    MODULE_ROOT_DIR = os.path.join(SCRIPT_DIR, "..")
-    sys.path.insert(0, os.path.normpath(MODULE_ROOT_DIR))
-from onbot.config import ConfigDefaultModel
-
-y = YamlConfigFileHandler(ConfigDefaultModel, "config.yml")
-y.generate_config_file(overwrite_existing=True)
-print(y.get_config())
-"""
-c = ConfigHandler(
-    config_model_class=ConfigDefaultModelDEMO,
-    config_file="config.yml",
-    environment_var_prefix="TEST",
-)
-"""
-# c.get_fields_filler()
-# c.generate_config_file(target_path="exampl.yml")
-# c.load_config()
-# config = c.get_config()
-# print(type(config))
-# print(yaml.dump(config.dict(), sort_keys=False))
