@@ -2,15 +2,21 @@ from typing import List, Dict, Optional, Annotated, Literal, Set, Tuple
 import yaml
 import datetime
 from pydantic import BaseModel, Field, BaseSettings, fields
+import inspect
 
 
-class ConfigDefaultModel(BaseSettings):
+class OnbotConfig(BaseSettings):
+    log_level: Literal["INFO", "DEBUG"] = "INFO"
+
     class SynapseServer(BaseModel):
         server_name: Annotated[
             str,
             Field(
                 max_length=100,
-                description="Synapse's public facing domain https://matrix-org.github.io/synapse/latest/usage/configuration/config_documentation.html#server_name",
+                description=inspect.cleandoc(
+                    """Synapse's public facing domain https://matrix-org.github.io/synapse/latest/usage/configuration/config_documentation.html#server_name 
+                    This is not necessarily the domain under which the Synapse server is reachable. See the docs and your configuration."""
+                ),
                 example="company.org",
             ),
         ]
@@ -18,24 +24,13 @@ class ConfigDefaultModel(BaseSettings):
         server_url: Annotated[
             str,
             Field(
-                description="Url to reach the synapse server. This can (and should) be an internal url. This will prevent you from make your synapse admin api public. But the bot will work with the public URL as well.",
-                example="http://internal.matrix",
+                description=inspect.cleandoc(
+                    """Url to reach the synapse server. This can (and should) be an internal url. This will prevent you from make your synapse admin api public.
+                But the bot will work with the public URL as well fi you want to."""
+                ),
+                example="https://internal.matrix",
             ),
-        ] = None
-        api_path: Annotated[
-            Optional[str],
-            Field(
-                description="If your Synapse server API is reachable in a subpath you can adapt this here. If you dont know that this is for; keep the default value.",
-                example="_synapse/admin/",
-            ),
-        ] = "_matrix/"
-        admin_api_path: Annotated[
-            str,
-            Field(
-                description="If your Synapse server admin API is reachable in a subpath you can adapt this here. If you dont know that this is for; keep the default value.",
-                example="_synapse/admin/",
-            ),
-        ] = "_synapse/admin/"
+        ]
 
         bot_user_id: Annotated[
             str,
@@ -45,37 +40,90 @@ class ConfigDefaultModel(BaseSettings):
             ),
         ]
 
-        # TODO: provide an curl example to get a devide id and access token
         bot_device_id: Annotated[
             str,
             Field(
-                description="A device ID the Bot account can provide, to access the API. You will get an device_id via https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3login",
+                description=inspect.cleandoc(
+                    """A device ID the Bot account can provide, to access the API. You will get an device_id via https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3login
+                Here is an curl example to get data.
+                ```bash
+                curl -XPOST -d '{"type":"m.login.password", "user":"my-bot-user", "password":"superSecrectPW"}' "https://matrix.company.org/_matrix/client/v3/login"
+                ```
+                """
+                ),
                 example="ZSIBBRS",
             ),
-        ] = None
+        ]
+
         bot_access_token: Annotated[
             str,
             Field(
-                description="A Bearer token to authorize the Bot access to the Synapse APIs. You will get an Bearer token via https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3login",
+                description=inspect.cleandoc(
+                    """A Bearer token to authorize the Bot access to the Synapse APIs. You will get an Bearer token via https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3login 
+                Here is an curl example to get data.
+                ```bash
+                curl -XPOST -d '{"type":"m.login.password", "user":"my-bot-user", "password":"superSecrectPW"}' "https://matrix.company.org/_matrix/client/v3/login"
+                ```
+                """
+                ),
                 example="Bearer q7289zhwoieuhrfq279ugdfq3_ONLY_A_EXMAPLE_TOKEN_sadaw4",
             ),
-        ] = None
+        ]
+
+        api_path: Annotated[
+            Optional[str],
+            Field(
+                description="If your Synapse server API is reachable in a subpath you can adapt this here. If you dont know that this is for; keep the default value.",
+                example="_synapse/admin/",
+            ),
+        ] = "_matrix/client/"
+        admin_api_path: Annotated[
+            str,
+            Field(
+                description="If your Synapse server admin API is reachable in a subpath you can adapt this here. If you dont know that this is for; keep the default value.",
+                example="_synapse/admin/",
+            ),
+        ] = "_synapse/admin/"
 
     synapse_server: Annotated[
         SynapseServer,
         Field(
-            title="### Synapse Server Configuration ###",
-            description="DESC FOR SYNAPSE SERVER",
+            title="Synapse Server Configuration",
+            description="To manage users on the Synapse server, the bot need access to the Matrix and Admin Api. The authorization data will be configured in this chapter.",
         ),
     ]
 
     class AuthentikServer(BaseModel):
-        public_api_url: str = "https://authentik.company.org/api/v3"
-        api_key: str = "xxx"
-        sync_interval_seconds: int = 120
-        account_pathes: List[str] = ["users"]
+        public_api_url: Annotated[
+            str,
+            Field(
+                description="The URL to reach your Authentik server.",
+                example="https://authentik.company.org/api/v3",
+            ),
+        ]
+        api_key: Annotated[
+            str,
+            Field(
+                description=inspect.cleandoc(
+                    """The Bearer token access your Authentik server.
+                You can generate a new token for your existing Authentik user at https://authentik.company.org/if/admin/#/core/tokens"""
+                ),
+                example="Bearer yEl4tFqeIBQwoHAd9hajmkm2PBjSAirY_THIS_IS_JUST_AN_EXAMPLE_i57e",
+            ),
+        ]
+        sync_interval_seconds: Annotated[
+            int,
+            Field(
+                description=inspect.cleandoc(
+                    """The bot will do polling to sync the Authentik server with your Synapse server (In a future version there maybe a event listing based system.).
+                The intervall will determine how often the bot will look up, if data is in sync.
+                That can mean when a new user enters your Synapse server, the user may need to wait `sync_interval_seconds` seconds until the bot will greet and allocates user groups."""
+                ),
+                example=120,
+            ),
+        ] = 60
 
-    authentik_server: AuthentikServer = AuthentikServer()
+    authentik_server: AuthentikServer
 
     # The bot will invite the new user to a direct chat and send following message
     welcome_new_users_messages: List[str] = [
@@ -144,9 +192,11 @@ class ConfigDefaultModel(BaseSettings):
 
     class CreateMatrixRoomsBasedOnAuthentikGroups(BaseModel):
         enabled: bool = True
-        only_for_children_of_groups_with_uid: List[str] = None
-        only_groups_with_attributes: Dict = {"attribute.chatroom": True}
-        only_for_groupnames_starting_with: str = None
+        only_for_children_of_groups_with_uid: Optional[List[str]]
+        only_groups_with_attributes: Annotated[
+            Optional[Dict], Field(example={"attribute.chatroom": True})
+        ]
+        only_for_groupnames_starting_with: Optional[str]
 
     create_matrix_rooms_based_on_authentik_groups: CreateMatrixRoomsBasedOnAuthentikGroups = (
         CreateMatrixRoomsBasedOnAuthentikGroups()
@@ -201,8 +251,12 @@ class ConfigDefaultModel(BaseSettings):
         Optional[List[str]], Field(example={"@admin:company.org", "@root:company.org"})
     ] = []
 
-    authentik_user_ignore_list: List[str] = ["admin"]
-    authentik_group_ignore_list: List[str] = ["internal_company_group"]
+    authentik_user_ignore_list: Annotated[
+        Optional[List[str]], Field(example=["admin", "internal_account_alex"])
+    ]
+    authentik_group_ignore_list: Annotated[
+        Optional[List[str]], Field(example=["internal_company_group"])
+    ]
 
     class DeactivateDisabledAuthentikUsersInMatrix(BaseModel):
         # https://matrix-org.github.io/synapse/develop/admin_api/user_admin_api.html#deactivate-account
@@ -215,3 +269,8 @@ class ConfigDefaultModel(BaseSettings):
     deactivate_disabled_authentik_users_in_matrix: DeactivateDisabledAuthentikUsersInMatrix = (
         DeactivateDisabledAuthentikUsersInMatrix()
     )
+
+    class Config:
+        # (meta)config class for pydantic-settings https://docs.pydantic.dev/latest/usage/settings/
+        env_prefix: str = "ONBOT_"
+        env_nested_delimiter: str = "__"

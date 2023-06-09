@@ -13,34 +13,32 @@ class SynapseAdminApiClient:
     def __init__(
         self,
         access_token: str,
-        server_domain: str,
+        server_url: str,
         api_base_path: str = "/_synapse/admin",
-        protocol: str = "http",
     ):
         self.access_token = access_token
-        self.api_base_url = f"{protocol}://{server_domain}{api_base_path}/"
+        self.api_base_url = f"{server_url}{api_base_path}/"
 
     def list_users(self) -> Dict:
         # https://matrix-org.github.io/synapse/latest/admin_api/user_admin_api.html#list-accounts
         return self._get("v2/users")["users"]
 
-    def list_room(self, in_space_with_canonical_alias: str = None) -> List[Dict]:
+    def list_room_and_space(self) -> List[Dict]:
+        # https://matrix-org.github.io/synapse/latest/admin_api/rooms.html#list-room-api
+        return self._get("v1/rooms")["rooms"]
+
+    def list_room(self, search_term: str = None) -> List[Dict]:
         """https://matrix-org.github.io/synapse/latest/admin_api/rooms.html#list-room-api
 
         Args:
             in_space (_type_): _description_
         """
-        if (
-            in_space_with_canonical_alias
-            and not in_space_with_canonical_alias.startswith("#")
-        ):
-            raise ValueError(
-                f"Expected canonical space name like '#<your-alias>:<your-synapse-server-name>' got '{in_space_with_canonical_alias}'"
-            )
+
+        query = {"search_term": search_term} if search_term else None
         rooms = []
+
         # https://matrix-org.github.io/synapse/latest/admin_api/rooms.html#list-room-api
-        for room in self._get("v1/rooms")["rooms"]:
-            # if in_space_with_canonical_alias and
+        for room in self._get("v1/rooms", query=query)["rooms"]:
             if room["room_type"] != "m.space":
                 rooms.append(room)
         return rooms
@@ -62,7 +60,7 @@ class SynapseAdminApiClient:
         """
         spaces = []
         # https://matrix-org.github.io/synapse/latest/admin_api/rooms.html#list-room-api
-        for room in self._get("v1/rooms2")["rooms"]:
+        for room in self._get("v1/rooms")["rooms"]:
             if room["room_type"] == "m.space":
                 spaces.append(room)
         return spaces
@@ -84,17 +82,32 @@ class SynapseAdminApiClient:
         # https://matrix-org.github.io/synapse/develop/admin_api/user_admin_api.html#deactivate-account
         self._post(f"deactivate/{user_id}", json_body={"erase": gdpr_erease})
 
-    def logout_account(self, user_id):
+    def logout_account(self, user_id) -> List[Dict]:
         # https://matrix-org.github.io/synapse/latest/admin_api/user_admin_api.html#list-all-devices
         # https://matrix-org.github.io/synapse/latest/admin_api/user_admin_api.html#delete-a-device
         devices = self._get(f"v2/users/{user_id}/devices")
         for device in devices:
             self._delete(f"v2/users/{user_id}/devices/{device['device_id']}")
 
+    def delete_room(
+        self,
+        room_id: str,
+        purge: bool = False,
+        force_purge: bool = False,
+        message: str = None,
+    ):
+        # https://matrix-org.github.io/synapse/latest/admin_api/rooms.html#delete-room-api
+        body = {"purge": purge, "force_purge": force_purge}
+        if message:
+            body["message"] = message
+        return self._delete(f"v1/rooms/{room_id}")
+
+    def room_details(self, room_id: str):
+        # https://matrix-org.github.io/synapse/latest/admin_api/rooms.html#room-details-api
+        return self._get(f"v1/rooms/{room_id}")
+
     def _build_api_call_url(self, path: str):
-        if path.startswith("/"):
-            path = path.lstrip("/")
-        return f"{self.api_base_url}{path}"
+        return f"{self.api_base_url.rstrip('/')}/{path.lstrip('/')}"
 
     def _get(self, path: str, query: Dict = None) -> Dict:
         if query is None:
@@ -124,7 +137,7 @@ class SynapseAdminApiClient:
         )
         return self._http_call_response_handler(r)
 
-    def _delete(self, path: str) -> Dict:
+    def _delete(self, path: str, json_body: Dict = None) -> Dict:
         if json_body is None:
             json_body = {}
         r = requests.delete(

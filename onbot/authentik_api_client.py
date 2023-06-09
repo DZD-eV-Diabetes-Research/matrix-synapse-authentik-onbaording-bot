@@ -84,10 +84,3 @@ class AuthentikApiClient:
                 pass
             raise
         return r.json()
-
-
-ac = AuthentikApiClient(
-    access_token="Bearer xxx",
-    server_api_base_url="https://auth.dzd-ev.org/api/v3",
-)
-print(ac.list_users(filter_by_attribute={"first-name": "Tim"}))

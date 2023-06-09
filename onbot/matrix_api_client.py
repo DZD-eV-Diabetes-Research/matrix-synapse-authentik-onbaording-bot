@@ -31,14 +31,13 @@ class MatrixApiClient:
         self,
         access_token: str,
         device_id: str,
-        server_domain: str,
+        server_url: str,
         server_name: str,
-        api_base_path: str = "/_matrix/client/v1",
-        protocol: str = "http",
+        api_base_path: str = "/_matrix/client",
     ):
         self.access_token = access_token
         self.device_id = device_id
-        self.api_base_url = f"{protocol}://{server_domain}{api_base_path}/"
+        self.api_base_url = f"{server_url}{api_base_path}/"
         self.server_name = server_name
         self.nio_client = AsyncClient(
             user="@dzd-bot:dzd-ev.org", homeserver="https://matrix.dzd-ev.org"
@@ -48,7 +47,7 @@ class MatrixApiClient:
 
     def space_list_rooms(self, space_id) -> List[Dict]:
         # https://matrix.org/docs/api/#get-/_matrix/client/v1/rooms/-roomId-/hierarchy
-        rooms: List[Dict] = self._get(f"rooms/{space_id}/hierarchy")["rooms"]
+        rooms: List[Dict] = self._get(f"v1/rooms/{space_id}/hierarchy")["rooms"]
         return [room for room in rooms if room["room_id"] != space_id]
 
     def room_kick_user(self, user_id: str, room_id: str, reason: str = None):
@@ -71,10 +70,14 @@ class MatrixApiClient:
         parent_space_id: str = None,
     ) -> RoomCreateResponse:
         async def create_room():
-            inital_state = None
+            if "visibility" in room_params:
+                room_params["visibility"] = RoomVisibility(room_params["visibility"])
+            if "preset" in room_params:
+                room_params["preset"] = RoomPreset(room_params["preset"])
+            initial_state = None
             if parent_space_id:
                 # https://spec.matrix.org/v1.2/client-server-api/#mspaceparent
-                inital_state = [
+                initial_state = [
                     {
                         "type": "m.space.parent",
                         "state_key": parent_space_id,
@@ -84,12 +87,18 @@ class MatrixApiClient:
                         },
                     }
                 ]
+            params = {
+                key: val
+                for key, val in locals().items()
+                if key in ["alias", "name", "topic", "initial_state", "room_params"]
+            }
+            log.error(f"Create room with params: {params}")
             room_response = await self.nio_client.room_create(
                 space=False,
                 alias=alias,
                 name=name,
                 topic=topic,
-                inital_state=inital_state,
+                initial_state=initial_state,
                 **room_params,
             )
             if parent_space_id and not type(room_response) == RoomCreateError:
@@ -109,6 +118,14 @@ class MatrixApiClient:
                     raise SynapseApiError.from_nio_response_error(room)
             return room_response
 
+        if parent_space_id is not None and (
+            not isinstance(parent_space_id, str)
+            or parent_space_id
+            and not parent_space_id.startswith("!")
+        ):
+            raise ValueError(
+                f"Expected room_id of parent space as string (`str`) in Matrix ID format e.g. '!<room_id>:<your-synapse-server-name>' got type {type(parent_space_id)} with content '{parent_space_id}'"
+            )
         room: Union[RoomCreateResponse, RoomCreateError] = asyncio.run(create_room())
         if type(room) == RoomCreateError:
             log.error(
@@ -119,7 +136,12 @@ class MatrixApiClient:
 
     def create_space(self, alias: str, name: str, topic: str, space_params: Dict):
         # we need to create the space
+
         async def create_space():
+            if "visibility" in space_params:
+                space_params["visibility"] = RoomVisibility(space_params["visibility"])
+            if "preset" in space_params:
+                space_params["preset"] = RoomPreset(space_params["preset"])
             return await self.nio_client.room_create(
                 space=True,
                 alias=alias,
@@ -136,6 +158,71 @@ class MatrixApiClient:
             raise SynapseApiError.from_nio_response_error(space.message)
         return space
 
+    def resolve_alias(self, alias: str) -> str:
+        # https://spec.matrix.org/v1.2/client-server-api/#room-aliases
+        # /_matrix/client/v3/directory/room/{roomAlias}
+        return self._get(f"v3/directory/room/{alias}")["room_id"]
+
+    def _build_api_call_url(self, path: str):
+        print("BUILD", self.api_base_url, "+", path)
+        return f"{self.api_base_url.rstrip('/')}/{path.lstrip('/')}"
+
+    def _get(self, path: str, query: Dict = None) -> Dict:
+        if query is None:
+            query = {}
+        r = requests.get(
+            self._build_api_call_url(path),
+            params=query,
+            headers={
+                "Authorization": self.access_token,
+                "Accept": "application/json",
+                "Content-Type": "application/json; charset=utf-8",
+            },
+        )
+        return self._http_call_response_handler(r)
+
+    def _post(self, path: str, json_body: Dict = None) -> Dict:
+        if json_body is None:
+            json_body = {}
+        r = requests.post(
+            self._build_api_call_url(path),
+            json=json_body,
+            headers={
+                "Authorization": self.access_token,
+                "Accept": "application/json",
+                "Content-Type": "application/json; charset=utf-8",
+            },
+        )
+        return self._http_call_response_handler(r)
+
+    def _delete(self, path: str, json_body: Dict = None) -> Dict:
+        if json_body is None:
+            json_body = {}
+        r = requests.delete(
+            self._build_api_call_url(path),
+            json=json_body,
+            headers={
+                "Authorization": self.access_token,
+                "Accept": "application/json",
+                "Content-Type": "application/json; charset=utf-8",
+            },
+        )
+        return self._http_call_response_handler(r)
+
+    def _http_call_response_handler(self, r: requests.Response):
+        try:
+            r.raise_for_status()
+        except:
+            log.error(f"Error for {r.request.method}-request at '{r.url}'")
+            try:
+                #  if possible log the payload, there may be some helpfull informations for debuging. lets output it before raising the error
+                log.error(r.json())
+            except:
+                pass
+            raise
+        return r.json()
+
+    """
     def _build_api_call_url(self, path: str):
         if path.startswith("/"):
             path = path.lstrip("/")
@@ -163,3 +250,4 @@ class MatrixApiClient:
                 pass
             raise
         return r.json()
+    """
