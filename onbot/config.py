@@ -61,8 +61,6 @@ class ConfigDefaultModel(BaseSettings):
             ),
         ] = None
 
-        test_enum: Annotated[Literal["A", "b"], Field(description="THIS IS TEST")] = "A"
-
     synapse_server: Annotated[
         SynapseServer,
         Field(

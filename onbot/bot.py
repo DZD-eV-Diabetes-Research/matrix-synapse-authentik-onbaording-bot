@@ -19,7 +19,7 @@ from onbot.authentik_api_client import AuthentikApiClient
 from onbot.synapse_admin_api_client import SynapseAdminApiClient
 from onbot.matrix_api_client import MatrixApiClient
 from onbot.config import ConfigDefaultModel
-from onbot.utils import get_nested_dict_attr_by_path
+from onbot.utils import get_nested_dict_val_by_path
 
 log = logging.getLogger(__name__)
 
@@ -265,7 +265,7 @@ class Bot:
 
         room_create_params: Dict = room_settings.default_room_create_params
         if room_settings.matrix_room_create_params_from_authentik_attribute:
-            custom_room_attr_raw_json: str = get_nested_dict_attr_by_path(
+            custom_room_attr_raw_json: str = get_nested_dict_val_by_path(
                 group,
                 room_settings.matrix_room_create_params_from_authentik_attribute,
                 fallback_val=None,
@@ -345,7 +345,7 @@ class Bot:
         )
 
         try:
-            authentik_attr_val = get_nested_dict_attr_by_path(
+            authentik_attr_val = get_nested_dict_val_by_path(
                 authentik_user_api_object, attr_path_keys
             )
         except KeyError:
