@@ -1,4 +1,5 @@
 import typing
+import asyncio
 from typing import (
     List,
     Any,
@@ -11,6 +12,7 @@ from typing import (
     get_type_hints,
     Optional,
     Mapping,
+    Awaitable,
 )
 import inspect
 from functools import singledispatch
@@ -72,6 +74,25 @@ def create_nested_dict_by_path(
     current_dict[keys[-1]] = value
 
     return nested_dict
+
+
+def synchronize_async_helper(to_await_func: Awaitable):
+    # https://stackoverflow.com/a/71489745/12438690
+    async_response = []
+
+    async def run_and_capture_result():
+        r = await to_await_func
+        async_response.append(r)
+
+    loop: asyncio.BaseEventLoop = None
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = asyncio.get_event_loop()
+    coroutine = run_and_capture_result()
+    loop.run_until_complete(coroutine)
+    print("async_response", async_response)
+    return async_response[0]
 
 
 # ToDo: Wrap that class up and migrate that into a proper selfcontained python module

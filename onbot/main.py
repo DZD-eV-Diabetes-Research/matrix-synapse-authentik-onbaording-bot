@@ -27,11 +27,11 @@ def run_bot():
         api_base_path=config.synapse_server.admin_api_path,
     )
     matrix_api_client = MatrixApiClient(
+        user=config.synapse_server.bot_user_id,
         access_token=config.synapse_server.bot_access_token,
         device_id=config.synapse_server.bot_device_id,
         server_url=config.synapse_server.server_url,
         server_name=config.synapse_server.server_name,
-        api_base_path=config.synapse_server.api_path,
     )
     bot = Bot(
         config_handler.get_config(),

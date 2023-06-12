@@ -12,7 +12,6 @@ class OnbotConfig(BaseSettings):
         server_name: Annotated[
             str,
             Field(
-                max_length=100,
                 description=inspect.cleandoc(
                     """Synapse's public facing domain https://matrix-org.github.io/synapse/latest/usage/configuration/config_documentation.html#server_name 
                     This is not necessarily the domain under which the Synapse server is reachable. See the docs and your configuration."""
@@ -69,14 +68,6 @@ class OnbotConfig(BaseSettings):
                 example="Bearer q7289zhwoieuhrfq279ugdfq3_ONLY_A_EXMAPLE_TOKEN_sadaw4",
             ),
         ]
-
-        api_path: Annotated[
-            Optional[str],
-            Field(
-                description="If your Synapse server API is reachable in a subpath you can adapt this here. If you dont know that this is for; keep the default value.",
-                example="_synapse/admin/",
-            ),
-        ] = "_matrix/client/"
         admin_api_path: Annotated[
             str,
             Field(
@@ -204,21 +195,13 @@ class OnbotConfig(BaseSettings):
 
     class MatrixDynamicRoomSettings(BaseModel):
         alias_prefix: Optional[str] = None
-        matrix_alias_from_authentik_attribute: Optional[str] = "pk"
+        matrix_alias_from_authentik_attribute: str = "pk"
         name_prefix: Optional[str] = None
-        matrix_name_from_authentik_attribute: Optional[str] = "name"
+        matrix_name_from_authentik_attribute: str = "name"
         topic_prefix: Optional[str] = None
         matrix_topic_from_authentik_attribute: Optional[
             str
         ] = "attributes.chatroom_topic"
-
-        # An authentik attribute that can contains parameters for the "room_create" event.
-        # see https://matrix-nio.readthedocs.io/en/latest/nio.html#nio.AsyncClient.room_create for possible params
-        # params need to be provided as json
-        # e.g. '{"preset": "private_chat", "visibility": "private", "federate": false}'
-        matrix_room_create_params_from_authentik_attribute: Optional[
-            str
-        ] = "attribute.chatroom_params"
 
         # https://spec.matrix.org/v1.6/client-server-api/#post_matrixclientv3createroom
         # enum. one of [public_chat,private_chat,trusted_private_chat]
@@ -230,6 +213,21 @@ class OnbotConfig(BaseSettings):
             "preset": "private_chat",
             "visibility": "private",
         }
+
+        # An authentik attribute that can contains parameters for the "room_create" event.
+        # see https://matrix-nio.readthedocs.io/en/latest/nio.html#nio.AsyncClient.room_create for possible params
+        # params need to be provided as json
+        # e.g. '{"preset": "private_chat", "visibility": "private", "federate": false}'
+        matrix_room_create_params_from_authentik_attribute: Optional[
+            str
+        ] = "attribute.chatroom_params"
+
+        keep_updating_matrix_attributes_from_authentik: Annotated[
+            Optional[bool],
+            Field(
+                description="Should the bot update the Matrix room name/topic if they changed in authentik? If set to true the bot will overwrite any room topic/name that differs from the Authentik source group"
+            ),
+        ] = True
 
     matrix_room_default_settings: MatrixDynamicRoomSettings = (
         MatrixDynamicRoomSettings()
