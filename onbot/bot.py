@@ -32,9 +32,6 @@ class MatrixRoomAttributes(BaseModel):
     topic: str = None
     room_params: dict = None
 
-    def get_canonical_alias(self, server_name: str):
-        return f"#{self.alias}:{server_name}"
-
 
 class UserMap(BaseModel):
     # https://your-authentik.company/api/v3/#get-/core/users/ object
@@ -80,6 +77,7 @@ class Bot:
         self.synapse_admin_client = synapse_admin_api_client
         self.matrix_api_client = matrix_api_client
         self.server_tick_wait_time_sec_int = server_tick_wait_time_sec_int
+        self._space_cache: Dict = None
 
     def start(self):
         """
@@ -97,8 +95,30 @@ class Bot:
                 force_purge=True,
             )
         )
-        exit()
         """
+        # todo you are here
+        # DZDChatUsers
+        result = self.matrix_api_client._call_nio_client(
+            nio_func=MatrixNioClient.room_put_state,
+            params={
+                "room_id": "!MNOXBIICSTScjIlkFE:dzd-ev.org",
+                "event_type": "m.onbot.created",
+                "content": {"m.onbot": "based onm group authentik bla"},
+                "state_key": "iuewaf32iod327iub",
+            },
+        )
+        print(type(result), result)
+        result = self.matrix_api_client._call_nio_client(
+            nio_func=MatrixNioClient.room_get_state_event,
+            params={
+                "room_id": "!MNOXBIICSTScjIlkFE:dzd-ev.org",
+                "event_type": "m.onbot.created",
+                "state_key": "iuewaf32iod327iub",
+            },
+        )
+        print(type(result), result)
+        exit()
+
         log.debug("DEEEBUG")
         while True:
             self.server_tik()
@@ -106,20 +126,17 @@ class Bot:
     def server_tik(self):
         self.create_matrix_rooms_based_on_authentik_groups()
         self.sync_users_and_rooms()
+        log.debug(f"Wait {self.server_tick_wait_time_sec_int} for next servertick")
         time.sleep(self.server_tick_wait_time_sec_int)
 
     def create_matrix_rooms_based_on_authentik_groups(self):
         parent_room_space = self.get_parent_space_if_needed()
 
         for group_room_map in self.get_authentik_groups_that_need_synapse_room():
-            print(group_room_map)
             if group_room_map.matrix_api_obj is None:
                 self.create_room(group_room_map, parent_room_space)
 
     def create_room(self, room_info: Group2RoomMap, space: Dict = None) -> Dict:
-        print("######")
-        print(self.synapse_admin_client.list_room_and_space())
-        print("######")
         room_create_response: RoomCreateResponse = self.matrix_api_client.create_room(
             alias=room_info.generated_matrix_room_attr.alias,
             canonical_alias=room_info.generated_matrix_room_attr.canonical_alias,
@@ -132,7 +149,7 @@ class Bot:
             f"Created room with id '{room_create_response.room_id}'. Response (type:{type(room_create_response)}): {room_create_response}"
         )
         room_info.matrix_api_obj = self.list_rooms(
-            search_term=room_create_response.room_id, in_space=space["room_id"]
+            search_term=room_create_response.room_id, in_space_with_id=space["room_id"]
         )[0]
         return room_info.matrix_api_obj
 
@@ -143,7 +160,8 @@ class Bot:
         mapped_rooms: List[
             Group2RoomMap
         ] = self.get_authentik_groups_that_need_synapse_room()
-
+        print("len:mapped_users", len(mapped_users))
+        print("mapped_users", mapped_users)
         for room in mapped_rooms:
             print("room.matrix_api_obj", room.matrix_api_obj)
             room_members = self.synapse_admin_client.list_room_members(
@@ -160,29 +178,49 @@ class Bot:
                         False,
                     )
                 )
-                user_is_member: bool = next(
-                    (
-                        member
-                        for member in room_members
-                        if member == user.matrix_api_obj["name"]
+                user_is_member: bool = bool(
+                    next(
+                        (
+                            member
+                            for member in room_members
+                            if member == user.matrix_api_obj["name"]
+                        ),
+                        False,
                     )
                 )
-            if user_should_be_member and not user_is_member:
-                self.synapse_admin_client.add_user_to_room(
-                    room.matrix_api_obj["room_id"], user.matrix_api_obj["name"]
+                log.debug(
+                    " ".join(
+                        [
+                            "SYNC USER",
+                            user.matrix_api_obj["name"],
+                            "GROUP",
+                            room.matrix_api_obj["room_id"],
+                            "user_is_member:",
+                            str(user_is_member),
+                            "user_should_be_member:",
+                            str(user_should_be_member),
+                        ]
+                    )
                 )
-            elif (
-                not user_should_be_member
-                and user_is_member
-                and self.config.sync_authentik_users_with_matrix_rooms.kick_matrix_room_members_not_in_mapped_authentik_group_anymore
-            ):
-                self.matrix_api_client.room_kick_user(
-                    room.matrix_api_obj["room_id"],
-                    user.matrix_api_obj["name"],
-                    "Automatically removed because of lacking group membership in central user directory.",
-                )
+                print()
+                if user_should_be_member and not user_is_member:
+                    self.synapse_admin_client.add_user_to_room(
+                        room.matrix_api_obj["room_id"], user.matrix_api_obj["name"]
+                    )
+                elif (
+                    not user_should_be_member
+                    and user_is_member
+                    and self.config.sync_authentik_users_with_matrix_rooms.kick_matrix_room_members_not_in_mapped_authentik_group_anymore
+                ):
+                    self.matrix_api_client.room_kick_user(
+                        user.matrix_api_obj["name"],
+                        room.matrix_api_obj["room_id"],
+                        "Automatically removed because of missing group membership in central user directory.",
+                    )
 
     def get_parent_space_if_needed(self) -> Dict | None:
+        if self._space_cache is not None:
+            return self._space_cache
         if not self.config.create_matrix_rooms_in_a_matrix_space.enabled:
             return None
         existing_spaces: List[Dict] = self.synapse_admin_client.list_space()
@@ -197,6 +235,7 @@ class Bot:
             None,
         )
         if space is not None:
+            self._space_cache = space
             return space
         if (
             not self.config.create_matrix_rooms_in_a_matrix_space.create_matrix_space_if_not_exists.enabled
@@ -250,10 +289,10 @@ class Bot:
                 if g["parent"]
                 in self.config.create_matrix_rooms_based_on_authentik_groups.only_for_children_of_groups_with_uid
             ]
+        space = self.get_parent_space_if_needed()
         matrix_rooms: List[Dict] = self.list_rooms(
-            in_space=self.get_parent_space_if_needed()["room_id"]
+            in_space_with_id=space["room_id"] if space else None
         )
-        print("# matrix_rooms", matrix_rooms)
 
         group_maps: List[Group2RoomMap] = [
             Group2RoomMap(
@@ -268,22 +307,13 @@ class Bot:
         for group_map in group_maps:
             matched_room_index: int = None
             for index, matrix_room_api_obj in enumerate(matrix_rooms):
-                print("##")
-                print(
-                    "group_map.generated_matrix_room_attr.canonical_alias",
-                    group_map.generated_matrix_room_attr.canonical_alias,
-                )
-                print(
-                    'matrix_room_api_obj["canonical_alias"]',
-                    matrix_room_api_obj["canonical_alias"],
-                )
                 if (
                     group_map.generated_matrix_room_attr.canonical_alias
                     == matrix_room_api_obj["canonical_alias"]
                 ):
                     matched_room_index = index
                     break
-            if matched_room_index:
+            if matched_room_index is not None:
                 group_map.matrix_api_obj = matrix_rooms.pop(matched_room_index)
 
         return group_maps
@@ -292,27 +322,32 @@ class Bot:
         self, group: Dict
     ) -> MatrixRoomAttributes:
         room_settings: OnbotConfig.MatrixDynamicRoomSettings = None
-
+        room_default_settings = self.config.matrix_room_default_settings
         if group["pk"] in self.config.per_authentik_group_pk_matrix_room_settings:
-            room_settings = self.config.per_authentik_group_pk_matrix_room_settings[
-                group["pk"]
-            ]
+            room_settings = OnbotConfig.MatrixDynamicRoomSettings.parse_obj(
+                room_default_settings.dict()
+                | self.config.per_authentik_group_pk_matrix_room_settings[
+                    group["pk"]
+                ].dict()
+            )
         else:
-            room_settings = self.config.matrix_room_default_settings
+            room_settings = room_default_settings
         group_name = group[room_settings.matrix_alias_from_authentik_attribute]
         alias = f"{room_settings.alias_prefix if room_settings.alias_prefix is not None else ''}{group_name if group_name is not None else ''}"
 
-        name = None
-        if (
-            room_settings.matrix_name_from_authentik_attribute is not None
-            and room_settings.matrix_name_from_authentik_attribute in group
-        ):
-            name = f"{group[room_settings.matrix_name_from_authentik_attribute]}"
+        name = get_nested_dict_val_by_path(
+            data=group,
+            path=room_settings.matrix_name_from_authentik_attribute.split("."),
+            fallback_val=None,
+        )
         name = f"{room_settings.name_prefix if not None else ''}{name if name is not None else ''}"
 
-        topic = None
-        if room_settings.matrix_topic_from_authentik_attribute in group:
-            topic = group[room_settings.matrix_topic_from_authentik_attribute]
+        topic = get_nested_dict_val_by_path(
+            data=group,
+            path=room_settings.matrix_topic_from_authentik_attribute.split("."),
+            fallback_val=None,
+        )
+
         topic = f"{room_settings.topic_prefix if room_settings.topic_prefix is not None else ''}{topic if topic is not None else ''}"
 
         room_create_params: Dict = room_settings.default_room_create_params
@@ -325,6 +360,7 @@ class Bot:
             if custom_room_attr_raw_json:
                 custom_room_attr = json.loads(custom_room_attr_raw_json)
                 room_create_params = room_create_params | custom_room_attr
+
         alias = alias.replace("-", "")
         return MatrixRoomAttributes(
             alias=alias,
@@ -352,37 +388,32 @@ class Bot:
 
         authentik_users: List[UserMap] = []
         for path in allowed_authentik_user_pathes:
-            authentik_users.extend(
-                [
+            for user in self.authentik_client.list_users(
+                filter_by_path=path,
+                filter_by_attribute=required_user_authentik_attributes,
+                filter_groups_by_pk=allowed_authentik_user_group_pks,
+            ):
+                if user["username"] in self.config.authentik_user_ignore_list:
+                    continue
+                authentik_users.append(
                     UserMap(
                         authentik_api_obj=user,
                         generated_matrix_id=self.get_matrix_user_id(user, None),
                     )
-                    for user in self.authentik_client.list_users(
-                        filter_by_path=path,
-                        filter_by_attribute=required_user_authentik_attributes,
-                        filter_groups_by_pk=allowed_authentik_user_group_pks,
-                    )
-                    if user["username"] not in self.config.authentik_user_ignore_list
-                ]
-            )
+                )
+            print("authentik_users", authentik_users)
 
         matched_users: List[UserMap] = []
         for matrix_user in self.synapse_admin_client.list_users():
             if matrix_user["name"] in self.config.matrix_user_ignore_list:
                 continue
             # matrix_user is object from https://matrix-org.github.io/synapse/latest/admin_api/user_admin_api.html#list-accounts
-            user: UserMap | None = next(
-                (
-                    a_user
-                    for a_user in authentik_users
-                    if a_user.generated_matrix_id == matrix_user["name"]
-                ),
-                None,
-            )
-            if user:
-                user.matrix_api_obj = user
-                matched_users.append(user)
+            for authentik_user in authentik_users:
+                print("authentik_user", type(authentik_user), authentik_user)
+                if authentik_user.generated_matrix_id == matrix_user["name"]:
+                    authentik_user.matrix_api_obj = matrix_user
+                    matched_users.append(authentik_user)
+        print("matched_users", matched_users)
         return matched_users
 
     def get_matrix_user_id(
@@ -402,6 +433,9 @@ class Bot:
                 authentik_user_api_object, attr_path_keys
             )
         except KeyError:
+            log.debug(
+                f"Can not determine matrix name for authentik user {authentik_user_api_object}. Missing attributes."
+            )
             if fallback_value:
                 return fallback_value
             else:
@@ -412,22 +446,29 @@ class Bot:
             else authentik_attr_val
         )
 
-    def list_rooms(self, in_space: str = None, search_term: str = None) -> List[Dict]:
-        print("INSPSACE", in_space)
+    def list_rooms(
+        self, in_space_with_id: str = None, search_term: str = None
+    ) -> List[Dict]:
         all_rooms = self.synapse_admin_client.list_room(search_term=search_term)
-        if in_space is None:
+        if in_space_with_id is None:
             return all_rooms
-        elif not isinstance(in_space, str) or in_space and not in_space.startswith("!"):
+        elif (
+            not isinstance(in_space_with_id, str)
+            or in_space_with_id
+            and not in_space_with_id.startswith("!")
+        ):
             raise ValueError(
-                f"Expected room_id of space like '!<room_id>:<your-synapse-server-name>' got '{in_space}'"
+                f"Expected room_id of space like '!<room_id>:<your-synapse-server-name>' got '{in_space_with_id}'"
             )
         else:
             result: List[Dict] = []
-            space_rooms = self.matrix_api_client.space_list_rooms(in_space)
+            space_rooms = self.matrix_api_client.space_list_rooms(in_space_with_id)
             for room in space_rooms:
-                result.append(
-                    next(r for r in all_rooms if r["room_id"] == room["room_id"])
+                r = next(
+                    (r for r in all_rooms if r["room_id"] == room["room_id"]), None
                 )
+                if r is not None:
+                    result.append(r)
         return result
 
     def get_canonical_alias(
@@ -442,4 +483,4 @@ class Bot:
         Returns:
             str: _description_
         """
-        return f"#{local_name}:{self.config.synapse_server.server_name}"
+        return f"{prefix}{local_name}:{self.config.synapse_server.server_name}"
