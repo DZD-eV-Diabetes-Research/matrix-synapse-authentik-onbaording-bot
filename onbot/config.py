@@ -118,8 +118,9 @@ class OnbotConfig(BaseSettings):
 
     # The bot will invite the new user to a direct chat and send following message
     welcome_new_users_messages: List[str] = [
-        "Welcome to the company chat. I am the company bot. I will invite you to the groups you are assigned. If you have any technical questions write a message to @admin-person:matrix.company.org.",
-        "The Chat software will ask you to setup a Security Key Backup. This is very important. Otherwise you can lose access older messages later. Please follow the request.",
+        "Welcome to the company chat. I am the company bot. I will invite you to the groups you are assigned too. If you have any technical questions write a message to @admin-person:matrix.company.org.",
+        "If you need some guidance on how to use this chat have a look at the official documentation - https://element.io/user-guide (You can skip the '1A registration'-step as you obviously have an account",
+        "🛑 🔐 The Chat software will ask you to setup a Security Key Backup. <b>This is very important<b>. Otherwise you could lose access to older enrypted messages later. Please follow the request.",
     ]
 
     class SyncAuthentikUsersWithMatrix(BaseModel):
@@ -181,16 +182,18 @@ class OnbotConfig(BaseSettings):
         CreateMatrixRoomsInAMatrixSpace()
     )
 
-    class CreateMatrixRoomsBasedOnAuthentikGroups(BaseModel):
+    class SyncMatrixRoomsBasedOnAuthentikGroups(BaseModel):
         enabled: bool = True
         only_for_children_of_groups_with_uid: Optional[List[str]]
         only_groups_with_attributes: Annotated[
             Optional[Dict], Field(example={"attribute.chatroom": True})
         ]
         only_for_groupnames_starting_with: Optional[str]
+        disable_rooms_when_mapped_authentik_group_disappears: bool = False
+        purge_disabled_rooms: bool = False
 
-    create_matrix_rooms_based_on_authentik_groups: CreateMatrixRoomsBasedOnAuthentikGroups = (
-        CreateMatrixRoomsBasedOnAuthentikGroups()
+    sync_matrix_rooms_based_on_authentik_groups: SyncMatrixRoomsBasedOnAuthentikGroups = (
+        SyncMatrixRoomsBasedOnAuthentikGroups()
     )
 
     class MatrixDynamicRoomSettings(BaseModel):
