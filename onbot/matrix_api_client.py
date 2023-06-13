@@ -13,6 +13,10 @@ from nio import (
     RoomPutStateError,
     RoomKickResponse,
     RoomKickError,
+    RoomPutStateResponse,
+    RoomPutStateError,
+    RoomGetStateError,
+    RoomGetStateResponse,
 )
 from onbot.utils import synchronize_async_helper
 
@@ -69,12 +73,13 @@ class MatrixApiClient:
 
     def create_room(
         self,
-        alias: str,
-        canonical_alias: str,
-        name: str,
-        topic: str,
-        room_params: Dict,
+        alias: str = None,
+        canonical_alias: str = None,
+        name: str = None,
+        topic: str = None,
+        room_params: Dict = None,
         parent_space_id: str = None,
+        is_direct: bool = False,
     ) -> RoomCreateResponse:
         if parent_space_id is not None and (
             not isinstance(parent_space_id, str)
@@ -107,7 +112,7 @@ class MatrixApiClient:
             for key, val in locals().items()
             if key in ["alias", "name", "topic", "initial_state", "room_params"]
         }
-        log.error(f"Create room with params: {params}")
+        log.debug(f"Create room with params: {params}")
         room_response: RoomCreateResponse | RoomCreateError = self._call_nio_client(
             AsyncClient.room_create,
             {
@@ -116,6 +121,7 @@ class MatrixApiClient:
                 "name": name,
                 "topic": topic,
                 "initial_state": initial_state,
+                "is_direct": is_direct,
                 **room_params,
             },
         )
@@ -146,39 +152,71 @@ class MatrixApiClient:
             raise SynapseApiError.from_nio_response_error(room_response)
         return room_response
 
-    def create_space(self, alias: str, name: str, topic: str, space_params: Dict):
-        # we need to create the space
-
-        async def create_space():
-            if "visibility" in space_params:
-                space_params["visibility"] = RoomVisibility(space_params["visibility"])
-            if "preset" in space_params:
-                space_params["preset"] = RoomPreset(space_params["preset"])
-            return await self.nio_client.room_create(
-                space=True,
-                alias=alias,
-                name=name,
-                topic=topic,
-                **space_params,
+    def create_space(
+        self, alias: str, name: str, topic: str, space_params: Dict
+    ) -> RoomCreateResponse:
+        if "visibility" in space_params:
+            space_params["visibility"] = RoomVisibility(space_params["visibility"])
+        if "preset" in space_params:
+            space_params["preset"] = RoomPreset(space_params["preset"])
+        space_create_response: RoomCreateResponse | RoomCreateError = (
+            self._call_nio_client(
+                AsyncClient.room_create,
+                {
+                    "space": True,
+                    "alias": alias,
+                    "name": name,
+                    "topic": topic,
+                    **space_params,
+                },
             )
-
-        space: Union[RoomCreateResponse, RoomCreateError] = synchronize_async_helper(
-            create_space()
         )
-        if type(space) == RoomCreateError:
+        if isinstance(space_create_response, RoomCreateError):
             log.error(
                 f"Could not create the parent space with the alias '{alias}'. Don't know what to do. Here is the error:"
             )
-            raise SynapseApiError.from_nio_response_error(space.message)
-        return space
+            raise SynapseApiError.from_nio_response_error(space_create_response.message)
+        return space_create_response
 
     def resolve_alias(self, alias: str) -> str:
         # https://spec.matrix.org/v1.2/client-server-api/#room-aliases
         # /_matrix/client/v3/directory/room/{roomAlias}
         return self._get(f"v3/directory/room/{alias}")["room_id"]
 
+    def put_room_state_event(
+        self, room_id: str, event_type: str, content: Dict, state_key: str
+    ) -> RoomPutStateResponse:
+        res: RoomPutStateResponse | RoomPutStateError = self._call_nio_client(
+            nio_func=AsyncClient.room_put_state,
+            params={
+                "room_id": room_id,
+                "event_type": event_type,
+                "content": content,
+                "state_key": state_key,
+            },
+        )
+        if isinstance(res, RoomPutStateError):
+            raise SynapseApiError.from_nio_response_error(res)
+        else:
+            return res
+
+    def get_room_state_event(
+        self, room_id: str, event_type: str, state_key: str
+    ) -> RoomGetStateResponse:
+        res: RoomGetStateResponse | RoomGetStateError = self._call_nio_client(
+            nio_func=AsyncClient.room_get_state_event,
+            params={
+                "room_id": room_id,
+                "event_type": event_type,
+                "state_key": state_key,
+            },
+        )
+        if isinstance(res, RoomGetStateError):
+            raise SynapseApiError.from_nio_response_error(res)
+        else:
+            return res
+
     def _build_api_call_url(self, path: str):
-        print("BUILD", self.api_base_url, "+", path)
         return f"{self.api_base_url.rstrip('/')}/{path.lstrip('/')}"
 
     def _get(self, path: str, query: Dict = None) -> Dict:

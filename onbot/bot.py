@@ -12,25 +12,59 @@ from nio import (
     RoomPreset,
     MatrixRoom,
     RoomPutStateError,
+    RoomGetStateResponse,
 )
-
+import uuid
 from onbot.config import OnbotConfig
 from onbot.authentik_api_client import AuthentikApiClient
 from onbot.synapse_admin_api_client import SynapseAdminApiClient
 from onbot.matrix_api_client import MatrixApiClient
 from onbot.config import OnbotConfig
 from onbot.utils import get_nested_dict_val_by_path
+from enum import Enum
 
 log = logging.getLogger(__name__)
 
 
-class MatrixRoomAttributes(BaseModel):
+class OnbotRoomStateEvents(str, Enum):
+    create_onbot_room = "create_onbot_room"
+    send_authentik_user_welcome_messages = "send_authentik_user_welcome_messages"
+    create_space = "create_space"
+
+
+class OnbotRoomTypes(str, Enum):
+    group_room = "group_room"
+    direct_room = "direct_welcome_room"
+
+
+class MatrixRoomCreateAttributes(BaseModel):
     alias: str
     canonical_alias: str
     id: str = None
     name: str = None
     topic: str = None
     room_params: dict = None
+
+
+class MatrixRoomAttributes(BaseModel):
+    room_id: str
+    canonical_alias: str
+    name: str
+    topic: str
+    is_space: bool = False
+    room_type: OnbotRoomTypes = OnbotRoomTypes.group_room
+    direct_room_user_id: str = None
+    group_room_mapped_authentik_pk: str = None
+
+    @classmethod
+    def from_synapse_admin_api_obj(cls, obj: Dict, is_space=False):
+        return cls(
+            room_id=obj["room_id"],
+            canonical_alias=obj["canonical_alias"],
+            name=obj["name"],
+            topic=obj["topic"],
+            is_space=is_space,
+        )
 
 
 class UserMap(BaseModel):
@@ -48,9 +82,9 @@ class Group2RoomMap(BaseModel):
     authentik_api_obj: Dict = None
 
     # https://matrix-org.github.io/synapse/latest/admin_api/rooms.html#list-room-api object
-    matrix_api_obj: Dict = None
+    matrix_obj: MatrixRoomAttributes = None
 
-    generated_matrix_room_attr: MatrixRoomAttributes = None
+    generated_matrix_room_attr: MatrixRoomCreateAttributes = None
 
 
 """
@@ -98,26 +132,6 @@ class Bot:
         """
         # todo you are here
         # DZDChatUsers
-        result = self.matrix_api_client._call_nio_client(
-            nio_func=MatrixNioClient.room_put_state,
-            params={
-                "room_id": "!MNOXBIICSTScjIlkFE:dzd-ev.org",
-                "event_type": "m.onbot.created",
-                "content": {"m.onbot": "based onm group authentik bla"},
-                "state_key": "iuewaf32iod327iub",
-            },
-        )
-        print(type(result), result)
-        result = self.matrix_api_client._call_nio_client(
-            nio_func=MatrixNioClient.room_get_state_event,
-            params={
-                "room_id": "!MNOXBIICSTScjIlkFE:dzd-ev.org",
-                "event_type": "m.onbot.created",
-                "state_key": "iuewaf32iod327iub",
-            },
-        )
-        print(type(result), result)
-        exit()
 
         log.debug("DEEEBUG")
         while True:
@@ -125,33 +139,137 @@ class Bot:
 
     def server_tik(self):
         self.create_matrix_rooms_based_on_authentik_groups()
+        self.sync_users_and_space()
         self.sync_users_and_rooms()
         log.debug(f"Wait {self.server_tick_wait_time_sec_int} for next servertick")
         time.sleep(self.server_tick_wait_time_sec_int)
 
+    def create_direct_room_with_new_users_and_send_welcome_messages(self):
+        mapped_users: List[
+            UserMap
+        ] = self.get_authentik_accounts_with_mapped_synapse_account()
+        all_direct_onbot_rooms: List[MatrixRoomAttributes] = self._list_rooms(
+            in_space_with_id=self._get_parent_space_if_needed(),
+            onbot_room_type=OnbotRoomTypes.direct_room,
+        )
+
+        for user in mapped_users:
+            existing_room = None
+            existing_room_index = None
+            for index, room in enumerate(all_direct_onbot_rooms):
+                if room.direct_room_user_id == user.generated_matrix_id:
+                    existing_room = room
+                    existing_room_index = index
+                    break
+            if existing_room is not None:
+                # lets remove the room from the list to speed up following loops
+                all_direct_onbot_rooms.pop(existing_room_index)
+            else:
+                existing_room = self._create_direct_room(
+                    user.generated_matrix_id, space=self._get_parent_space_if_needed()
+                )
+            self._send_welcome_messages_if_not_done(existing_room)
+
+    def _send_welcome_messages_if_not_done(self, room: MatrixRoomAttributes):
+        # todo you are here
+        raise NotImplementedError
+
     def create_matrix_rooms_based_on_authentik_groups(self):
-        parent_room_space = self.get_parent_space_if_needed()
+        parent_room_space = self._get_parent_space_if_needed()
 
-        for group_room_map in self.get_authentik_groups_that_need_synapse_room():
-            if group_room_map.matrix_api_obj is None:
-                self.create_room(group_room_map, parent_room_space)
+        for group_room_map in self._get_authentik_groups_that_need_synapse_room():
+            if group_room_map.matrix_obj is None:
+                self._create_group_room(group_room_map, parent_room_space)
 
-    def create_room(self, room_info: Group2RoomMap, space: Dict = None) -> Dict:
+    def delete_matrix_rooms_mapped_to_extinguished_authentik_group(self):
+        if (
+            not self.config.sync_matrix_rooms_based_on_authentik_groups.disable_rooms_when_mapped_authentik_group_disappears
+        ):
+            return
+        req_matrix_rooms_from_authentik_groups: List[
+            Group2RoomMap
+        ] = self._get_authentik_groups_that_need_synapse_room()
+        req_matrix_rooms_from_authentik_group_ids = [
+            r.authentik_api_obj["pk"] for r in req_matrix_rooms_from_authentik_groups
+        ]
+        for room in self._list_rooms(
+            in_space_with_id=self._get_parent_space_if_needed(),
+            onbot_room_type=OnbotRoomTypes.group_room,
+        ):
+            if (
+                room.group_room_mapped_authentik_pk
+                not in req_matrix_rooms_from_authentik_group_ids
+            ):
+                # room is obsolete.
+                self.synapse_admin_client.delete_room(
+                    room.room_id,
+                    message=f"Room '{room.name}' was mapped to Authentik user group that is not synced to matrix anymore.",
+                    purge=self.config.sync_matrix_rooms_based_on_authentik_groups.purge_disabled_rooms,
+                )
+
+    def _create_direct_room(
+        self, user_id: str, space: MatrixRoomAttributes = None
+    ) -> MatrixRoomAttributes:
+        room_create_response: RoomCreateResponse = self.matrix_api_client.create_room(
+            parent_space_id=space.room_id, is_direct=True
+        )
+        self.matrix_api_client.put_room_state_event(
+            room_id=room_create_response.room_id,
+            event_type=self._gen_event_type_name(
+                OnbotRoomStateEvents.create_onbot_room
+            ),
+            content={
+                "room_type": OnbotRoomTypes.direct_room,
+                "direct_room_user_id": user_id,
+            },
+            state_key=uuid.uuid4().hex,
+        )
+        log.debug(
+            f"Created direct room with id '{room_create_response.room_id}'. Response (type:{type(room_create_response)}): {room_create_response}"
+        )
+        return self._list_rooms(
+            search_term=room_create_response.room_id, in_space_with_id=space["room_id"]
+        )[0]
+
+    def _create_group_room(
+        self, room_info: Group2RoomMap, space: MatrixRoomAttributes = None
+    ) -> MatrixRoomAttributes:
         room_create_response: RoomCreateResponse = self.matrix_api_client.create_room(
             alias=room_info.generated_matrix_room_attr.alias,
             canonical_alias=room_info.generated_matrix_room_attr.canonical_alias,
             name=room_info.generated_matrix_room_attr.name,
             topic=room_info.generated_matrix_room_attr.topic,
             room_params=room_info.generated_matrix_room_attr.room_params,
-            parent_space_id=space["room_id"],
+            parent_space_id=space.room_id,
+            is_direct=False,
         )
         log.debug(
             f"Created room with id '{room_create_response.room_id}'. Response (type:{type(room_create_response)}): {room_create_response}"
         )
-        room_info.matrix_api_obj = self.list_rooms(
+        self.matrix_api_client.put_room_state_event(
+            room_id=room_create_response.room_id,
+            event_type=self._gen_event_type_name(
+                OnbotRoomStateEvents.create_onbot_room
+            ),
+            content={
+                "room_type": OnbotRoomTypes.group_room,
+                "group_room_mapped_authentik_pk": room_info.authentik_api_obj["pk"],
+            },
+            state_key=uuid.uuid4().hex,
+        )
+        room_info.matrix_obj = self._list_rooms(
             search_term=room_create_response.room_id, in_space_with_id=space["room_id"]
         )[0]
-        return room_info.matrix_api_obj
+        return room_info.matrix_obj
+
+    def sync_users_and_space(self):
+        space = self._get_parent_space_if_needed()
+        if space is not None:
+            current_members = self.synapse_admin_client.list_room_members(space.room_id)
+            for user in self.get_authentik_accounts_with_mapped_synapse_account():
+                user_name: str = user.matrix_api_obj["name"]
+                if user_name not in current_members:
+                    self.synapse_admin_client.add_user_to_room(space.room_id, user_name)
 
     def sync_users_and_rooms(self):
         mapped_users: List[
@@ -159,13 +277,10 @@ class Bot:
         ] = self.get_authentik_accounts_with_mapped_synapse_account()
         mapped_rooms: List[
             Group2RoomMap
-        ] = self.get_authentik_groups_that_need_synapse_room()
-        print("len:mapped_users", len(mapped_users))
-        print("mapped_users", mapped_users)
+        ] = self._get_authentik_groups_that_need_synapse_room()
         for room in mapped_rooms:
-            print("room.matrix_api_obj", room.matrix_api_obj)
             room_members = self.synapse_admin_client.list_room_members(
-                room.matrix_api_obj["room_id"]
+                room.matrix_obj.room_id
             )
             for user in mapped_users:
                 user_should_be_member: bool = bool(
@@ -189,23 +304,11 @@ class Bot:
                     )
                 )
                 log.debug(
-                    " ".join(
-                        [
-                            "SYNC USER",
-                            user.matrix_api_obj["name"],
-                            "GROUP",
-                            room.matrix_api_obj["room_id"],
-                            "user_is_member:",
-                            str(user_is_member),
-                            "user_should_be_member:",
-                            str(user_should_be_member),
-                        ]
-                    )
+                    f'SYNC USER {user.matrix_api_obj["name"]} GROUP {room.matrix_obj.room_id} user_is_member: {str(user_is_member),} user_should_be_member: {str(user_should_be_member)}'
                 )
-                print()
                 if user_should_be_member and not user_is_member:
                     self.synapse_admin_client.add_user_to_room(
-                        room.matrix_api_obj["room_id"], user.matrix_api_obj["name"]
+                        room.matrix_obj.room_id, user.matrix_api_obj["name"]
                     )
                 elif (
                     not user_should_be_member
@@ -214,11 +317,11 @@ class Bot:
                 ):
                     self.matrix_api_client.room_kick_user(
                         user.matrix_api_obj["name"],
-                        room.matrix_api_obj["room_id"],
+                        room.matrix_obj.room_id,
                         "Automatically removed because of missing group membership in central user directory.",
                     )
 
-    def get_parent_space_if_needed(self) -> Dict | None:
+    def _get_parent_space_if_needed(self) -> MatrixRoomAttributes | None:
         if self._space_cache is not None:
             return self._space_cache
         if not self.config.create_matrix_rooms_in_a_matrix_space.enabled:
@@ -236,7 +339,7 @@ class Bot:
         )
         if space is not None:
             self._space_cache = space
-            return space
+            return MatrixRoomAttributes.from_synapse_admin_api_obj(space, is_space=True)
         if (
             not self.config.create_matrix_rooms_in_a_matrix_space.create_matrix_space_if_not_exists.enabled
         ):
@@ -245,24 +348,32 @@ class Bot:
             )
 
         # we need to create the space
-        self.matrix_api_client.create_space(
+        space_response: RoomCreateResponse = self.matrix_api_client.create_space(
             alias=self.config.create_matrix_rooms_in_a_matrix_space.alias,
             name=self.config.create_matrix_rooms_in_a_matrix_space.create_matrix_space_if_not_exists.name,
             topic=self.config.create_matrix_rooms_in_a_matrix_space.create_matrix_space_if_not_exists.topic,
             space_params=self.config.create_matrix_rooms_in_a_matrix_space.create_matrix_space_if_not_exists.space_params,
         )
+        self.matrix_api_client.put_room_state_event(
+            room_id=space_response.room_id,
+            event_type=self._gen_event_type_name(OnbotRoomStateEvents.create_space),
+            content={
+                "created_by_authentik_server": self.config.authentik_server.public_api_url
+            },
+            state_key=uuid.uuid4().hex,
+        )
         # now the room icreated we can just recall the function, as it will return the new space now
-        return self.get_parent_space_if_needed()
+        return self._get_parent_space_if_needed()
 
-    def get_authentik_groups_that_need_synapse_room(self) -> List[Group2RoomMap]:
-        if not self.config.create_matrix_rooms_based_on_authentik_groups.enabled:
+    def _get_authentik_groups_that_need_synapse_room(self) -> List[Group2RoomMap]:
+        if not self.config.sync_matrix_rooms_based_on_authentik_groups.enabled:
             return []
         query_attributes = {}
         if (
-            self.config.create_matrix_rooms_based_on_authentik_groups.only_groups_with_attributes
+            self.config.sync_matrix_rooms_based_on_authentik_groups.only_groups_with_attributes
         ):
             query_attributes = (
-                self.config.create_matrix_rooms_based_on_authentik_groups.only_groups_with_attributes
+                self.config.sync_matrix_rooms_based_on_authentik_groups.only_groups_with_attributes
             )
 
         groups: Dict = self.authentik_client.list_groups(
@@ -270,34 +381,34 @@ class Bot:
         )
 
         if (
-            self.config.create_matrix_rooms_based_on_authentik_groups.only_for_groupnames_starting_with
+            self.config.sync_matrix_rooms_based_on_authentik_groups.only_for_groupnames_starting_with
         ):
             groups = [
                 g
                 for g in groups
                 if g["name"].startswith(
-                    self.config.create_matrix_rooms_based_on_authentik_groups.only_for_groupnames_starting_with
+                    self.config.sync_matrix_rooms_based_on_authentik_groups.only_for_groupnames_starting_with
                 )
             ]
 
         if (
-            self.config.create_matrix_rooms_based_on_authentik_groups.only_for_children_of_groups_with_uid
+            self.config.sync_matrix_rooms_based_on_authentik_groups.only_for_children_of_groups_with_uid
         ):
             groups = [
                 g
                 for g in groups
                 if g["parent"]
-                in self.config.create_matrix_rooms_based_on_authentik_groups.only_for_children_of_groups_with_uid
+                in self.config.sync_matrix_rooms_based_on_authentik_groups.only_for_children_of_groups_with_uid
             ]
-        space = self.get_parent_space_if_needed()
-        matrix_rooms: List[Dict] = self.list_rooms(
-            in_space_with_id=space["room_id"] if space else None
+        space = self._get_parent_space_if_needed()
+        matrix_rooms: List[MatrixRoomAttributes] = self._list_rooms(
+            in_space_with_id=space.room_id if space else None
         )
 
         group_maps: List[Group2RoomMap] = [
             Group2RoomMap(
                 authentik_api_obj=g,
-                generated_matrix_room_attr=self.get_matrix_room_attrs_from_authentik_group(
+                generated_matrix_room_attr=self._get_matrix_room_attrs_from_authentik_group(
                     g
                 ),
             )
@@ -309,18 +420,18 @@ class Bot:
             for index, matrix_room_api_obj in enumerate(matrix_rooms):
                 if (
                     group_map.generated_matrix_room_attr.canonical_alias
-                    == matrix_room_api_obj["canonical_alias"]
+                    == matrix_room_api_obj.canonical_alias
                 ):
                     matched_room_index = index
                     break
             if matched_room_index is not None:
-                group_map.matrix_api_obj = matrix_rooms.pop(matched_room_index)
+                group_map.matrix_obj = matrix_rooms.pop(matched_room_index)
 
         return group_maps
 
-    def get_matrix_room_attrs_from_authentik_group(
+    def _get_matrix_room_attrs_from_authentik_group(
         self, group: Dict
-    ) -> MatrixRoomAttributes:
+    ) -> MatrixRoomCreateAttributes:
         room_settings: OnbotConfig.MatrixDynamicRoomSettings = None
         room_default_settings = self.config.matrix_room_default_settings
         if group["pk"] in self.config.per_authentik_group_pk_matrix_room_settings:
@@ -362,9 +473,9 @@ class Bot:
                 room_create_params = room_create_params | custom_room_attr
 
         alias = alias.replace("-", "")
-        return MatrixRoomAttributes(
+        return MatrixRoomCreateAttributes(
             alias=alias,
-            canonical_alias=self.get_canonical_alias(alias, "#"),
+            canonical_alias=self._get_canonical_alias(alias, "#"),
             name=name,
             topic=topic,
             room_params=room_create_params,
@@ -398,7 +509,7 @@ class Bot:
                 authentik_users.append(
                     UserMap(
                         authentik_api_obj=user,
-                        generated_matrix_id=self.get_matrix_user_id(user, None),
+                        generated_matrix_id=self._get_matrix_user_id(user, None),
                     )
                 )
             print("authentik_users", authentik_users)
@@ -416,7 +527,7 @@ class Bot:
         print("matched_users", matched_users)
         return matched_users
 
-    def get_matrix_user_id(
+    def _get_matrix_user_id(
         self,
         authentik_user_api_object: Dict,
         fallback_value: Any,
@@ -441,14 +552,17 @@ class Bot:
             else:
                 raise
         return (
-            self.get_canonical_alias(authentik_attr_val, "@")
+            self._get_canonical_alias(authentik_attr_val, "@")
             if canonical
             else authentik_attr_val
         )
 
-    def list_rooms(
-        self, in_space_with_id: str = None, search_term: str = None
-    ) -> List[Dict]:
+    def _list_rooms(
+        self,
+        in_space_with_id: str = None,
+        search_term: str = None,
+        onbot_room_type: OnbotRoomTypes = None,
+    ) -> List[MatrixRoomAttributes]:
         all_rooms = self.synapse_admin_client.list_room(search_term=search_term)
         if in_space_with_id is None:
             return all_rooms
@@ -461,17 +575,51 @@ class Bot:
                 f"Expected room_id of space like '!<room_id>:<your-synapse-server-name>' got '{in_space_with_id}'"
             )
         else:
-            result: List[Dict] = []
+            result_raw: List[Dict] = []
             space_rooms = self.matrix_api_client.space_list_rooms(in_space_with_id)
             for room in space_rooms:
                 r = next(
                     (r for r in all_rooms if r["room_id"] == room["room_id"]), None
                 )
                 if r is not None:
-                    result.append(r)
-        return result
+                    result_raw.append(r)
+        result: List[MatrixRoomAttributes] = [
+            MatrixRoomAttributes.from_synapse_admin_api_obj(o) for o in result_raw
+        ]
+        for room in result:
+            self._attach_create_room_event_content(room)
+        return [
+            r
+            for r in result
+            if r.room_type == onbot_room_type or onbot_room_type is None
+        ]
 
-    def get_canonical_alias(
+    def _attach_create_room_event_content(
+        self, room: MatrixRoomAttributes
+    ) -> Dict | None:
+        res: RoomGetStateResponse = self.matrix_api_client.get_room_state_event(
+            room_id=room.room_id,
+            event_type=self._gen_event_type_name(
+                OnbotRoomStateEvents.create_onbot_room
+            ),
+        )
+
+        for event in res.events:
+            log.debug(f"QUERY CREATE EVENT in room {room} {type(event)} {event}")
+            if "content" in event:
+                for key, val in event["content"]:
+                    if key in list(room.dict().keys()):
+                        setattr(key, room, val)
+
+        return room
+
+    def _gen_event_type_name(self, value: str):
+        # return e.g. org.company.onbot.
+        return (
+            f"{self.config.synapse_server.server_name.split('.').reverse}.onbot.value"
+        )
+
+    def _get_canonical_alias(
         self, local_name: str, prefix: Literal["#", "!", "@"] = "@"
     ) -> str:
         """_summary_

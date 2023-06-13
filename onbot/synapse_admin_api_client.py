@@ -43,7 +43,7 @@ class SynapseAdminApiClient:
                 rooms.append(room)
         return rooms
 
-    def list_room_members(self, room_id: str):
+    def list_room_members(self, room_id: str) -> List[str]:
         # https://matrix-org.github.io/synapse/latest/admin_api/rooms.html#room-members-api
         return self._get(f"/v1/rooms/{room_id}/members")["members"]
 
