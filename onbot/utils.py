@@ -340,12 +340,22 @@ class YamlConfigFileHandler:
                     ):
                         if field.default is not None:
                             result[key] = field.default
+                        elif field.default_factory is not None:
+                            print(key, field.default_factory)
+                            result[key] = field.default_factory()
                         else:
                             result[key] = parse_model_class(field.type_)
                     elif isinstance(
                         field.type_, (str, int, float, complex, list, dict, set, tuple)
                     ):
                         result[key] = self.jsonfy_example(field.type_())
+                    elif (
+                        isinstance(field, fields.ModelField)
+                        and field.default_factory is not None
+                    ):
+                        val = self.jsonfy_example(field.default_factory())
+                        print(type(val), val)
+                        result[key] = self.jsonfy_example(field.default_factory())
                     else:
                         result[key] = (
                             fallback_fill_value
@@ -367,4 +377,4 @@ class YamlConfigFileHandler:
         elif isinstance(val, BaseModel):
             return val.json()
         else:
-            return val
+            return str(val)
