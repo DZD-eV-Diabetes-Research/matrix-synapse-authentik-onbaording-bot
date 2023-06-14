@@ -65,6 +65,10 @@ class SynapseAdminApiClient:
                 spaces.append(room)
         return spaces
 
+    def get_room_details(self, room_id: str):
+        # https://matrix-org.github.io/synapse/latest/admin_api/rooms.html#room-details-api
+        return self._get(f"v1/rooms/{room_id}")
+
     def add_user_to_room(self, room_id: str, user_id: str):
         # https://matrix-org.github.io/synapse/latest/admin_api/room_membership.html
         if not room_id in self.get_user_rooms_joined(user_id):

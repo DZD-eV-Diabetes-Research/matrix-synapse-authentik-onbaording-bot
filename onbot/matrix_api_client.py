@@ -4,6 +4,7 @@ import requests
 import asyncio
 from nio import (
     AsyncClient,
+    AsyncClientConfig,
     ErrorResponse,
     RoomCreateResponse,
     RoomCreateError,
@@ -15,10 +16,13 @@ from nio import (
     RoomKickError,
     RoomPutStateResponse,
     RoomPutStateError,
-    RoomGetStateError,
+    RoomGetStateEventError,
     RoomGetStateResponse,
+    RoomEncryptionEvent,
 )
+
 from onbot.utils import synchronize_async_helper
+from pathlib import Path
 
 log = logging.getLogger(__name__)
 
@@ -41,6 +45,8 @@ class MatrixApiClient:
         device_id: str,
         server_url: str,
         server_name: str,
+        state_store_path: Path,
+        state_store_encryption_key: str = None,
     ):
         self.user = user
         self.access_token = access_token
@@ -48,11 +54,32 @@ class MatrixApiClient:
         self.server_url = server_url.rstrip("/")
         self.api_base_url = f"{server_url.rstrip('/')}/_matrix/client/"
         self.server_name = server_name
+        self.state_store_path = state_store_path
+        self.state_store_encryption_key = state_store_encryption_key
 
-    def _call_nio_client(self, nio_func: Awaitable, params: Dict):
-        nio_client = AsyncClient(user=self.user, homeserver=self.server_url)
+    def _call_nio_client(
+        self, nio_func: Awaitable, params: Dict, encrypted_mode: bool = False
+    ):
+        config = None
+        if encrypted_mode:
+            config = AsyncClientConfig(
+                encryption_enabled=True,
+                store_sync_tokens=True,
+                pickle_key=self.state_store_encryption_key,
+            )
+        nio_client = AsyncClient(
+            user=self.user,
+            homeserver=self.server_url,
+            store_path=self.state_store_path if encrypted_mode else None,
+            config=config,
+        )
+
         nio_client.access_token = self.access_token.lstrip("Bearer ")
         nio_client.device_id = self.device_id
+        nio_client.user_id = f"@{self.user}:{self.server_name}"
+        if encrypted_mode:
+            nio_client.load_store()
+        nio_client.login(device_name=self.device_id, token=self.access_token)
         result = synchronize_async_helper(nio_func(nio_client, **params))
         synchronize_async_helper(nio_client.close())
         return result
@@ -77,6 +104,7 @@ class MatrixApiClient:
         canonical_alias: str = None,
         name: str = None,
         topic: str = None,
+        encrypted: bool = True,
         room_params: Dict = None,
         parent_space_id: str = None,
         is_direct: bool = False,
@@ -94,10 +122,10 @@ class MatrixApiClient:
             room_params["visibility"] = RoomVisibility(room_params["visibility"])
         if "preset" in room_params:
             room_params["preset"] = RoomPreset(room_params["preset"])
-        initial_state = None
+        initial_state = []
         if parent_space_id:
             # https://spec.matrix.org/v1.2/client-server-api/#mspaceparent
-            initial_state = [
+            initial_state.append(
                 {
                     "type": "m.space.parent",
                     "state_key": parent_space_id,
@@ -106,12 +134,19 @@ class MatrixApiClient:
                         "via": [self.server_name],
                     },
                 }
-            ]
+            )
         params = {
             key: val
             for key, val in locals().items()
             if key in ["alias", "name", "topic", "initial_state", "room_params"]
         }
+        if encrypted:
+            initial_state.append(
+                {
+                    "type": "m.room.encryption",
+                    "content": {"algorithm": "m.megolm.v1.aes-sha2"},
+                }
+            )
         log.debug(f"Create room with params: {params}")
         room_response: RoomCreateResponse | RoomCreateError = self._call_nio_client(
             AsyncClient.room_create,
@@ -124,6 +159,7 @@ class MatrixApiClient:
                 "is_direct": is_direct,
                 **room_params,
             },
+            encrypted_mode=encrypted,
         )
         if parent_space_id and not isinstance(room_response, RoomCreateError):
             room_put_state_response = self._call_nio_client(
@@ -159,16 +195,18 @@ class MatrixApiClient:
             space_params["visibility"] = RoomVisibility(space_params["visibility"])
         if "preset" in space_params:
             space_params["preset"] = RoomPreset(space_params["preset"])
+        space_params = {
+            "space": True,
+            "alias": alias,
+            "name": name,
+            "topic": topic,
+            **space_params,
+        }
+        log.debug(f"Create space with params: {space_params}")
         space_create_response: RoomCreateResponse | RoomCreateError = (
             self._call_nio_client(
                 AsyncClient.room_create,
-                {
-                    "space": True,
-                    "alias": alias,
-                    "name": name,
-                    "topic": topic,
-                    **space_params,
-                },
+                space_params,
             )
         )
         if isinstance(space_create_response, RoomCreateError):
@@ -201,9 +239,13 @@ class MatrixApiClient:
             return res
 
     def get_room_state_event(
-        self, room_id: str, event_type: str, state_key: str
+        self,
+        room_id: str,
+        event_type: str,
+        state_key: str = None,
+        raise_error: bool = True,
     ) -> RoomGetStateResponse:
-        res: RoomGetStateResponse | RoomGetStateError = self._call_nio_client(
+        res: RoomGetStateResponse | RoomGetStateEventError = self._call_nio_client(
             nio_func=AsyncClient.room_get_state_event,
             params={
                 "room_id": room_id,
@@ -211,7 +253,7 @@ class MatrixApiClient:
                 "state_key": state_key,
             },
         )
-        if isinstance(res, RoomGetStateError):
+        if isinstance(res, RoomGetStateEventError) and raise_error:
             raise SynapseApiError.from_nio_response_error(res)
         else:
             return res

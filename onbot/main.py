@@ -32,6 +32,7 @@ def run_bot():
         device_id=config.synapse_server.bot_device_id,
         server_url=config.synapse_server.server_url,
         server_name=config.synapse_server.server_name,
+        state_store_path=config.storage_dir,
     )
     bot = Bot(
         config_handler.get_config(),

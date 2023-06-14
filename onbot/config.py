@@ -3,10 +3,22 @@ import yaml
 import datetime
 from pydantic import BaseModel, Field, BaseSettings, fields
 import inspect
+import os
+from pathlib import Path, PurePath
 
 
 class OnbotConfig(BaseSettings):
     log_level: Literal["INFO", "DEBUG"] = "INFO"
+    storage_dir: str = Field(
+        description="A directory to story any states fpr the bot. Only for saving encryption keys/state at the moment.",
+        default_factory=lambda: str(Path(PurePath(Path().home(), ".config/onbot/"))),
+    )
+    storage_encryption_key: Annotated[
+        Optional[str],
+        Field(
+            description="A passphrase that will be used to encrypt end to end encryption keys https://github.com/poljar/matrix-nio/blob/2632a72e7acee401c4354646a40f31db04db4258/nio/client/base_client.py#L145"
+        ),
+    ] = None
 
     class SynapseServer(BaseModel):
         server_name: Annotated[
@@ -205,6 +217,12 @@ class OnbotConfig(BaseSettings):
         matrix_topic_from_authentik_attribute: Optional[
             str
         ] = "attributes.chatroom_topic"
+        end2end_encryption_enabled: Annotated[
+            bool,
+            Field(
+                description="If set to true this will enable end2end encryption in the Authentik group mapped Matrix rooms."
+            ),
+        ] = True
 
         # https://spec.matrix.org/v1.6/client-server-api/#post_matrixclientv3createroom
         # enum. one of [public_chat,private_chat,trusted_private_chat]
@@ -254,10 +272,10 @@ class OnbotConfig(BaseSettings):
 
     authentik_user_ignore_list: Annotated[
         Optional[List[str]], Field(example=["admin", "internal_account_alex"])
-    ]
+    ] = []
     authentik_group_ignore_list: Annotated[
         Optional[List[str]], Field(example=["internal_company_group"])
-    ]
+    ] = []
 
     class DeactivateDisabledAuthentikUsersInMatrix(BaseModel):
         # https://matrix-org.github.io/synapse/develop/admin_api/user_admin_api.html#deactivate-account
