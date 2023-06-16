@@ -19,6 +19,10 @@ from nio import (
     RoomGetStateEventError,
     RoomGetStateResponse,
     RoomEncryptionEvent,
+    RoomSendResponse,
+    RoomSendError,
+    LoginError,
+    RoomGetStateError,
 )
 
 from onbot.utils import synchronize_async_helper
@@ -79,7 +83,16 @@ class MatrixApiClient:
         nio_client.user_id = f"@{self.user}:{self.server_name}"
         if encrypted_mode:
             nio_client.load_store()
-        nio_client.login(device_name=self.device_id, token=self.access_token)
+        """
+        TODO: Password based login, if not a token is provided
+        res = synchronize_async_helper(
+            nio_client.login(
+                device_name=self.device_id, password=
+            )
+        )
+        if isinstance(res, LoginError):
+            raise SynapseApiError.from_nio_response_error(res)
+        """
         result = synchronize_async_helper(nio_func(nio_client, **params))
         synchronize_async_helper(nio_client.close())
         return result
@@ -108,6 +121,7 @@ class MatrixApiClient:
         room_params: Dict = None,
         parent_space_id: str = None,
         is_direct: bool = False,
+        invite: List[str] = None,
     ) -> RoomCreateResponse:
         if parent_space_id is not None and (
             not isinstance(parent_space_id, str)
@@ -117,7 +131,7 @@ class MatrixApiClient:
             raise ValueError(
                 f"Expected room_id of parent space as string (`str`) in Matrix ID format e.g. '!<room_id>:<your-synapse-server-name>' got type {type(parent_space_id)} with content '{parent_space_id}'"
             )
-
+        room_params = {} if room_params is None else room_params
         if "visibility" in room_params:
             room_params["visibility"] = RoomVisibility(room_params["visibility"])
         if "preset" in room_params:
@@ -157,6 +171,7 @@ class MatrixApiClient:
                 "topic": topic,
                 "initial_state": initial_state,
                 "is_direct": is_direct,
+                "invite": [] if invite is None else invite,
                 **room_params,
             },
             encrypted_mode=encrypted,
@@ -222,7 +237,7 @@ class MatrixApiClient:
         return self._get(f"v3/directory/room/{alias}")["room_id"]
 
     def put_room_state_event(
-        self, room_id: str, event_type: str, content: Dict, state_key: str
+        self, room_id: str, event_type: str, content: Dict, state_key: str = ""
     ) -> RoomPutStateResponse:
         res: RoomPutStateResponse | RoomPutStateError = self._call_nio_client(
             nio_func=AsyncClient.room_put_state,
@@ -238,25 +253,69 @@ class MatrixApiClient:
         else:
             return res
 
+    def room_send(
+        self,
+        room_id: str,
+        content: Dict,
+        message_type: str = "m.room.message",
+        tx_id: str = None,
+    ) -> RoomSendResponse:
+        res: RoomSendResponse | RoomSendError = self._call_nio_client(
+            nio_func=AsyncClient.room_send,
+            params={
+                "room_id": room_id,
+                "message_type": message_type,
+                "content": content,
+                "tx_id": tx_id,
+            },
+        )
+        if isinstance(res, RoomSendError):
+            raise SynapseApiError.from_nio_response_error(res)
+        else:
+            return res
+
     def get_room_state_event(
         self,
         room_id: str,
         event_type: str,
-        state_key: str = None,
+        state_key: str = "",
         raise_error: bool = True,
-    ) -> RoomGetStateResponse:
+    ) -> Dict | RoomGetStateError:
+        # TODO: hackyhackhack. we fetch all room states and collect out the first with a matching "event_type". i am not sure if that violates the logic of matrix states but works for now
+        # state_key falls under the table in this case, because i did not understand what it is anyway. i dont need at it the moment, thats for sure.
+        # everything is fine if is just tag a "TODO" on the problem!
+        # AsyncClient.room_get_state_event, the correct funtion in this case would nto work for me it never found anything. investigate!
+        """
         res: RoomGetStateResponse | RoomGetStateEventError = self._call_nio_client(
             nio_func=AsyncClient.room_get_state_event,
             params={
                 "room_id": room_id,
                 "event_type": event_type,
-                "state_key": state_key,
+                "state_key": "",
             },
         )
         if isinstance(res, RoomGetStateEventError) and raise_error:
             raise SynapseApiError.from_nio_response_error(res)
         else:
             return res
+        """
+        if state_key:
+            # see "TODO" above
+            raise NotImplementedError
+
+        res: RoomGetStateResponse | RoomGetStateError = self._call_nio_client(
+            nio_func=AsyncClient.room_get_state,
+            params={
+                "room_id": room_id,
+            },
+        )
+        if isinstance(res, RoomGetStateEventError):
+            if raise_error:
+                raise SynapseApiError.from_nio_response_error(res)
+            else:
+                return res
+        else:
+            return next((r for r in res.events if r["type"] == event_type), None)
 
     def _build_api_call_url(self, path: str):
         return f"{self.api_base_url.rstrip('/')}/{path.lstrip('/')}"
