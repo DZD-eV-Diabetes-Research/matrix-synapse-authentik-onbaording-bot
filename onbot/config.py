@@ -132,7 +132,7 @@ class OnbotConfig(BaseSettings):
     welcome_new_users_messages: List[str] = [
         "Welcome to the company chat. I am the company bot. I will invite you to the groups you are assigned too. If you have any technical questions write a message to @admin-person:matrix.company.org.",
         "If you need some guidance on how to use this chat have a look at the official documentation - https://element.io/user-guide (You can skip the '1A registration'-step as you obviously have an account",
-        "🛑 🔐 The Chat software will ask you to setup a Security Key Backup. <b>This is very important<b>. Otherwise you could lose access to older enrypted messages later. Please follow the request.",
+        "🛑 🔐 The Chat software will ask you to setup a 'Security Key Backup'. <b>This is very important<b>. Save the file on a secure location. Otherwise you could lose access to older enrypted messages later. Please follow the request.",
     ]
 
     class SyncAuthentikUsersWithMatrix(BaseModel):
