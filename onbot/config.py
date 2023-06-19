@@ -201,8 +201,13 @@ class OnbotConfig(BaseSettings):
             Optional[Dict], Field(example={"attribute.chatroom": True})
         ]
         only_for_groupnames_starting_with: Optional[str]
-        disable_rooms_when_mapped_authentik_group_disappears: bool = False
-        purge_disabled_rooms: bool = False
+        disable_rooms_when_mapped_authentik_group_disappears: Annotated[
+            bool,
+            Field(
+                description="If a previously mapped authentik room disapers (e.g. it was deleted or lost its `only_groups_with_attributes` attribute) onbot will kick out all users and block the room.)"
+            ),
+        ] = False
+        delete_disabled_rooms: bool = False
 
     sync_matrix_rooms_based_on_authentik_groups: SyncMatrixRoomsBasedOnAuthentikGroups = (
         SyncMatrixRoomsBasedOnAuthentikGroups()

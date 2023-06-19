@@ -86,6 +86,15 @@ class SynapseAdminApiClient:
         # https://matrix-org.github.io/synapse/develop/admin_api/user_admin_api.html#deactivate-account
         self._post(f"deactivate/{user_id}", json_body={"erase": gdpr_erease})
 
+    def room_is_blocked(self, room_id: str) -> bool:
+        # https://matrix-org.github.io/synapse/develop/admin_api/user_admin_api.html#deactivate-account
+        result = self._post(f"v1/rooms/{room_id}/block")
+        return (
+            True
+            if "block" in result and result["block"] in ["true", "True", True]
+            else False
+        )
+
     def logout_account(self, user_id) -> List[Dict]:
         # https://matrix-org.github.io/synapse/latest/admin_api/user_admin_api.html#list-all-devices
         # https://matrix-org.github.io/synapse/latest/admin_api/user_admin_api.html#delete-a-device

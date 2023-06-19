@@ -6,4 +6,3 @@ A matrix.org synapse bot that welcomes and invites new users to pre configured r
 
 * room_admin_attr
 * room_encryption
-* welcome messages

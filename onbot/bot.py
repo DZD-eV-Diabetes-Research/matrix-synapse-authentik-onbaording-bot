@@ -247,7 +247,7 @@ class Bot:
                 self.synapse_admin_client.delete_room(
                     room.room_id,
                     message=f"Room '{room.name}' was mapped to Authentik user group that is not synced to matrix anymore.",
-                    purge=self.config.sync_matrix_rooms_based_on_authentik_groups.purge_disabled_rooms,
+                    purge=self.config.sync_matrix_rooms_based_on_authentik_groups.delete_disabled_rooms,
                 )
 
     def _create_direct_room(
