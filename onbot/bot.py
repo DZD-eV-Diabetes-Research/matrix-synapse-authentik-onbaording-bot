@@ -21,7 +21,10 @@ from onbot.authentik_api_client import AuthentikApiClient
 from onbot.synapse_admin_api_client import SynapseAdminApiClient
 from onbot.matrix_api_client import MatrixApiClient, SynapseApiError
 from onbot.config import OnbotConfig
-from onbot.utils import get_nested_dict_val_by_path, synchronize_async_helper
+from onbot.utils import (
+    get_nested_dict_val_by_path,
+    create_nested_dict_by_path,
+)
 from enum import Enum
 
 log = logging.getLogger(__name__)
@@ -149,10 +152,11 @@ class Bot:
             self.server_tik()
 
     def server_tik(self):
-        # self.create_matrix_group_rooms_based_on_authentik_groups()
-        # self.sync_users_and_space()
+        self.create_matrix_group_rooms_based_on_authentik_groups()
+        self.sync_users_and_space()
         self.create_direct_room_with_new_users_and_send_welcome_messages()
-        # self.sync_users_and_rooms()
+        self.sync_users_and_rooms()
+        self.disable_obsolete_authentik_group_mapped_matrix_rooms()
 
         log.debug(f"Wait {self.server_tick_wait_time_sec_int} for next servertick")
         time.sleep(self.server_tick_wait_time_sec_int)
@@ -223,6 +227,33 @@ class Bot:
         for group_room_map in self._get_authentik_groups_that_need_synapse_room():
             if group_room_map.matrix_obj is None:
                 self._create_group_room(group_room_map, parent_room_space)
+            elif self.synapse_admin_client.room_is_blocked(
+                group_room_map.matrix_obj.room_id
+            ):
+                self.synapse_admin_client.room_unblock(
+                    group_room_map.matrix_obj.room_id
+                )
+
+    def disable_obsolete_authentik_group_mapped_matrix_rooms(self):
+        if (
+            not self.config.sync_matrix_rooms_based_on_authentik_groups.disable_rooms_when_mapped_authentik_group_disappears
+        ):
+            return
+        auth_group = self._get_authentik_groups_that_need_synapse_room()
+        for existing_matrix_room in self._list_rooms(
+            in_space_with_id=self._get_parent_space_if_needed().room_id,
+            onbot_room_type=OnbotRoomTypes.group_room,
+        ):
+            mapped_room_ids: List[str] = [
+                g.matrix_obj.room_id for g in auth_group if g.matrix_obj is not None
+            ]
+            if existing_matrix_room.room_id not in mapped_room_ids:
+                self.synapse_admin_client.room_block(existing_matrix_room.room_id)
+                self._clear_room_of_users(
+                    existing_matrix_room.room_id,
+                    except_user_ids=[self.config.synapse_server.bot_user_id],
+                    reason=f"The mapped group (in the central user directory `{self.config.authentik_server.public_api_url}`) to this room is obsolete.",
+                )
 
     def delete_matrix_rooms_mapped_to_extinguished_authentik_group(self):
         if (
@@ -670,6 +701,15 @@ class Bot:
                 if key in list(room.dict().keys()):
                     setattr(room, key, val)
         return room
+
+    def _clear_room_of_users(
+        self, room_id: str, except_user_ids: List[str] = None, reason: str = None
+    ):
+        for member in self.synapse_admin_client.list_room_members(room_id=room_id):
+            if member not in except_user_ids:
+                self.matrix_api_client.room_kick_user(
+                    member, room_id=room_id, reason=reason
+                )
 
     def _gen_event_type_name(self, value: str):
         # return e.g. org.company.onbot.

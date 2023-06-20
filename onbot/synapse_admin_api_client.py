@@ -87,13 +87,21 @@ class SynapseAdminApiClient:
         self._post(f"deactivate/{user_id}", json_body={"erase": gdpr_erease})
 
     def room_is_blocked(self, room_id: str) -> bool:
-        # https://matrix-org.github.io/synapse/develop/admin_api/user_admin_api.html#deactivate-account
-        result = self._post(f"v1/rooms/{room_id}/block")
+        # https://matrix-org.github.io/synapse/develop/admin_api/rooms.html#get-block-status
+        result = self._get(f"v1/rooms/{room_id}/block")
         return (
             True
             if "block" in result and result["block"] in ["true", "True", True]
             else False
         )
+
+    def room_unblock(self, room_id: str):
+        # https://matrix-org.github.io/synapse/develop/admin_api/rooms.html#block-or-unblock-a-room
+        self._put(f"v1/rooms/{room_id}/block", {"block": False})
+
+    def room_block(self, room_id: str):
+        # https://matrix-org.github.io/synapse/develop/admin_api/rooms.html#block-or-unblock-a-room
+        self._put(f"v1/rooms/{room_id}/block", {"block": True})
 
     def logout_account(self, user_id) -> List[Dict]:
         # https://matrix-org.github.io/synapse/latest/admin_api/user_admin_api.html#list-all-devices
@@ -128,6 +136,20 @@ class SynapseAdminApiClient:
         r = requests.get(
             self._build_api_call_url(path),
             params=query,
+            headers={
+                "Authorization": self.access_token,
+                "Accept": "application/json",
+                "Content-Type": "application/json; charset=utf-8",
+            },
+        )
+        return self._http_call_response_handler(r)
+
+    def _put(self, path: str, json_body: Dict = None) -> Dict:
+        if json_body is None:
+            json_body = {}
+        r = requests.put(
+            self._build_api_call_url(path),
+            json=json_body,
             headers={
                 "Authorization": self.access_token,
                 "Accept": "application/json",

@@ -1,9 +1,6 @@
-from typing import List, Dict, Optional, Annotated, Literal, Set, Tuple
-import yaml
-import datetime
-from pydantic import BaseModel, Field, BaseSettings, fields
+from typing import List, Dict, Optional, Annotated, Literal
+from pydantic import BaseModel, Field, BaseSettings
 import inspect
-import os
 from pathlib import Path, PurePath
 
 
@@ -198,13 +195,24 @@ class OnbotConfig(BaseSettings):
         enabled: bool = True
         only_for_children_of_groups_with_uid: Optional[List[str]]
         only_groups_with_attributes: Annotated[
-            Optional[Dict], Field(example={"attribute.chatroom": True})
+            Optional[Dict],
+            Field(
+                description=inspect.cleandoc(
+                    """Define an Authentik custom attribute (as a json or yaml key value pair) to match groups that should be synced. 
+                If unset, all Authentik groups will be mirrored as a Synapse room. 
+                https://goauthentik.io/docs/user-group/group#attributes"""
+                ),
+                example={"is_chatroom": True},
+            ),
         ]
         only_for_groupnames_starting_with: Optional[str]
         disable_rooms_when_mapped_authentik_group_disappears: Annotated[
             bool,
             Field(
-                description="If a previously mapped authentik room disapers (e.g. it was deleted or lost its `only_groups_with_attributes` attribute) onbot will kick out all users and block the room.)"
+                description=inspect.cleandoc(
+                    """If a previously mapped authentik room disappers (e.g. it was deleted or lost its `only_groups_with_attributes` attribute)
+                onbot will kick out all users and block the room."""
+                )
             ),
         ] = False
         delete_disabled_rooms: bool = False
