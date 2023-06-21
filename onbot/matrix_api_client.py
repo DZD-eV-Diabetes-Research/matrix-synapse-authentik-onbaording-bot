@@ -61,35 +61,50 @@ class MatrixApiClient:
         self.state_store_path = state_store_path
         self.state_store_encryption_key = state_store_encryption_key
 
+        self._client_instance_enrypted_cache: AsyncClient = None
+        self._client_instance_unenrypted_cache: AsyncClient = None
+
     def _call_nio_client(
         self, nio_func: Awaitable, params: Dict, encrypted_mode: bool = False
     ):
-        config = None
-        if encrypted_mode:
-            config = AsyncClientConfig(
-                encryption_enabled=True,
-                store_sync_tokens=True,
-                pickle_key=self.state_store_encryption_key,
-            )
-        nio_client = AsyncClient(
-            user=self.user,
-            homeserver=self.server_url,
-            store_path=self.state_store_path if encrypted_mode else None,
-            config=config,
+        """This whole construct is a problably more cumbersome atm as it should be. Its a wrapper to call the ayncio nio-matrix client from the sync code of this bot
+        TODO: refactor this"""
+        nio_client = (
+            self._client_instance_enrypted_cache
+            if encrypted_mode
+            else self._client_instance_unenrypted_cache
         )
+        if nio_client is None:
+            config = None
+            if encrypted_mode:
+                config = AsyncClientConfig(
+                    encryption_enabled=True,
+                    store_sync_tokens=True,
+                    pickle_key=self.state_store_encryption_key,
+                )
+            nio_client = AsyncClient(
+                user=self.user,
+                homeserver=self.server_url,
+                store_path=self.state_store_path if encrypted_mode else None,
+                config=config,
+            )
+            nio_client.access_token = self.access_token.lstrip("Bearer ")
+            nio_client.device_id = self.device_id
+            nio_client.user_id = self.user
+            if encrypted_mode:
+                nio_client.load_store()
+                self._client_instance_enrypted_cache = nio_client
+            else:
+                self._client_instance_unenrypted_cache = nio_client
 
-        nio_client.access_token = self.access_token.lstrip("Bearer ")
-        nio_client.device_id = self.device_id
-        nio_client.user_id = f"@{self.user}:{self.server_name}"
-        if encrypted_mode:
-            nio_client.load_store()
+        # TODO: Password based login, if not a token is provided
         """
-        TODO: Password based login, if not a token is provided
         res = synchronize_async_helper(
             nio_client.login(
                 device_name=self.device_id, password=
             )
         )
+        
         if isinstance(res, LoginError):
             raise SynapseApiError.from_nio_response_error(res)
         """
@@ -316,6 +331,16 @@ class MatrixApiClient:
                 return res
         else:
             return next((r for r in res.events if r["type"] == event_type), None)
+
+    def upload_media(self, from_url: str = None, content: bytes = None) -> str:
+        if from_url is None and content is None:
+            raise ValueError(
+                "No upload source provided. Either `from_url` or `content` must be set(not None)."
+            )
+        elif from_url is not None and content is not None:
+            raise ValueError(
+                "Either `from_url` or `content` must be set. Both are None."
+            )
 
     def _build_api_call_url(self, path: str):
         return f"{self.api_base_url.rstrip('/')}/{path.lstrip('/')}"
