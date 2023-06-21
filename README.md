@@ -10,6 +10,8 @@ A matrix.org synapse bot that welcomes and invites new users to pre configured r
   * unblock remapped rooms
 * Logout disabled/deleted users
 * Update Synpase user attributes from authentik account
+* Promote room admins based on Authentik attribute
+* Define custom rooms with only membership mapped to a usergroup
 
 # Features
 
