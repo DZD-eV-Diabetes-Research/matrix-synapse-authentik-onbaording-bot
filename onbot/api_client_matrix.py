@@ -41,7 +41,7 @@ class SynapseApiError(Exception):
         )
 
 
-class MatrixApiClient:
+class ApiClientMatrix:
     def __init__(
         self,
         user: str,
@@ -292,10 +292,10 @@ class MatrixApiClient:
     def get_room_state_event(
         self,
         room_id: str,
-        event_type: str,
+        event_type: str | List[str],
         state_key: str = "",
         raise_error: bool = True,
-    ) -> Dict | RoomGetStateError:
+    ) -> None | Dict | RoomGetStateError:
         # TODO: hackyhackhack. we fetch all room states and collect out the first with a matching "event_type". i am not sure if that violates the logic of matrix states but works for now
         # state_key falls under the table in this case, because i did not understand what it is anyway. i dont need at it the moment, thats for sure.
         # everything is fine if is just tag a "TODO" on the problem!
@@ -314,6 +314,8 @@ class MatrixApiClient:
         else:
             return res
         """
+        if isinstance(event_type, str):
+            event_type = [event_type]
         if state_key:
             # see "TODO" above
             raise NotImplementedError
@@ -330,7 +332,7 @@ class MatrixApiClient:
             else:
                 return res
         else:
-            return next((r for r in res.events if r["type"] == event_type), None)
+            return next((r for r in res.events if r["type"] in event_type), None)
 
     def upload_media(self, from_url: str = None, content: bytes = None) -> str:
         if from_url is None and content is None:

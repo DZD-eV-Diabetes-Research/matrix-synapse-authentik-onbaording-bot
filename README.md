@@ -12,6 +12,7 @@ A matrix.org synapse bot that welcomes and invites new users to pre configured r
 * Update Synpase user attributes from authentik account
 * Promote room admins based on Authentik attribute
 * Define custom rooms with only membership mapped to a usergroup
+* for all api_clients* take pagination into account
 
 # Features
 
