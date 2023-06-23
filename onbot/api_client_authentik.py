@@ -10,14 +10,10 @@ class AuthentikApiError(Exception):
     pass
 
 
-class AuthentikApiClient:
-    def __init__(self, access_token: str, server_api_base_url: str):
+class ApiClientAuthentik:
+    def __init__(self, access_token: str, url: str):
         self.access_token = access_token
-        self.server_api_base_url = (
-            server_api_base_url
-            if server_api_base_url.endswith("/")
-            else f"{server_api_base_url}/"
-        )
+        self.url = url if url.endswith("/") else f"{url}/"
 
     def list_users(
         self,
@@ -47,6 +43,7 @@ class AuthentikApiClient:
         filter_members_by_pk: Union[str, List[str]] = None,
         filter_by_attribute: Dict = None,
         filter_is_superuser: bool = None,
+        include_inactive_users_obj: bool = False,
     ) -> Dict:
         query = {
             "members_by_username": filter_members_by_username,
@@ -54,12 +51,27 @@ class AuthentikApiClient:
             "attributes": json.dumps(filter_by_attribute),
             "is_superuser": filter_is_superuser,
         }
-        return self._get("/core/groups/", query)["results"]
+        # https://auth.mycompany.org/api/v3/#get-/core/groups/
+        groups = self._get("/core/groups/", query)["results"]
+        if not include_inactive_users_obj:
+            for group in groups:
+                self._remove_inactive_users_from_group_user_list(group)
+        return groups
+
+    def _remove_inactive_users_from_group_user_list(self, group_obj: Dict) -> Dict:
+        if not isinstance(group_obj, dict) or "users_obj" not in group_obj:
+            raise ValueError(
+                f"Expected Authentik API group object as dict like in {self._build_api_call_url('#get-/core/groups/')} got type {type(group_obj)} with content: {group_obj}"
+            )
+        else:
+            group_obj["users_obj"] = [
+                u for u in group_obj["users_obj"] if u["is_active"] is True
+            ]
 
     def _build_api_call_url(self, path: str):
         if path.startswith("/"):
             path = path.lstrip("/")
-        return f"{self.server_api_base_url}{path}"
+        return f"{self.url}api/v3/{path.lstrip('/')}"
 
     def _get(self, path: str, query: Dict = None) -> Dict:
         if query is None:

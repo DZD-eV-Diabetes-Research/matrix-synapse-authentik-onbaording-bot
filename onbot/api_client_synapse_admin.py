@@ -9,7 +9,7 @@ class SynapseAdminApiError(Exception):
     pass
 
 
-class SynapseAdminApiClient:
+class ApiClientSynapseAdmin:
     def __init__(
         self,
         access_token: str,

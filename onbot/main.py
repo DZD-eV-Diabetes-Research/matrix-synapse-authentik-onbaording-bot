@@ -1,9 +1,9 @@
 from onbot.bot import Bot
 from onbot.config import OnbotConfig
 from onbot.utils import YamlConfigFileHandler
-from onbot.synapse_admin_api_client import SynapseAdminApiClient
-from onbot.matrix_api_client import MatrixApiClient
-from onbot.authentik_api_client import AuthentikApiClient
+from onbot.api_client_synapse_admin import ApiClientSynapseAdmin
+from onbot.api_client_matrix import ApiClientMatrix
+from onbot.api_client_authentik import ApiClientAuthentik
 import os
 import logging
 
@@ -17,16 +17,16 @@ def run_bot():
     config_handler.generate_config_file(exists_ok=True)
     config: OnbotConfig = config_handler.get_config()
     logging.basicConfig(level=config.log_level)
-    authentik_client = AuthentikApiClient(
+    authentik_client = ApiClientAuthentik(
         access_token=config.authentik_server.api_key,
-        server_api_base_url=config.authentik_server.public_api_url,
+        url=config.authentik_server.url,
     )
-    synapse_admin_api_client = SynapseAdminApiClient(
+    synapse_admin_api_client = ApiClientSynapseAdmin(
         access_token=config.synapse_server.bot_access_token,
         server_url=config.synapse_server.server_url,
         api_base_path=config.synapse_server.admin_api_path,
     )
-    matrix_api_client = MatrixApiClient(
+    matrix_api_client = ApiClientMatrix(
         user=config.synapse_server.bot_user_id,
         access_token=config.synapse_server.bot_access_token,
         device_id=config.synapse_server.bot_device_id,

@@ -94,11 +94,11 @@ class OnbotConfig(BaseSettings):
     ]
 
     class AuthentikServer(BaseModel):
-        public_api_url: Annotated[
+        url: Annotated[
             str,
             Field(
                 description="The URL to reach your Authentik server.",
-                example="https://authentik.company.org/api/v3",
+                example="https://authentik.company.org/",
             ),
         ]
         api_key: Annotated[
@@ -150,6 +150,11 @@ class OnbotConfig(BaseSettings):
         sync_only_users_with_authentik_attributes: Dict = None
 
         sync_only_users_of_groups_with_id: List[str] = None
+
+        logout_users_from_synapse_when_account_is_withdrawn_in_authentik: bool = True
+        delete_users_from_synapse_when_account_is_withdrawn_in_authentik_after_n_days: int = (
+            356
+        )
 
     sync_authentik_users_with_matrix_rooms: SyncAuthentikUsersWithMatrix = (
         SyncAuthentikUsersWithMatrix()
@@ -292,11 +297,32 @@ class OnbotConfig(BaseSettings):
 
     class DeactivateDisabledAuthentikUsersInMatrix(BaseModel):
         # https://matrix-org.github.io/synapse/develop/admin_api/user_admin_api.html#deactivate-account
-        enabled: bool = True
-        # if erase is set to False, disabled authentik users will be logged out of all matrix devices. If disabled in authtentik, the user wont be able to re-login. It is possible to re-activate the account, by enabled the account in authnetik. This can be used if you do not re-cycle usernames and do not have to be gdpr compliant.
-        # if erase is set to True, the account will be deactivate as in https://matrix-org.github.io/synapse/develop/admin_api/user_admin_api.html#deactivate-account At the moment there is no way of re-activating the account. This can be made gdpr compliant (with the option 'gdpr-erase') and the username will be burned.
-        erase: bool = False
-        gdpr_erase: bool = True
+        enabled: Annotated[
+            bool,
+            Field(
+                description="If enabled users with no matching Authentik account will be logged out of Synapse with the next server tick. As they would need a working Authenik account to re-login they are locked out of Synapse."
+            ),
+        ] = True
+
+        deactivate_after_n_days: Annotated[
+            int,
+            Field(
+                description="Deactivate account as in https://matrix-org.github.io/synapse/latest/admin_api/user_admin_api.html#deactivate-account after a certain amount of days. A delay can help to mitigate minor mistakes e.g. when the Authentik user was disabled accidently"
+            ),
+        ] = 1
+        delete_after_n_days: Annotated[
+            int,
+            Field(
+                description="Delete account as in https://matrix-org.github.io/synapse/latest/admin_api/user_admin_api.html#deactivate-account (with `erase` flag) after a certain amount of days. A delay can help to mitigate minor mistakes e.g. when the Authentik user was disabled accidently"
+            ),
+        ] = 365
+
+        include_user_media_on_delete: Annotated[
+            bool,
+            Field(
+                description="Delete all uploaded media as in https://matrix-org.github.io/synapse/latest/admin_api/user_admin_api.html#delete-media-uploaded-by-a-user This may help meet your local data protection rules but can also alter chat histories with other users."
+            ),
+        ] = False
 
     deactivate_disabled_authentik_users_in_matrix: DeactivateDisabledAuthentikUsersInMatrix = (
         DeactivateDisabledAuthentikUsersInMatrix()

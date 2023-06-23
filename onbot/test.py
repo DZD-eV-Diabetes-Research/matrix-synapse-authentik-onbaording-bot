@@ -5,16 +5,16 @@ from nio import (
     RoomVisibility,
     RoomPreset,
 )
-from synapse_admin_api_client import SynapseAdminApiClient
-from matrix_api_client import MatrixApiClient
+from onbot.api_client_synapse_admin import ApiClientSynapseAdmin
+from onbot.api_client_matrix import ApiClientMatrix
 
-sa = SynapseAdminApiClient(
+sa = ApiClientSynapseAdmin(
     access_token="Bearer syt_ZHpkLWJvdA_oLEkQCHJiSNvzcZJAfdh_0i2HHn",
     server_url="matrix.dzd-ev.org",
     protocol="https",
 )
 
-mc = MatrixApiClient(
+mc = ApiClientMatrix(
     access_token="Bearer syt_ZHpkLWJvdA_oLEkQCHJiSNvzcZJAfdh_0i2HHn",
     server_url="matrix.dzd-ev.org",
     protocol="https",
