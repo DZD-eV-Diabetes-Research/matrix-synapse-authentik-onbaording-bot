@@ -151,10 +151,12 @@ class OnbotConfig(BaseSettings):
 
         sync_only_users_of_groups_with_id: List[str] = None
 
+        ### !!! OBSOLETE !!!
         logout_users_from_synapse_when_account_is_withdrawn_in_authentik: bool = True
         delete_users_from_synapse_when_account_is_withdrawn_in_authentik_after_n_days: int = (
             356
         )
+        ### !!! OBSOLETE !!!
 
     sync_authentik_users_with_matrix_rooms: SyncAuthentikUsersWithMatrix = (
         SyncAuthentikUsersWithMatrix()
@@ -304,18 +306,22 @@ class OnbotConfig(BaseSettings):
             ),
         ] = True
 
-        deactivate_after_n_days: Annotated[
+        deactivate_after_n_sec: Annotated[
             int,
             Field(
                 description="Deactivate account as in https://matrix-org.github.io/synapse/latest/admin_api/user_admin_api.html#deactivate-account after a certain amount of days. A delay can help to mitigate minor mistakes e.g. when the Authentik user was disabled accidently"
             ),
-        ] = 1
-        delete_after_n_days: Annotated[
-            int,
+        ] = (
+            60 * 60 * 24
+        )
+        delete_after_n_sec: Annotated[
+            int | None,
             Field(
                 description="Delete account as in https://matrix-org.github.io/synapse/latest/admin_api/user_admin_api.html#deactivate-account (with `erase` flag) after a certain amount of days. A delay can help to mitigate minor mistakes e.g. when the Authentik user was disabled accidently"
             ),
-        ] = 365
+        ] = (
+            60 * 60 * 24 * 365
+        )
 
         include_user_media_on_delete: Annotated[
             bool,
