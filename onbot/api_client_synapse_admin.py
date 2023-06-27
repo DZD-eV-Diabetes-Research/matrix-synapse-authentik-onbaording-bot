@@ -82,9 +82,9 @@ class ApiClientSynapseAdmin:
         # https://matrix-org.github.io/synapse/develop/admin_api/user_admin_api.html#change-whether-a-user-is-a-server-administrator-or-not
         raise NotImplementedError()
 
-    def deactivate_account(self, user_id: str, gdpr_erease: bool):
+    def deactivate_account(self, user_id: str, erease: bool):
         # https://matrix-org.github.io/synapse/develop/admin_api/user_admin_api.html#deactivate-account
-        self._post(f"deactivate/{user_id}", json_body={"erase": gdpr_erease})
+        self._post(f"deactivate/{user_id}", json_body={"erase": erease})
 
     def room_is_blocked(self, room_id: str) -> bool:
         # https://matrix-org.github.io/synapse/develop/admin_api/rooms.html#get-block-status
@@ -106,7 +106,7 @@ class ApiClientSynapseAdmin:
     def logout_account(self, user_id) -> List[Dict]:
         # https://matrix-org.github.io/synapse/latest/admin_api/user_admin_api.html#list-all-devices
         # https://matrix-org.github.io/synapse/latest/admin_api/user_admin_api.html#delete-a-device
-        devices = self._get(f"v2/users/{user_id}/devices")
+        devices = self._get(f"v2/users/{user_id}/devices")["devices"]
         for device in devices:
             self._delete(f"v2/users/{user_id}/devices/{device['device_id']}")
 
@@ -122,6 +122,10 @@ class ApiClientSynapseAdmin:
         if message:
             body["message"] = message
         return self._delete(f"v1/rooms/{room_id}")
+
+    def delete_user_media(self, user_id: str) -> dict:
+        # https://matrix-org.github.io/synapse/latest/admin_api/user_admin_api.html#delete-media-uploaded-by-a-user
+        return self._delete(f"v1/users/{user_id}/media")
 
     def room_details(self, room_id: str):
         # https://matrix-org.github.io/synapse/latest/admin_api/rooms.html#room-details-api
