@@ -6,8 +6,6 @@ A matrix.org synapse bot that welcomes and invites new users to pre configured r
 
 * room_admin_attr
 * room_encryption
-* Block unmapped rooms
-  * unblock remapped rooms
 * Logout disabled/deleted users
 * Update Synpase user attributes from authentik account
 * Promote room admins based on Authentik attribute

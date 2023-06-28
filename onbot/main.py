@@ -39,6 +39,7 @@ def run_bot():
         authentik_client=authentik_client,
         synapse_admin_api_client=synapse_admin_api_client,
         matrix_api_client=matrix_api_client,
+        server_tick_wait_time_sec_int=config.server_tick_rate_sec,
     )
     bot.start()
 

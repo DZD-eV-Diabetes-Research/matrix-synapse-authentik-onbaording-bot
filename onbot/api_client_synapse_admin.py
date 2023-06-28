@@ -74,7 +74,7 @@ class ApiClientSynapseAdmin:
         if not room_id in self.get_user_rooms_joined(user_id):
             self._post(f"v1/join/{room_id}", json_body={"user_id": user_id})
 
-    def get_user_rooms_joined(self, user_id: str):
+    def set_room_admin(self, room_id: str, user_id: str, is_admin: bool = False):
         # https://matrix-org.github.io/synapse/develop/admin_api/user_admin_api.html#list-room-memberships-of-a-user
         return self._get(f"v1/users/{user_id}/joined_rooms")["joined_rooms"]
 
