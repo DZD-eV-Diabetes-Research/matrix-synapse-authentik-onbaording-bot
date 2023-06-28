@@ -16,6 +16,12 @@ class OnbotConfig(BaseSettings):
             description="A passphrase that will be used to encrypt end to end encryption keys https://github.com/poljar/matrix-nio/blob/2632a72e7acee401c4354646a40f31db04db4258/nio/client/base_client.py#L145"
         ),
     ] = None
+    server_tick_rate_sec: Annotated[
+        Optional[int],
+        Field(
+            description="The bot poll every n seconds to sync the status between Authentik and Synapse."
+        ),
+    ] = 20
 
     class SynapseServer(BaseModel):
         server_name: Annotated[
@@ -111,24 +117,13 @@ class OnbotConfig(BaseSettings):
                 example="Bearer yEl4tFqeIBQwoHAd9hajmkm2PBjSAirY_THIS_IS_JUST_AN_EXAMPLE_i57e",
             ),
         ]
-        sync_interval_seconds: Annotated[
-            int,
-            Field(
-                description=inspect.cleandoc(
-                    """The bot will do polling to sync the Authentik server with your Synapse server (In a future version there maybe a event listing based system.).
-                The intervall will determine how often the bot will look up, if data is in sync.
-                That can mean when a new user enters your Synapse server, the user may need to wait `sync_interval_seconds` seconds until the bot will greet and allocates user groups."""
-                ),
-                example=120,
-            ),
-        ] = 60
 
     authentik_server: AuthentikServer
 
     # The bot will invite the new user to a direct chat and send following message
     welcome_new_users_messages: List[str] = [
         "Welcome to the company chat. I am the company bot. I will invite you to the groups you are assigned too. If you have any technical questions write a message to @admin-person:matrix.company.org.",
-        "If you need some guidance on how to use this chat have a look at the official documentation - https://element.io/user-guide (You can skip the '1A registration'-step as you obviously have an account",
+        "If you need some guidance on how to use this chat have a look at the official documentations. For the basic have a look at https://matrix.org/docs/chat_basics/matrix-for-im/ and for more details see https://element.io/user-guide",
         "🛑 🔐 The Chat software will ask you to setup a 'Security Key Backup'. <b>This is very important<b>. Save the file on a secure location. Otherwise you could lose access to older enrypted messages later. Please follow the request.",
     ]
 
@@ -151,12 +146,42 @@ class OnbotConfig(BaseSettings):
 
         sync_only_users_of_groups_with_id: List[str] = None
 
-        ### !!! OBSOLETE !!!
-        logout_users_from_synapse_when_account_is_withdrawn_in_authentik: bool = True
-        delete_users_from_synapse_when_account_is_withdrawn_in_authentik_after_n_days: int = (
-            356
+        class DeactivateDisabledAuthentikUsersInMatrix(BaseModel):
+            # https://matrix-org.github.io/synapse/develop/admin_api/user_admin_api.html#deactivate-account
+            enabled: Annotated[
+                bool,
+                Field(
+                    description="If enabled users with no matching Authentik account will be logged out of Synapse with the next server tick. As they would need a working Authenik account to re-login they are locked out of Synapse."
+                ),
+            ] = True
+
+            deactivate_after_n_sec: Annotated[
+                int,
+                Field(
+                    description="Deactivate account as in https://matrix-org.github.io/synapse/latest/admin_api/user_admin_api.html#deactivate-account after a certain amount of days. A delay can help to mitigate minor mistakes e.g. when the Authentik user was disabled accidently"
+                ),
+            ] = (
+                60 * 60 * 24
+            )
+            delete_after_n_sec: Annotated[
+                int | None,
+                Field(
+                    description="Delete account as in https://matrix-org.github.io/synapse/latest/admin_api/user_admin_api.html#deactivate-account (with `erase` flag) after a certain amount of days. A delay can help to mitigate minor mistakes e.g. when the Authentik user was disabled accidently"
+                ),
+            ] = (
+                60 * 60 * 24 * 365
+            )
+
+            include_user_media_on_delete: Annotated[
+                bool,
+                Field(
+                    description="Delete all uploaded media as in https://matrix-org.github.io/synapse/latest/admin_api/user_admin_api.html#delete-media-uploaded-by-a-user This may help meet your local data protection rules but can also alter chat histories with other users."
+                ),
+            ] = False
+
+        deactivate_disabled_authentik_users_in_matrix: DeactivateDisabledAuthentikUsersInMatrix = (
+            DeactivateDisabledAuthentikUsersInMatrix()
         )
-        ### !!! OBSOLETE !!!
 
     sync_authentik_users_with_matrix_rooms: SyncAuthentikUsersWithMatrix = (
         SyncAuthentikUsersWithMatrix()
@@ -223,6 +248,18 @@ class OnbotConfig(BaseSettings):
             ),
         ] = False
         delete_disabled_rooms: bool = False
+        make_authentik_superusers_matrix_room_admin: bool = True
+        authentik_group_attr_for_matrix_power_level: Annotated[
+            str,
+            Field(
+                description=inspect.cleandoc(
+                    """Define an Authentik group attribute path (elements seperated by '.') that contains an integer from 0-100. 
+                   Members of this group will get this integer applied as Matrix power level in the rooms they are memebr of(https://matrix.org/docs/communities/moderation/)
+                   e.g. you could create an Authentik group named "Matrix-Moderators" with `{"attributes":{"chat-powerlevel":50}}`. All members of this group will get Matrix power level 50 in their onbot group rooms"""
+                ),
+                example="attributes.chat-powerlevel",
+            ),
+        ] = "attributes.chat-powerlevel"
 
     sync_matrix_rooms_based_on_authentik_groups: SyncMatrixRoomsBasedOnAuthentikGroups = (
         SyncMatrixRoomsBasedOnAuthentikGroups()

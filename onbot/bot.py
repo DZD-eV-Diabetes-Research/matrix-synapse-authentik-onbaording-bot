@@ -85,9 +85,9 @@ class MatrixRoomAttributes(BaseModel):
     topic: str = TopicUnfetched
     is_space: bool = False
     room_type: OnbotRoomTypes = None
-    room_state: OnbotRoomStateSpace | OnbotRoomStateDirectRoom | OnbotRoomStateGroupRoom = (
-        None
-    )
+    room_state: Union[
+        OnbotRoomStateSpace, OnbotRoomStateDirectRoom, OnbotRoomStateGroupRoom
+    ] = None
 
     @classmethod
     def from_synapse_admin_api_obj(cls, obj: Dict, is_space=False):
@@ -290,7 +290,9 @@ class Bot:
     def _deactivate_or_delete_matrix_user_accounts_that_are_disabled_or_deleted_in_authentik(
         self,
     ):
-        if not self.config.deactivate_disabled_authentik_users_in_matrix.enabled:
+        if (
+            not self.config.sync_authentik_users_with_matrix_rooms.deactivate_disabled_authentik_users_in_matrix.enabled
+        ):
             return
         active_authentik_user = self.get_authentik_accounts(disabled_accounts=False)
         user_state_rooms = self._list_user_direct_rooms(include_disabled=False)
@@ -307,7 +309,7 @@ class Bot:
                     self._save_onbot_room_state_to_synapse_server(user_state_room)
                 elif (
                     now - user_state_room.room_state.marked_for_disabling_timestamp
-                    > self.config.deactivate_disabled_authentik_users_in_matrix.deactivate_after_n_sec
+                    > self.config.sync_authentik_users_with_matrix_rooms.deactivate_disabled_authentik_users_in_matrix.deactivate_after_n_sec
                 ):
                     # disable user
                     self.api_client_synapse_admin.logout_account(
@@ -317,17 +319,17 @@ class Bot:
                     self._save_onbot_room_state_to_synapse_server(user_state_room)
                 elif (
                     user_state_room.room_state.disabled_user_timestamp is not None
-                    and self.config.deactivate_disabled_authentik_users_in_matrix.delete_after_n_sec
+                    and self.config.sync_authentik_users_with_matrix_rooms.deactivate_disabled_authentik_users_in_matrix.delete_after_n_sec
                     is not None
                     and (
                         now - user_state_room.room_state.disabled_user_timestamp
-                        > self.config.deactivate_disabled_authentik_users_in_matrix.delete_after_n_sec
+                        > self.config.sync_authentik_users_with_matrix_rooms.deactivate_disabled_authentik_users_in_matrix.delete_after_n_sec
                     )
                 ):
                     # delete user
                     self._delete_synapse_user(
                         user_state_room.room_state.user_id,
-                        delete_media=self.config.deactivate_disabled_authentik_users_in_matrix.include_user_media_on_delete,
+                        delete_media=self.config.sync_authentik_users_with_matrix_rooms.deactivate_disabled_authentik_users_in_matrix.include_user_media_on_delete,
                         state_room_id=user_state_room.room_id,
                     )
 
