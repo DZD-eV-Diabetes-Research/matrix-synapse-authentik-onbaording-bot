@@ -294,7 +294,11 @@ class Bot:
             not self.config.sync_authentik_users_with_matrix_rooms.deactivate_disabled_authentik_users_in_matrix.enabled
         ):
             return
-        active_authentik_user = self.get_authentik_accounts(disabled_accounts=False)
+        active_authentik_user = (
+            self.get_authentik_accounts_that_need_mapped_synapse_account(
+                disabled_accounts=False
+            )
+        )
         user_state_rooms = self._list_user_direct_rooms(include_disabled=False)
 
         now = int(time.time())
@@ -508,6 +512,96 @@ class Bot:
                         "Automatically removed because of missing/revoked group membership in central user directory.",
                     )
 
+    def set_room_power_levels_according_to_authentik_attr(self):
+        """Set synapse user power levels per room based on Authentik custom attributes"""
+        # ToDo: This function a waaay to large and complex. but a large refactor of this whole bot class is necessary anyway. Just a poc at the moment
+
+        ## Collect data
+        synced_users: List[
+            UserMap
+        ] = self.get_authentik_accounts_with_mapped_synapse_account()
+        synced_super_users: List[UserMap] = [
+            u for u in synced_users if u.authentik_api_obj["is_superuser"] == True
+        ]
+
+        class AuthentikPowerLevelGroup(BaseModel):
+            authentik_api_group_obj: Dict
+            group_members_matrix_id: List[str] = None
+            power_level: int = 0
+
+        authentik_power_level_groups: List[AuthentikPowerLevelGroup] = []
+        if (
+            self.config.sync_matrix_rooms_based_on_authentik_groups.authentik_group_attr_for_matrix_power_level
+        ):
+            for group in self.api_client_authentik.list_groups():
+                power_level = get_nested_dict_val_by_path(
+                    group,
+                    (
+                        "attributes."
+                        + self.config.sync_matrix_rooms_based_on_authentik_groups.authentik_group_attr_for_matrix_power_level
+                    ).split("."),
+                    fallback_val=None,
+                )
+                if power_level is not None:
+                    power_level_group = AuthentikPowerLevelGroup(
+                        authentik_api_group_obj=group, power_level=power_level
+                    )
+                    power_level_group.group_members_matrix_id = [
+                        self._get_matrix_user_id(u)
+                        for u in power_level_group.authentik_api_group_obj["users_obj"]
+                    ]
+                    authentik_power_level_groups.append(power_level_group)
+            authentik_power_level_groups.sort(key=lambda x: x.power_level)
+
+        ## Set power levels per room
+        for group_room in self._get_authentik_groups_that_need_synapse_room():
+            group_room_members_matrix_id = [
+                g.generated_matrix_id
+                for g in self.get_authentik_accounts_with_mapped_synapse_account(
+                    from_matrix_room_id=group_room.generated_matrix_room_attr
+                )
+            ]
+            user_power_levels: Dict[str, str] = {
+                self.config.synapse_server.bot_user_id: 100
+            }
+            room_id: str = group_room.matrix_obj["room_id"]
+            room_members: List[str] = self.api_client_synapse_admin.list_room_members(
+                room_id=room_id
+            )
+            ## Set power levels based on power level groups
+            if authentik_power_level_groups:
+                for power_level_group in authentik_power_level_groups:
+                    room_members_with_power_level_group_membership = [
+                        u
+                        for u in room_members
+                        if u in power_level_group.group_members_matrix_id
+                    ]
+                    for (
+                        power_level_user_matrix_id
+                    ) in room_members_with_power_level_group_membership:
+                        user_power_levels[
+                            power_level_user_matrix_id
+                        ] = power_level_group.power_level
+
+            ## Set all authentik power user as room admins
+            if (
+                self.config.sync_matrix_rooms_based_on_authentik_groups.make_authentik_superusers_matrix_room_admin
+            ):
+                for matrix_username in room_members:
+                    if matrix_username in [
+                        u.matrix_api_obj["name"] for u in synced_super_users
+                    ]:
+                        user_power_levels[matrix_username] = 100
+
+            for mapped_room_member in group_room_members_matrix_id:
+                if mapped_room_member not in user_power_levels:
+                    user_power_levels[mapped_room_member] = 0
+            power_levels = self.api_client_matrix.get_room_power_levels(room_id=room_id)
+            power_levels["users"] = power_level["users"] | user_power_levels
+            self.api_client_matrix.set_room_power_levels(
+                room_id=room_id, power_levels=power_levels
+            )
+
     def _get_parent_space_if_needed(self) -> MatrixRoomAttributes | None:
         if self._space_cache is not None:
             return self._space_cache
@@ -675,7 +769,11 @@ class Bot:
             encrypted=encrypted,
         )
 
-    def get_authentik_accounts(self, disabled_accounts: bool = False) -> List[UserMap]:
+    def get_authentik_accounts_that_need_mapped_synapse_account(
+        self,
+        disabled_accounts: bool = False,
+        only_accounts_from_group_with_pk: str = None,
+    ) -> List[UserMap]:
         allowed_authentik_user_pathes = (
             self.config.sync_authentik_users_with_matrix_rooms.sync_only_users_in_authentik_pathes
         )
@@ -690,6 +788,12 @@ class Bot:
         allowed_authentik_user_group_pks = (
             self.config.sync_authentik_users_with_matrix_rooms.sync_only_users_of_groups_with_id
         )
+        if only_accounts_from_group_with_pk:
+            allowed_authentik_user_group_pks = [
+                g
+                for g in allowed_authentik_user_group_pks
+                if only_accounts_from_group_with_pk
+            ]
 
         authentik_users: List[UserMap] = []
         for path in allowed_authentik_user_pathes:
@@ -709,11 +813,21 @@ class Bot:
                 )
         return authentik_users
 
-    def get_authentik_accounts_with_mapped_synapse_account(self) -> List[UserMap]:
-        authentik_users = self.get_authentik_accounts()
+    def get_authentik_accounts_with_mapped_synapse_account(
+        self,
+        from_matrix_room_id: str = None,
+        only_accounts_from_group_with_pk: str = None,
+    ) -> List[UserMap]:
+        authentik_users = self.get_authentik_accounts_that_need_mapped_synapse_account(
+            only_accounts_from_group_with_pk=only_accounts_from_group_with_pk
+        )
 
         matched_users: List[UserMap] = []
-        for matrix_user in self.api_client_synapse_admin.list_users():
+        for matrix_user in (
+            self.api_client_synapse_admin.list_users()
+            if not from_matrix_room_id
+            else self.api_client_synapse_admin.list_room_members(from_matrix_room_id)
+        ):
             if matrix_user["name"] in self.config.matrix_user_ignore_list:
                 continue
             # matrix_user is object from https://matrix-org.github.io/synapse/latest/admin_api/user_admin_api.html#list-accounts
