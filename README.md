@@ -4,11 +4,9 @@ A matrix.org synapse bot that welcomes and invites new users to pre configured r
 
 # todo
 
-* room_admin_attr
+* room_admin_attr - ongoing - next: testing first implentation
 * room_encryption
-* Logout disabled/deleted users
 * Update Synpase user attributes from authentik account
-* Promote room admins based on Authentik attribute
 * Define custom rooms with only membership mapped to a usergroup
 * for all api_clients* take pagination into account
 
@@ -21,3 +19,4 @@ A matrix.org synapse bot that welcomes and invites new users to pre configured r
   * Selective group based on Authentik attribute
   * Membership mirroring (Add or kick user in Synapse room if added/removed from authentik group)
   * Selective membership mirroring based on group membership or attribute.
+  * Logout disabled/deleted users

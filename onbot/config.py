@@ -253,13 +253,14 @@ class OnbotConfig(BaseSettings):
             str,
             Field(
                 description=inspect.cleandoc(
-                    """Define an Authentik group attribute path (elements seperated by '.') that contains an integer from 0-100. 
-                   Members of this group will get this integer applied as Matrix power level in the rooms they are memebr of(https://matrix.org/docs/communities/moderation/)
-                   e.g. you could create an Authentik group named "Matrix-Moderators" with `{"attributes":{"chat-powerlevel":50}}`. All members of this group will get Matrix power level 50 in their onbot group rooms"""
+                    """Define an Authentik group custom attribute path (elements seperated by '.') that contains an integer from 0-100. 
+                    Members of this group will get this integer applied as Matrix power level in the rooms they are member of(https://matrix.org/docs/communities/moderation/)
+                    e.g. you could create an Authentik group named "Matrix-Moderators" with `{"attributes":{"chat-powerlevel":50}}`. All members of this group will get Matrix power level 50 in their onbot group rooms
+                    If a user gets admin via `sync_matrix_rooms_based_on_authentik_groups.make_authentik_superusers_matrix_room_admin` `authentik_group_attr_for_matrix_power_level` will be ignored """
                 ),
-                example="attributes.chat-powerlevel",
+                example="synapse-options.chat-powerlevel",
             ),
-        ] = "attributes.chat-powerlevel"
+        ] = "chat-powerlevel"
 
     sync_matrix_rooms_based_on_authentik_groups: SyncMatrixRoomsBasedOnAuthentikGroups = (
         SyncMatrixRoomsBasedOnAuthentikGroups()
