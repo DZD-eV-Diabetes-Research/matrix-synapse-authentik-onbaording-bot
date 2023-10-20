@@ -16,7 +16,8 @@ from typing import (
 )
 import inspect
 from functools import singledispatch
-from pydantic import BaseModel, fields, BaseSettings, schema
+from pydantic import BaseModel, fields, schema
+from pydantic_settings import BaseSettings
 from pathlib import Path, PurePath
 import yaml
 from dataclasses import dataclass
