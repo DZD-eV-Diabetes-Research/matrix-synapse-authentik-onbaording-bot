@@ -1,5 +1,6 @@
 from typing import List, Dict, Optional, Annotated, Literal
-from pydantic import BaseModel, Field, BaseSettings
+from pydantic import BaseModel, Field
+from pydantic_settings import BaseSettings
 import inspect
 from pathlib import Path, PurePath
 

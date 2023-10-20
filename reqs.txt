@@ -1,2 +1,4 @@
 # apt-get install libolm-dev
 matrix-nio[e2e]
+pydantic
+pydantic-settings
