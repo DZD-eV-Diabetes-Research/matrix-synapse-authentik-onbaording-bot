@@ -93,9 +93,9 @@ class MatrixRoomAttributes(BaseModel):
     def from_synapse_admin_api_obj(cls, obj: Dict, is_space=False):
         return cls(
             room_id=obj["room_id"],
-            canonical_alias=obj["canonical_alias"]
-            if "canonical_alias" in obj
-            else None,
+            canonical_alias=(
+                obj["canonical_alias"] if "canonical_alias" in obj else None
+            ),
             name=obj["name"] if "name" in obj else None,
             topic=obj["topic"] if "topic" in obj else None,
             is_space=is_space,
@@ -184,9 +184,9 @@ class Bot:
         time.sleep(self.server_tick_wait_time_sec_int)
 
     def create_direct_room_with_new_users_and_send_welcome_messages(self):
-        mapped_users: List[
-            UserMap
-        ] = self.get_authentik_accounts_with_mapped_synapse_account()
+        mapped_users: List[UserMap] = (
+            self.get_authentik_accounts_with_mapped_synapse_account()
+        )
         all_direct_onbot_rooms = self._list_user_direct_rooms(include_disabled=False)
 
         for user in mapped_users:
@@ -263,9 +263,9 @@ class Bot:
             not self.config.sync_matrix_rooms_based_on_authentik_groups.disable_rooms_when_mapped_authentik_group_disappears
         ):
             return
-        req_matrix_rooms_from_authentik_groups: List[
-            Group2RoomMap
-        ] = self._get_authentik_groups_that_need_synapse_room()
+        req_matrix_rooms_from_authentik_groups: List[Group2RoomMap] = (
+            self._get_authentik_groups_that_need_synapse_room()
+        )
         req_matrix_rooms_from_authentik_group_ids = [
             r.authentik_api_obj["pk"] for r in req_matrix_rooms_from_authentik_groups
         ]
@@ -463,12 +463,12 @@ class Bot:
                     )
 
     def sync_users_and_rooms(self):
-        mapped_users: List[
-            UserMap
-        ] = self.get_authentik_accounts_with_mapped_synapse_account()
-        mapped_rooms: List[
-            Group2RoomMap
-        ] = self._get_authentik_groups_that_need_synapse_room()
+        mapped_users: List[UserMap] = (
+            self.get_authentik_accounts_with_mapped_synapse_account()
+        )
+        mapped_rooms: List[Group2RoomMap] = (
+            self._get_authentik_groups_that_need_synapse_room()
+        )
         for room in mapped_rooms:
             room_members = self.api_client_synapse_admin.list_room_members(
                 room.matrix_obj.room_id
@@ -517,9 +517,9 @@ class Bot:
         # ToDo: This function a waaay to large and complex. but a large refactor of this whole bot class is necessary anyway. Just a poc at the moment
 
         ## Collect data
-        synced_users: List[
-            UserMap
-        ] = self.get_authentik_accounts_with_mapped_synapse_account()
+        synced_users: List[UserMap] = (
+            self.get_authentik_accounts_with_mapped_synapse_account()
+        )
         synced_super_users: List[UserMap] = [
             u for u in synced_users if u.authentik_api_obj["is_superuser"] == True
         ]
@@ -579,9 +579,9 @@ class Bot:
                     for (
                         power_level_user_matrix_id
                     ) in room_members_with_power_level_group_membership:
-                        user_power_levels[
-                            power_level_user_matrix_id
-                        ] = power_level_group.power_level
+                        user_power_levels[power_level_user_matrix_id] = (
+                            power_level_group.power_level
+                        )
 
             ## Set all authentik power user as room admins
             if (
@@ -843,10 +843,10 @@ class Bot:
         fallback_value: Any,
         canonical: bool = True,
     ) -> str:
-        attr_path_keys: List[
-            str
-        ] = self.config.sync_authentik_users_with_matrix_rooms.authentik_username_mapping_attribute.split(
-            "."
+        attr_path_keys: List[str] = (
+            self.config.sync_authentik_users_with_matrix_rooms.authentik_username_mapping_attribute.split(
+                "."
+            )
         )
 
         try:
@@ -919,11 +919,11 @@ class Bot:
             raise SynapseApiError.from_nio_response_error(event)
         elif event is None:
             return
-        state_event_class: Type[OnbotRoomStateSpace] | Type[
-            OnbotRoomStateDirectRoom
-        ] | Type[OnbotRoomStateGroupRoom] = onbot_room_state_event_names[
-            event["type"]
-        ].value
+        state_event_class: (
+            Type[OnbotRoomStateSpace]
+            | Type[OnbotRoomStateDirectRoom]
+            | Type[OnbotRoomStateGroupRoom]
+        ) = onbot_room_state_event_names[event["type"]].value
         room.room_type = onbot_room_state_event_names[event["type"]]
         room.room_state = state_event_class.parse_obj(event["content"])
 
