@@ -1,6 +1,5 @@
 from onbot.bot import Bot
-from onbot.config import OnbotConfig
-from onbot.utils import YamlConfigFileHandler
+from onbot.config import OnbotConfig, get_config
 from onbot.api_client_synapse_admin import ApiClientSynapseAdmin
 from onbot.api_client_matrix import ApiClientMatrix
 from onbot.api_client_authentik import ApiClientAuthentik
@@ -12,10 +11,7 @@ handler = logging.StreamHandler()
 
 
 def run_bot():
-    config_file = os.getenv("ONBOT_CONFIG_FILE_PATH", "config.yml")
-    config_handler = YamlConfigFileHandler(OnbotConfig, config_file)
-    config_handler.generate_config_file(exists_ok=True)
-    config: OnbotConfig = config_handler.get_config()
+    config: OnbotConfig = get_config()
     logging.basicConfig(level=config.log_level)
     authentik_client = ApiClientAuthentik(
         access_token=config.authentik_server.api_key,
@@ -35,7 +31,7 @@ def run_bot():
         state_store_path=config.storage_dir,
     )
     bot = Bot(
-        config_handler.get_config(),
+        get_config(),
         authentik_client=authentik_client,
         synapse_admin_api_client=synapse_admin_api_client,
         matrix_api_client=matrix_api_client,
