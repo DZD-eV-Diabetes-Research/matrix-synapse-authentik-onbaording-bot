@@ -94,5 +94,5 @@ def synchronize_async_helper(to_await_func: Awaitable):
         loop = asyncio.get_event_loop()
     coroutine = run_and_capture_result()
     loop.run_until_complete(coroutine)
-    print("async_response", async_response)
+    # print("async_response", async_response)
     return async_response[0]

@@ -1,4 +1,4 @@
-from typing import List, Dict, Union, Any, Literal, TYPE_CHECKING, Type
+from typing import List, Dict, Union, Any, Literal, TYPE_CHECKING, Type, Optional
 import logging
 import json
 from pydantic import BaseModel, Field
@@ -51,9 +51,9 @@ class OnbotRoomStateGroupRoom(_OnbotRoomEventStateContent):
 
 class OnbotRoomStateDirectRoom(_OnbotRoomEventStateContent):
     user_id: str
-    marked_for_disabling_timestamp: float = None
-    disabled_user_timestamp: float = None
-    send_authentik_user_welcome_messages: dict = Field(default_factory=dict)
+    marked_for_disabling_timestamp: Optional[float] = None
+    disabled_user_timestamp: Optional[float] = None
+    send_authentik_user_welcome_messages: Optional[Dict] = Field(default_factory=dict)
 
 
 class OnbotRoomTypes(Enum):
@@ -80,9 +80,9 @@ class TopicUnfetched:
 
 class MatrixRoomAttributes(BaseModel):
     room_id: str
-    canonical_alias: str = None
-    name: str = None
-    topic: str = TopicUnfetched
+    canonical_alias: Optional[str] = None
+    name: Optional[str] = None
+    topic: Optional[str] = TopicUnfetched
     is_space: bool = False
     room_type: OnbotRoomTypes = None
     room_state: Union[
@@ -120,16 +120,6 @@ class Group2RoomMap(BaseModel):
     matrix_obj: MatrixRoomAttributes = None
 
     generated_matrix_room_attr: MatrixRoomCreateAttributes = None
-
-
-"""
-Authentik
-Matrix
-Sync
-Bot
-
-
-"""
 
 
 class Bot:
@@ -179,6 +169,7 @@ class Bot:
         self.sync_users_and_rooms()
         self.disable_obsolete_authentik_group_mapped_matrix_rooms()
         self.clean_up_matrix_accounts()
+        self.update_room_attributes()
 
         log.debug(f"Wait {self.server_tick_wait_time_sec_int} for next servertick")
         time.sleep(self.server_tick_wait_time_sec_int)
@@ -286,6 +277,18 @@ class Bot:
 
     def clean_up_matrix_accounts(self):
         self._deactivate_or_delete_matrix_user_accounts_that_are_disabled_or_deleted_in_authentik()
+
+    def update_room_attributes(self):
+        mapped_rooms: List[Group2RoomMap] = (
+            self._get_authentik_groups_that_need_synapse_room()
+        )
+        for room in mapped_rooms:
+            target_room_attributes: MatrixRoomCreateAttributes = (
+                self._get_matrix_room_attrs_from_authentik_group(room.authentik_api_obj)
+            )
+            raise NotImplementedError(
+                "You are here. you want to update existing matrix room attributes based on the authentik room atributes"
+            )
 
     def _deactivate_or_delete_matrix_user_accounts_that_are_disabled_or_deleted_in_authentik(
         self,
@@ -722,23 +725,28 @@ class Bot:
         room_settings: OnbotConfig.MatrixDynamicRoomSettings = None
         room_default_settings = self.config.matrix_room_default_settings
         if group["pk"] in self.config.per_authentik_group_pk_matrix_room_settings:
-            room_settings = OnbotConfig.MatrixDynamicRoomSettings.parse_obj(
-                room_default_settings.dict()
+            room_settings = OnbotConfig.MatrixDynamicRoomSettings.model_validate(
+                room_default_settings.model_dump()
                 | self.config.per_authentik_group_pk_matrix_room_settings[
                     group["pk"]
-                ].dict()
+                ].model_dump()
             )
         else:
             room_settings = room_default_settings
         group_name = group[room_settings.matrix_alias_from_authentik_attribute]
         alias = f"{room_settings.alias_prefix if room_settings.alias_prefix is not None else ''}{group_name if group_name is not None else ''}"
 
-        name = get_nested_dict_val_by_path(
+        name: str = get_nested_dict_val_by_path(
             data=group,
             key_path=room_settings.matrix_name_from_authentik_attribute.split("."),
             fallback_val=None,
         )
-        name = f"{room_settings.name_prefix if not None else ''}{name if name is not None else ''}"
+        if (
+            room_settings.name_prefix
+            and name
+            and not name.startswith(room_settings.name_prefix)
+        ):
+            name = f"{room_settings.name_prefix}{name}"
 
         topic = get_nested_dict_val_by_path(
             data=group,
@@ -925,7 +933,7 @@ class Bot:
             | Type[OnbotRoomStateGroupRoom]
         ) = onbot_room_state_event_names[event["type"]].value
         room.room_type = onbot_room_state_event_names[event["type"]]
-        room.room_state = state_event_class.parse_obj(event["content"])
+        room.room_state = state_event_class.model_validate(event["content"])
 
         return room
 

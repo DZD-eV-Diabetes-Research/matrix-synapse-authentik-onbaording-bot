@@ -71,8 +71,7 @@ class ApiClientSynapseAdmin:
 
     def add_user_to_room(self, room_id: str, user_id: str):
         # https://matrix-org.github.io/synapse/latest/admin_api/room_membership.html
-        if not room_id in self.get_user_rooms_joined(user_id):
-            self._post(f"v1/join/{room_id}", json_body={"user_id": user_id})
+        self._post(f"v1/join/{room_id}", json_body={"user_id": user_id})
 
     def set_room_admin(self, room_id: str, user_id: str, is_admin: bool = False):
         # https://matrix-org.github.io/synapse/develop/admin_api/user_admin_api.html#list-room-memberships-of-a-user
