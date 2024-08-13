@@ -259,6 +259,16 @@ class OnbotConfig(BaseSettings):
                 default_factory=list,
             ),
         ]
+        room_avatar_url_attribute: Annotated[
+            Optional[Dict],
+            Field(
+                description=inspect.cleandoc(
+                    """Define an Authentik custom room attribute that can contain an url to a media that will be configured as the rooms avatar"""
+                ),
+                examples="chatroom_avatar_url",
+                default="chatroom_avatar_url",
+            ),
+        ]
         only_for_groupnames_starting_with: Optional[str] = Field(default_factory=list)
         disable_rooms_when_mapped_authentik_group_disappears: Annotated[
             bool,
