@@ -1,7 +1,8 @@
-from typing import List, Dict, Union, Awaitable
+from typing import List, Dict, Union, Awaitable, BinaryIO, Literal
 import logging
 import requests
-import asyncio
+import mimetypes
+import uuid
 from nio import (
     AsyncClient,
     AsyncClientConfig,
@@ -56,7 +57,7 @@ class ApiClientMatrix:
         self.access_token = access_token
         self.device_id = device_id
         self.server_url = server_url.rstrip("/")
-        self.api_base_url = f"{server_url.rstrip('/')}/_matrix/client/"
+        self.api_base_url = f"{server_url.rstrip('/')}/_matrix/"
         self.server_name = server_name
         self.state_store_path = state_store_path
         self.state_store_encryption_key = state_store_encryption_key
@@ -246,6 +247,22 @@ class ApiClientMatrix:
             raise SynapseApiError.from_nio_response_error(space_create_response.message)
         return space_create_response
 
+    def set_room_name(self, room_id: str, room_name: str):
+        # https://matrix-org.github.io/synapse/develop/admin_api/user_admin_api.html#list-room-memberships-of-a-user
+        return self._put(f"v3/rooms/{room_id}/state/m.room.name", {"name": room_name})
+
+    def set_room_topic(self, room_id: str, room_topic: str):
+        # https://matrix-org.github.io/synapse/develop/admin_api/user_admin_api.html#list-room-memberships-of-a-user
+        return self._put(
+            f"v3/rooms/{room_id}/state/m.room.topic", {"topic": room_topic}
+        )
+
+    def set_room_avatar_url(self, room_id: str, room_avatar_url: str):
+        # https://matrix-org.github.io/synapse/develop/admin_api/user_admin_api.html#list-room-memberships-of-a-user
+        return self._put(
+            f"v3/rooms/{room_id}/state/m.room.avatar", {"url": room_avatar_url}
+        )
+
     def resolve_alias(self, alias: str) -> str:
         # https://spec.matrix.org/v1.2/client-server-api/#room-aliases
         # /_matrix/client/v3/directory/room/{roomAlias}
@@ -346,18 +363,44 @@ class ApiClientMatrix:
         else:
             return next((r for r in res.events if r["type"] in event_type), None)
 
-    def upload_media(self, from_url: str = None, content: bytes = None) -> str:
-        if from_url is None and content is None:
-            raise ValueError(
-                "No upload source provided. Either `from_url` or `content` must be set(not None)."
-            )
-        elif from_url is not None and content is not None:
-            raise ValueError(
-                "Either `from_url` or `content` must be set. Both are None."
+    def upload_media(
+        self,
+        content: Path | BinaryIO,
+        filename: str = None,
+    ) -> str:
+        # https://spec.matrix.org/v1.11/client-server-api/#post_matrixmediav3upload
+        # https://stackoverflow.com/a/14448953/12438690
+
+        headers = {
+            "Authorization": self.access_token,
+            "Content-Type": "application/octet-stream",
+        }
+        url = "/v3/upload"
+        files = {}
+        requests.post(files)
+        if isinstance(content, Path):
+            if filename is None:
+                filename = content.name
+            with open(content, "rb") as image_file:
+                r = requests.post(
+                    self._build_api_call_url(url, subapi="media"),
+                    data=image_file.read(),
+                    headers=headers,
+                )
+        else:
+            if filename is None:
+                filename = str(uuid.uuid4())
+            r = requests.post(
+                self._build_api_call_url(url, subapi="media"),
+                params={"filename": filename},
+                data=content,
+                headers=headers,
             )
 
-    def _build_api_call_url(self, path: str):
-        return f"{self.api_base_url.rstrip('/')}/{path.lstrip('/')}"
+    def _build_api_call_url(
+        self, path: str, subapi: Literal["client", "media"] = "client"
+    ):
+        return f"{self.api_base_url.rstrip('/')}/{subapi}/{path.lstrip('/')}"
 
     def _get(self, path: str, query: Dict = None) -> Dict:
         if query is None:
@@ -377,6 +420,20 @@ class ApiClientMatrix:
         if json_body is None:
             json_body = {}
         r = requests.post(
+            self._build_api_call_url(path),
+            json=json_body,
+            headers={
+                "Authorization": self.access_token,
+                "Accept": "application/json",
+                "Content-Type": "application/json; charset=utf-8",
+            },
+        )
+        return self._http_call_response_handler(r)
+
+    def _put(self, path: str, json_body: Dict = None) -> Dict:
+        if json_body is None:
+            json_body = {}
+        r = requests.put(
             self._build_api_call_url(path),
             json=json_body,
             headers={
