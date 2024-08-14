@@ -286,6 +286,12 @@ class Bot:
             target_room_attributes: MatrixRoomCreateAttributes = (
                 self._get_matrix_room_attrs_from_authentik_group(room.authentik_api_obj)
             )
+
+            if (
+                room.matrix_obj.name != target_room_attributes.name
+                or room.matrix_obj.topic != target_room_attributes.topic
+            ):
+                self._save_onbot_room_state_to_synapse_server()
             raise NotImplementedError(
                 "You are here. you want to update existing matrix room attributes based on the authentik room atributes"
             )
@@ -341,7 +347,10 @@ class Bot:
                     )
 
     def _delete_synapse_user(
-        self, user_id: str, delete_media: bool = False, state_room_id: str = None
+        self,
+        user_id: str,
+        delete_media: bool = False,
+        state_room_id: Optional[str] = None,
     ):
         if state_room_id is None:
             state_room_id = next(
@@ -944,7 +953,7 @@ class Bot:
             event_type=self._gen_fully_qualified_event_type_name(
                 room.room_state.room_type
             ),
-            content=room.room_state.dict(),
+            content=room.room_state.model_dump(),
         )
 
     def _clear_room_of_users(
