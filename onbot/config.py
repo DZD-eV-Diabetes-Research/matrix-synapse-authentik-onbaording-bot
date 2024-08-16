@@ -367,8 +367,8 @@ class OnbotConfig(BaseSettings):
     authentik_user_ignore_list: Annotated[
         Optional[List[str]], Field(examples=[["admin", "internal_account_alex"]])
     ] = []
-    authentik_group_ignore_list: Annotated[
-        Optional[List[str]], Field(examples=[["internal_company_group"]])
+    authentik_group_id_ignore_list: Annotated[
+        Optional[List[str]], Field(examples=[["1120a6e1124f309bbe96c8be5fb09eab"]])
     ] = []
 
     class DeactivateDisabledAuthentikUsersInMatrix(BaseModel):

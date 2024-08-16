@@ -676,6 +676,12 @@ class Bot:
         groups: Dict = self.api_client_authentik.list_groups(
             filter_by_attribute=query_attributes
         )
+        if self.config.authentik_group_id_ignore_list:
+            groups = [
+                g
+                for g in groups
+                if g["pk"] not in self.config.authentik_group_id_ignore_list
+            ]
 
         if (
             self.config.sync_matrix_rooms_based_on_authentik_groups.only_for_groupnames_starting_with

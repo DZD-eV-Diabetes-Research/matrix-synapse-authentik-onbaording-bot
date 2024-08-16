@@ -345,12 +345,12 @@ matrix_user_ignore_list: []
 authentik_user_ignore_list:
   - admin
 
-### Authentik Group Ignore List - 'authentik_group_ignore_list'###
+### Authentik Group Ignore List - 'authentik_group_id_ignore_list'###
 # Type: array
 # Required: False
 # Defaults to ['internal_company_group']
-# EnvVar name to override: 'ONBOT_AUTHENTIK_GROUP_IGNORE_LIST'
-authentik_group_ignore_list:
+# EnvVar name to override: 'ONBOT_authentik_group_id_ignore_list'
+authentik_group_id_ignore_list:
   - internal_company_group
 
 ### Deactivate Disabled Authentik Users In Matrix - 'deactivate_disabled_authentik_users_in_matrix'###
