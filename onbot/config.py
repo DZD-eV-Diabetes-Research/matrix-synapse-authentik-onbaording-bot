@@ -98,6 +98,16 @@ class OnbotConfig(BaseSettings):
                 ],
             ),
         ]
+        bot_avatar_url: Annotated[
+            Optional[str],
+            Field(
+                description=inspect.cleandoc(
+                    """An http url to an picture. The bot will set it as its own avatar on start.
+                """
+                ),
+                examples=["https://sillyimages.com/face.png"],
+            ),
+        ] = None
         admin_api_path: Annotated[
             str,
             Field(

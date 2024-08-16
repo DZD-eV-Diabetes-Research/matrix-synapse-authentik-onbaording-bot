@@ -1,3 +1,4 @@
+import os
 import asyncio
 from typing import (
     List,
@@ -13,11 +14,15 @@ from typing import (
     Mapping,
     Awaitable,
 )
+from urllib.parse import urlsplit, unquote
 from typing import BinaryIO
 from io import BytesIO
 from dataclasses import dataclass
 import requests
 import logging
+import mimetypes
+from urllib.parse import urlsplit, unquote, parse_qs
+import hashlib
 
 log = logging.getLogger(__name__)
 
@@ -103,19 +108,36 @@ class DownloadedFile:
 
 
 def download_file(url: str) -> DownloadedFile:
-    print(f"Download {url}")
     log.debug(f"Download {url}")
     response = requests.get(url)
     response.raise_for_status()
 
     # Extract filename from the Content-Disposition header if available
+
+    # Determine the MIME type from the response headers
+    mime_type = response.headers.get("Content-Type", None)
     content_disposition = response.headers.get("Content-Disposition")
     filename = None
     if content_disposition and "filename=" in content_disposition:
         filename = content_disposition.split("filename=")[1].strip('"')
+    else:
+        # Try to extract filename from URL query parameters
+        parsed_url = urlsplit(url)
+        query_params = parse_qs(parsed_url.query)
+        if "file" in query_params:
+            filename = query_params["file"][0]
 
-    # Determine the MIME type from the response headers
-    mime_type = response.headers.get("Content-Type")
+        # Fallback to URL path
+        if not filename:
+            filename = os.path.basename(parsed_url.path) or None
+            filename = unquote(filename) if filename else None
+        # fallfallback to hashed id
+        if not filename:
+            filename = hashlib.md5(response.content).hexdigest()
+            extension = ".bin"
+            if mime_type:
+                extension = mimetypes.guess_extension(mime_type)
+            filename = f"{filename}{extension}"
 
     # Create a BytesIO object from the content
     content = BytesIO(response.content)
