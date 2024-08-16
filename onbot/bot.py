@@ -142,7 +142,7 @@ class Bot:
         self._space_cache: MatrixRoomAttributes = None
 
     def start(self):
-
+        self._set_bot_avatar()
         log.debug("DEEEBUG IS ON BABY")
         while True:
             self.server_tik()
@@ -1044,3 +1044,24 @@ class Bot:
             str: _description_
         """
         return f"{prefix}{local_name}:{self.config.synapse_server.server_name}"
+
+    def _set_bot_avatar(self):
+        if self.config.synapse_server.bot_avatar_url:
+            try:
+                avatar_file = download_file(self.config.synapse_server.bot_avatar_url)
+            except Exception as e:
+                log.error(traceback.format_exc())
+                log.error(
+                    f"Failed to download bot avatar from {self.config.synapse_server.bot_avatar_url}. Error: {e}"
+                )
+                return
+            log.warning(
+                "TODO: we still upload the avatar image on each start. we need to find a way to onyl update the image if changed."
+            )
+            matrix_media_url = self.api_client_matrix.upload_media(
+                content=avatar_file.content, filename=avatar_file.filename
+            )
+            self.api_client_matrix.set_user_avatar_url(
+                user_id=self.config.synapse_server.bot_user_id,
+                user_avatar_url=matrix_media_url,
+            )

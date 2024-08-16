@@ -263,6 +263,12 @@ class ApiClientMatrix:
             f"v3/rooms/{room_id}/state/m.room.avatar", {"url": room_avatar_url}
         )
 
+    def set_user_avatar_url(self, user_id: str, user_avatar_url: str):
+        # https://spec.matrix.org/v1.2/client-server-api/#put_matrixclientv3profileuseridavatar_url
+        return self._put(
+            f"v3/profile/{user_id}/avatar_url", {"avatar_url": user_avatar_url}
+        )
+
     def resolve_alias(self, alias: str) -> str:
         # https://spec.matrix.org/v1.2/client-server-api/#room-aliases
         # /_matrix/client/v3/directory/room/{roomAlias}
