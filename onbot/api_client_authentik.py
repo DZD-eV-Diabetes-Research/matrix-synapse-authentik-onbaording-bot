@@ -87,6 +87,7 @@ class ApiClientAuthentik:
             },
         )
         try:
+
             r.raise_for_status()
         except:
             try:

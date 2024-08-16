@@ -24,8 +24,10 @@ from onbot.config import OnbotConfig
 from onbot.utils import (
     get_nested_dict_val_by_path,
     create_nested_dict_by_path,
+    download_file,
 )
 from enum import Enum
+import traceback
 
 log = logging.getLogger(__name__)
 
@@ -39,6 +41,7 @@ class OnbotRoomStateEvents(str, Enum):
 class _OnbotRoomEventStateContent(BaseModel):
     authentik_server: str = None
     room_type: str
+    avatar_source_url: Optional[str] = None
 
 
 class OnbotRoomStateSpace(_OnbotRoomEventStateContent):
@@ -86,7 +89,7 @@ class MatrixRoomAttributes(BaseModel):
     is_space: bool = False
     room_type: OnbotRoomTypes = None
     room_state: Union[
-        OnbotRoomStateSpace, OnbotRoomStateDirectRoom, OnbotRoomStateGroupRoom
+        OnbotRoomStateSpace, OnbotRoomStateDirectRoom, OnbotRoomStateGroupRoom, None
     ] = None
 
     @classmethod
@@ -139,26 +142,8 @@ class Bot:
         self._space_cache: MatrixRoomAttributes = None
 
     def start(self):
-        """
-        from urllib.parse import quote
 
-        room_id = self.matrix_api_client.resolve_alias(
-            quote("#dea3e18eccf147e6b2fc7d27fe7bce9a:dzd-ev.org")
-        )
-        print(room_id)
-        print(self.synapse_admin_client.room_details(room_id))
-        print(
-            self.synapse_admin_client.delete_room(
-                room_id,
-                purge=True,
-                force_purge=True,
-            )
-        )
-        """
-        # todo you are here
-        # DZDChatUsers
-
-        log.debug("DEEEBUG")
+        log.debug("DEEEBUG IS ON BABY")
         while True:
             self.server_tik()
 
@@ -170,6 +155,7 @@ class Bot:
         self.disable_obsolete_authentik_group_mapped_matrix_rooms()
         self.clean_up_matrix_accounts()
         self.update_room_attributes()
+        self.update_space_attributes()
 
         log.debug(f"Wait {self.server_tick_wait_time_sec_int} for next servertick")
         time.sleep(self.server_tick_wait_time_sec_int)
@@ -283,18 +269,29 @@ class Bot:
             self._get_authentik_groups_that_need_synapse_room()
         )
         for room in mapped_rooms:
+            self._update_group_room_avatar_from_authentik_attr_url(room)
+
+            # todo: update name and topic
             target_room_attributes: MatrixRoomCreateAttributes = (
                 self._get_matrix_room_attrs_from_authentik_group(room.authentik_api_obj)
             )
+            if room.matrix_obj.name != target_room_attributes.name:
+                self.api_client_matrix.set_room_name(
+                    room.matrix_obj.room_id, target_room_attributes.name
+                )
+            if room.matrix_obj.topic != target_room_attributes.topic:
+                self.api_client_matrix.set_room_topic(
+                    room.matrix_obj.room_id, target_room_attributes.topic
+                )
 
-            if (
-                room.matrix_obj.name != target_room_attributes.name
-                or room.matrix_obj.topic != target_room_attributes.topic
-            ):
-                self._save_onbot_room_state_to_synapse_server()
-            raise NotImplementedError(
-                "You are here. you want to update existing matrix room attributes based on the authentik room atributes"
+    def update_space_attributes(self):
+        space = self._get_parent_space_if_needed()
+        if space:
+            self._update_room_avatar_if_changed(
+                room=space,
+                avatar_source_url=self.config.create_matrix_rooms_in_a_matrix_space.create_matrix_space_if_not_exists.avatar_url,
             )
+            # todo: update name and topic
 
     def _deactivate_or_delete_matrix_user_accounts_that_are_disabled_or_deleted_in_authentik(
         self,
@@ -661,6 +658,7 @@ class Bot:
             ),
         )
         self._save_onbot_room_state_to_synapse_server(room_data)
+
         # now the room icreated we can just recall the function, as it will return the new space now
         return self._get_parent_space_if_needed()
 
@@ -717,6 +715,7 @@ class Bot:
         for group_map in group_maps:
             matched_room_index: int = None
             for index, matrix_room_api_obj in enumerate(matrix_rooms):
+
                 if (
                     group_map.generated_matrix_room_attr.canonical_alias
                     == matrix_room_api_obj.canonical_alias
@@ -742,8 +741,10 @@ class Bot:
             )
         else:
             room_settings = room_default_settings
-        group_name = group[room_settings.matrix_alias_from_authentik_attribute]
-        alias = f"{room_settings.alias_prefix if room_settings.alias_prefix is not None else ''}{group_name if group_name is not None else ''}"
+        group_alias_base = group[room_settings.matrix_alias_from_authentik_attribute]
+        if not group_alias_base:
+            group_alias_base = group["pk"]
+        alias = f"{room_settings.alias_prefix if room_settings.alias_prefix is not None else ''}{group_alias_base}"
 
         name: str = get_nested_dict_val_by_path(
             data=group,
@@ -854,6 +855,59 @@ class Bot:
                     matched_users.append(authentik_user)
         return matched_users
 
+    def _update_group_room_avatar_from_authentik_attr_url(
+        self, room: Group2RoomMap
+    ) -> Group2RoomMap:
+        if (
+            self.config.sync_matrix_rooms_based_on_authentik_groups.room_avatar_url_attribute
+            is None
+        ):
+            # We dont set avatars at all
+            return
+        if (
+            self.config.sync_matrix_rooms_based_on_authentik_groups.room_avatar_url_attribute
+            not in room.authentik_api_obj["attributes"]
+        ):
+            # this room has not set any room avatar url
+            return
+        avatar_url_from_authentik = room.authentik_api_obj["attributes"][
+            self.config.sync_matrix_rooms_based_on_authentik_groups.room_avatar_url_attribute
+        ]
+        self._update_room_avatar_if_changed(
+            room=room.matrix_obj, avatar_source_url=avatar_url_from_authentik
+        )
+        return room
+
+    def _update_room_avatar_if_changed(
+        self, room: MatrixRoomAttributes, avatar_source_url: str
+    ):
+        if avatar_source_url is None or avatar_source_url == "":
+            # the avatar source url is empty. nothing to do here
+            return
+        if room.room_state is None:
+            self._attach_onbot_room_state_from_server_to_room_obj(room=room)
+        if room.room_state.avatar_source_url == avatar_source_url:
+            # the room avatar is allready set to the source url. nothing to do here
+            return
+        try:
+            avatar_file = download_file(avatar_source_url)
+        except Exception as e:
+            log.error(traceback.format_exc())
+            log.error(
+                f"Failed to download room avatar from {avatar_source_url} for room {room.name} ({room.canonical_alias}). Error: {e}"
+            )
+            return
+
+        avatar_matrix_media_url: str = self.api_client_matrix.upload_media(
+            content=avatar_file.content, filename=avatar_file.filename
+        )
+        self.api_client_matrix.set_room_avatar_url(
+            room_id=room.room_id, room_avatar_url=avatar_matrix_media_url
+        )
+        room.room_state.avatar_source_url = avatar_source_url
+        self._save_onbot_room_state_to_synapse_server(room)
+        return room
+
     def _get_matrix_user_id(
         self,
         authentik_user_api_object: Dict,
@@ -899,7 +953,9 @@ class Bot:
                 f"Expected room_id of space like '!<room_id>:<your-synapse-server-name>' got '{in_space_with_id}'"
             )
 
-        rooms = self.api_client_synapse_admin.list_room(search_term=search_term)
+        rooms: List[Dict] = self.api_client_synapse_admin.list_room(
+            search_term=search_term
+        )
         if in_space_with_id:
             # filter away rooms not in this matrix space
             space_room_ids: List[str] = [
@@ -920,29 +976,29 @@ class Bot:
 
     def _attach_onbot_room_state_from_server_to_room_obj(
         self, room: MatrixRoomAttributes
-    ) -> Dict | None:
+    ) -> MatrixRoomAttributes | None:
         onbot_room_state_event_names: Dict[str, OnbotRoomTypes] = {
             self._gen_fully_qualified_event_type_name(r.name): r for r in OnbotRoomTypes
         }
 
-        event: Dict | RoomGetStateEventError = (
+        state_event: Dict | RoomGetStateEventError = (
             self.api_client_matrix.get_room_state_event(
                 room_id=room.room_id,
                 event_type=list(onbot_room_state_event_names.keys()),
                 raise_error=False,
             )
         )
-        if isinstance(event, RoomGetStateEventError):
-            raise SynapseApiError.from_nio_response_error(event)
-        elif event is None:
+        if isinstance(state_event, RoomGetStateEventError):
+            raise SynapseApiError.from_nio_response_error(state_event)
+        elif state_event is None:
             return
         state_event_class: (
             Type[OnbotRoomStateSpace]
             | Type[OnbotRoomStateDirectRoom]
             | Type[OnbotRoomStateGroupRoom]
-        ) = onbot_room_state_event_names[event["type"]].value
-        room.room_type = onbot_room_state_event_names[event["type"]]
-        room.room_state = state_event_class.model_validate(event["content"])
+        ) = onbot_room_state_event_names[state_event["type"]].value
+        room.room_type = onbot_room_state_event_names[state_event["type"]]
+        room.room_state = state_event_class.model_validate(state_event["content"])
 
         return room
 
