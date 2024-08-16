@@ -214,6 +214,7 @@ class OnbotConfig(BaseSettings):
             enabled: bool = True
             name: str = "Our cozy space"
             topic: str = "The Company Space"
+            avatar_url: Optional[str] = None
 
             # https://spec.matrix.org/v1.6/client-server-api/#post_matrixclientv3createroom
             # all available params at https://matrix-nio.readthedocs.io/en/latest/nio.html?highlight=room_create#nio.AsyncClient.room_create

@@ -1,5 +1,3 @@
-import os
-import typing
 import asyncio
 from typing import (
     List,
@@ -15,14 +13,13 @@ from typing import (
     Mapping,
     Awaitable,
 )
-from onbot.config import OnbotConfig
-import inspect
-from functools import singledispatch
-from pydantic import BaseModel, fields, schema
-from pydantic_settings import BaseSettings
-from pathlib import Path, PurePath
-import yaml
+from typing import BinaryIO
+from io import BytesIO
 from dataclasses import dataclass
+import requests
+import logging
+
+log = logging.getLogger(__name__)
 
 
 def get_nested_dict_val_by_path(
@@ -96,3 +93,36 @@ def synchronize_async_helper(to_await_func: Awaitable):
     loop.run_until_complete(coroutine)
     # print("async_response", async_response)
     return async_response[0]
+
+
+@dataclass
+class DownloadedFile:
+    content: BinaryIO
+    filename: Optional[str]
+    mime_type: Optional[str]
+
+
+def download_file(url: str) -> DownloadedFile:
+    print(f"Download {url}")
+    log.debug(f"Download {url}")
+    response = requests.get(url)
+    response.raise_for_status()
+
+    # Extract filename from the Content-Disposition header if available
+    content_disposition = response.headers.get("Content-Disposition")
+    filename = None
+    if content_disposition and "filename=" in content_disposition:
+        filename = content_disposition.split("filename=")[1].strip('"')
+
+    # Determine the MIME type from the response headers
+    mime_type = response.headers.get("Content-Type")
+
+    # Create a BytesIO object from the content
+    content = BytesIO(response.content)
+
+    # Create and return the DownloadedFile object
+    downloaded_file = DownloadedFile(
+        content=content, filename=filename, mime_type=mime_type
+    )
+
+    return downloaded_file

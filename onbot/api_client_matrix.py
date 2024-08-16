@@ -368,6 +368,15 @@ class ApiClientMatrix:
         content: Path | BinaryIO,
         filename: str = None,
     ) -> str:
+        """_summary_
+
+        Args:
+            content (Path | BinaryIO): _description_
+            filename (str, optional): _description_. Defaults to None.
+
+        Returns:
+            str: the content uri like 'mxc://example.com/AQwafuaFswefuhsfAFAgsw'
+        """
         # https://spec.matrix.org/v1.11/client-server-api/#post_matrixmediav3upload
         # https://stackoverflow.com/a/14448953/12438690
 
@@ -375,15 +384,14 @@ class ApiClientMatrix:
             "Authorization": self.access_token,
             "Content-Type": "application/octet-stream",
         }
-        url = "/v3/upload"
+        url = self._build_api_call_url("/v3/upload", subapi="media")
         files = {}
-        requests.post(files)
         if isinstance(content, Path):
             if filename is None:
                 filename = content.name
             with open(content, "rb") as image_file:
                 r = requests.post(
-                    self._build_api_call_url(url, subapi="media"),
+                    url,
                     data=image_file.read(),
                     headers=headers,
                 )
@@ -391,11 +399,12 @@ class ApiClientMatrix:
             if filename is None:
                 filename = str(uuid.uuid4())
             r = requests.post(
-                self._build_api_call_url(url, subapi="media"),
+                url,
                 params={"filename": filename},
                 data=content,
                 headers=headers,
             )
+        return self._http_call_response_handler(r)["content_uri"]
 
     def _build_api_call_url(
         self, path: str, subapi: Literal["client", "media"] = "client"
