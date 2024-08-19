@@ -20,73 +20,72 @@ class ApiClientSynapseAdmin:
         self.api_base_url = f"{server_url}{api_base_path}/"
 
     def list_users(self) -> Dict:
-        # https://matrix-org.github.io/synapse/latest/admin_api/user_admin_api.html#list-accounts
-        return self._get("v2/users")["users"]
+        # https://element-hq.github.io/synapse/latest/admin_api/user_admin_api.html#list-accounts
+        return self._get("v2/users", query={"limit": None})["users"]
 
     def list_room_and_space(self) -> List[Dict]:
-        # https://matrix-org.github.io/synapse/latest/admin_api/rooms.html#list-room-api
+        # https://element-hq.github.io/synapse/latest/admin_api/rooms.html#list-room-api
         return self._get("v1/rooms")["rooms"]
 
     def list_room(self, search_term: str = None) -> List[Dict]:
-        """https://matrix-org.github.io/synapse/latest/admin_api/rooms.html#list-room-api
+        """https://element-hq.github.io/synapse/latest/admin_api/rooms.html#list-room-api
 
         Args:
             in_space (_type_): _description_
         """
+        query = {}
+        query["limit"] = None
+        query = {"search_term": search_term} if search_term else query
 
-        query = {"search_term": search_term} if search_term else None
         rooms = []
 
-        # https://matrix-org.github.io/synapse/latest/admin_api/rooms.html#list-room-api
+        # https://element-hq.github.io/synapse/latest/admin_api/rooms.html#list-room-api
         for room in self._get("v1/rooms", query=query)["rooms"]:
             if room["room_type"] != "m.space":
                 rooms.append(room)
         return rooms
 
     def list_room_members(self, room_id: str) -> List[str]:
-        # https://matrix-org.github.io/synapse/latest/admin_api/rooms.html#room-members-api
-        return self._get(f"/v1/rooms/{room_id}/members")["members"]
-
-    def list_room_state(self, room_id: str):
-        # TODO: Can be removed?
-        # https://matrix-org.github.io/synapse/latest/admin_api/rooms.html#room-state-api
-        return self._get(f"v1/rooms/{room_id}/state")["state"]
+        # https://element-hq.github.io/synapse/latest/admin_api/rooms.html#room-members-api
+        return self._get(f"/v1/rooms/{room_id}/members", query={"limit": None})[
+            "members"
+        ]
 
     def list_space(self) -> List[Dict]:
-        """https://matrix-org.github.io/synapse/latest/admin_api/rooms.html#list-room-api
+        """https://element-hq.github.io/synapse/latest/admin_api/rooms.html#list-room-api
 
         Returns:
             List[Dict]: _description_
         """
         spaces = []
-        # https://matrix-org.github.io/synapse/latest/admin_api/rooms.html#list-room-api
+        # https://element-hq.github.io/synapse/latest/admin_api/rooms.html#list-room-api
         for room in self._get("v1/rooms")["rooms"]:
             if room["room_type"] == "m.space":
                 spaces.append(room)
         return spaces
 
     def get_room_details(self, room_id: str):
-        # https://matrix-org.github.io/synapse/latest/admin_api/rooms.html#room-details-api
+        # https://element-hq.github.io/synapse/latest/admin_api/rooms.html#room-details-api
         return self._get(f"v1/rooms/{room_id}")
 
     def add_user_to_room(self, room_id: str, user_id: str):
-        # https://matrix-org.github.io/synapse/latest/admin_api/room_membership.html
+        # https://element-hq.github.io/synapse/latest/admin_api/room_membership.html
         self._post(f"v1/join/{room_id}", json_body={"user_id": user_id})
 
     def set_room_admin(self, room_id: str, user_id: str, is_admin: bool = False):
-        # https://matrix-org.github.io/synapse/develop/admin_api/user_admin_api.html#list-room-memberships-of-a-user
+        # https://element-hq.github.io/synapse/develop/admin_api/user_admin_api.html#list-room-memberships-of-a-user
         return self._get(f"v1/users/{user_id}/joined_rooms")["joined_rooms"]
 
     def set_user_server_admin_state(self, user_id: str, admin: bool):
-        # https://matrix-org.github.io/synapse/develop/admin_api/user_admin_api.html#change-whether-a-user-is-a-server-administrator-or-not
+        # https://element-hq.github.io/synapse/develop/admin_api/user_admin_api.html#change-whether-a-user-is-a-server-administrator-or-not
         raise NotImplementedError()
 
     def deactivate_account(self, user_id: str, erease: bool):
-        # https://matrix-org.github.io/synapse/develop/admin_api/user_admin_api.html#deactivate-account
+        # https://element-hq.github.io/synapse/develop/admin_api/user_admin_api.html#deactivate-account
         self._post(f"deactivate/{user_id}", json_body={"erase": erease})
 
     def room_is_blocked(self, room_id: str) -> bool:
-        # https://matrix-org.github.io/synapse/develop/admin_api/rooms.html#get-block-status
+        # https://element-hq.github.io/synapse/develop/admin_api/rooms.html#get-block-status
         result = self._get(f"v1/rooms/{room_id}/block")
         return (
             True
@@ -95,16 +94,16 @@ class ApiClientSynapseAdmin:
         )
 
     def room_unblock(self, room_id: str):
-        # https://matrix-org.github.io/synapse/develop/admin_api/rooms.html#block-or-unblock-a-room
+        # https://element-hq.github.io/synapse/develop/admin_api/rooms.html#block-or-unblock-a-room
         self._put(f"v1/rooms/{room_id}/block", {"block": False})
 
     def room_block(self, room_id: str):
-        # https://matrix-org.github.io/synapse/develop/admin_api/rooms.html#block-or-unblock-a-room
+        # https://element-hq.github.io/synapse/develop/admin_api/rooms.html#block-or-unblock-a-room
         self._put(f"v1/rooms/{room_id}/block", {"block": True})
 
     def logout_account(self, user_id) -> List[Dict]:
-        # https://matrix-org.github.io/synapse/latest/admin_api/user_admin_api.html#list-all-devices
-        # https://matrix-org.github.io/synapse/latest/admin_api/user_admin_api.html#delete-a-device
+        # https://element-hq.github.io/synapse/latest/admin_api/user_admin_api.html#list-all-devices
+        # https://element-hq.github.io/synapse/latest/admin_api/user_admin_api.html#delete-a-device
         devices = self._get(f"v2/users/{user_id}/devices")["devices"]
         for device in devices:
             self._delete(f"v2/users/{user_id}/devices/{device['device_id']}")
@@ -116,18 +115,22 @@ class ApiClientSynapseAdmin:
         force_purge: bool = False,
         message: str = None,
     ):
-        # https://matrix-org.github.io/synapse/latest/admin_api/rooms.html#delete-room-api
+        # https://element-hq.github.io/synapse/latest/admin_api/rooms.html#delete-room-api
         body = {"purge": purge, "force_purge": force_purge}
         if message:
             body["message"] = message
         return self._delete(f"v1/rooms/{room_id}")
 
+    def list_user_media(self, user_id: str) -> List:
+        # https://element-hq.github.io/synapse/latest/admin_api/user_admin_api.html#list-media-uploaded-by-a-user
+        return self._get(f"v1/users/{user_id}/media", query={"limit": None})["media"]
+
     def delete_user_media(self, user_id: str) -> dict:
-        # https://matrix-org.github.io/synapse/latest/admin_api/user_admin_api.html#delete-media-uploaded-by-a-user
+        # https://element-hq.github.io/synapse/latest/admin_api/user_admin_api.html#delete-media-uploaded-by-a-user
         return self._delete(f"v1/users/{user_id}/media")
 
     def room_details(self, room_id: str):
-        # https://matrix-org.github.io/synapse/latest/admin_api/rooms.html#room-details-api
+        # https://element-hq.github.io/synapse/latest/admin_api/rooms.html#room-details-api
         return self._get(f"v1/rooms/{room_id}")
 
     def _build_api_call_url(self, path: str):

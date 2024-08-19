@@ -41,7 +41,7 @@ class OnbotConfig(BaseSettings):
             str,
             Field(
                 description=inspect.cleandoc(
-                    """Synapse's public facing domain https://matrix-org.github.io/synapse/latest/usage/configuration/config_documentation.html#server_name 
+                    """Synapse's public facing domain https://element-hq.github.io/synapse/latest/usage/configuration/config_documentation.html#server_name 
                     This is not necessarily the domain under which the Synapse server is reachable. See the docs and your configuration."""
                 ),
                 examples=["company.org"],
@@ -174,7 +174,7 @@ class OnbotConfig(BaseSettings):
         sync_only_users_of_groups_with_id: List[str] = None
 
         class DeactivateDisabledAuthentikUsersInMatrix(BaseModel):
-            # https://matrix-org.github.io/synapse/develop/admin_api/user_admin_api.html#deactivate-account
+            # https://element-hq.github.io/synapse/develop/admin_api/user_admin_api.html#deactivate-account
             enabled: Annotated[
                 bool,
                 Field(
@@ -185,7 +185,7 @@ class OnbotConfig(BaseSettings):
             deactivate_after_n_sec: Annotated[
                 int,
                 Field(
-                    description="Deactivate account as in https://matrix-org.github.io/synapse/latest/admin_api/user_admin_api.html#deactivate-account after a certain amount of days. A delay can help to mitigate minor mistakes e.g. when the Authentik user was disabled accidently"
+                    description="Deactivate account as in https://element-hq.github.io/synapse/latest/admin_api/user_admin_api.html#deactivate-account after a certain amount of days. A delay can help to mitigate minor mistakes e.g. when the Authentik user was disabled accidently"
                 ),
             ] = (
                 60 * 60 * 24
@@ -193,7 +193,7 @@ class OnbotConfig(BaseSettings):
             delete_after_n_sec: Annotated[
                 int | None,
                 Field(
-                    description="Delete account as in https://matrix-org.github.io/synapse/latest/admin_api/user_admin_api.html#deactivate-account (with `erase` flag) after a certain amount of days. A delay can help to mitigate minor mistakes e.g. when the Authentik user was disabled accidently"
+                    description="Delete account as in https://element-hq.github.io/synapse/latest/admin_api/user_admin_api.html#deactivate-account (with `erase` flag) after a certain amount of days. A delay can help to mitigate minor mistakes e.g. when the Authentik user was disabled accidently"
                 ),
             ] = (
                 60 * 60 * 24 * 365
@@ -202,7 +202,7 @@ class OnbotConfig(BaseSettings):
             include_user_media_on_delete: Annotated[
                 bool,
                 Field(
-                    description="Delete all uploaded media as in https://matrix-org.github.io/synapse/latest/admin_api/user_admin_api.html#delete-media-uploaded-by-a-user This may help meet your local data protection rules but can also alter chat histories with other users."
+                    description="Delete all uploaded media as in https://element-hq.github.io/synapse/latest/admin_api/user_admin_api.html#delete-media-uploaded-by-a-user This may help meet your local data protection rules but can also alter chat histories with other users."
                 ),
             ] = False
 
@@ -382,7 +382,7 @@ class OnbotConfig(BaseSettings):
     ] = []
 
     class DeactivateDisabledAuthentikUsersInMatrix(BaseModel):
-        # https://matrix-org.github.io/synapse/develop/admin_api/user_admin_api.html#deactivate-account
+        # https://element-hq.github.io/synapse/develop/admin_api/user_admin_api.html#deactivate-account
         enabled: Annotated[
             bool,
             Field(
@@ -393,7 +393,7 @@ class OnbotConfig(BaseSettings):
         deactivate_after_n_sec: Annotated[
             int,
             Field(
-                description="Deactivate account as in https://matrix-org.github.io/synapse/latest/admin_api/user_admin_api.html#deactivate-account after a certain amount of days. A delay can help to mitigate minor mistakes e.g. when the Authentik user was disabled accidently"
+                description="Deactivate account as in https://element-hq.github.io/synapse/latest/admin_api/user_admin_api.html#deactivate-account after a certain amount of days. A delay can help to mitigate minor mistakes e.g. when the Authentik user was disabled accidently"
             ),
         ] = (
             60 * 60 * 24
@@ -401,7 +401,7 @@ class OnbotConfig(BaseSettings):
         delete_after_n_sec: Annotated[
             int | None,
             Field(
-                description="Delete account as in https://matrix-org.github.io/synapse/latest/admin_api/user_admin_api.html#deactivate-account (with `erase` flag) after a certain amount of days. A delay can help to mitigate minor mistakes e.g. when the Authentik user was disabled accidently"
+                description="Delete account as in https://element-hq.github.io/synapse/latest/admin_api/user_admin_api.html#deactivate-account (with `erase` flag) after a certain amount of days. A delay can help to mitigate minor mistakes e.g. when the Authentik user was disabled accidently"
             ),
         ] = (
             60 * 60 * 24 * 365
@@ -410,7 +410,7 @@ class OnbotConfig(BaseSettings):
         include_user_media_on_delete: Annotated[
             bool,
             Field(
-                description="Delete all uploaded media as in https://matrix-org.github.io/synapse/latest/admin_api/user_admin_api.html#delete-media-uploaded-by-a-user This may help meet your local data protection rules but can also alter chat histories with other users."
+                description="Delete all uploaded media as in https://element-hq.github.io/synapse/latest/admin_api/user_admin_api.html#delete-media-uploaded-by-a-user This may help meet your local data protection rules but can also alter chat histories with other users."
             ),
         ] = False
 
