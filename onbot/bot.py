@@ -15,6 +15,7 @@ from nio import (
     RoomGetStateEventError,
     RoomGetStateResponse,
 )
+import hashlib
 import uuid
 from onbot.config import OnbotConfig
 from onbot.api_client_authentik import ApiClientAuthentik
@@ -76,7 +77,7 @@ class MatrixRoomCreateAttributes(BaseModel):
 
 
 class TopicUnfetched:
-    # topic values dont come with via the https://matrix-org.github.io/synapse/latest/admin_api/rooms.html#list-room-api endpoint
+    # topic values dont come with via the https://element-hq.github.io/synapse/latest/admin_api/rooms.html#list-room-api endpoint
     # to signal that is not unconditional None but unkown/not yet fetched we need a custom type
     pass
 
@@ -109,7 +110,7 @@ class UserMap(BaseModel):
     # https://your-authentik.company/api/v3/#get-/core/users/ object
     authentik_api_obj: Dict = None
 
-    # https://matrix-org.github.io/synapse/latest/admin_api/user_admin_api.html#list-accounts object
+    # https://element-hq.github.io/synapse/latest/admin_api/user_admin_api.html#list-accounts object
     matrix_api_obj: Dict = None
 
     generated_matrix_id: str = None
@@ -119,7 +120,7 @@ class Group2RoomMap(BaseModel):
     # https://your-authentik.company/api/v3/#get-/core/groups/ object
     authentik_api_obj: Dict = None
 
-    # https://matrix-org.github.io/synapse/latest/admin_api/rooms.html#list-room-api object
+    # https://element-hq.github.io/synapse/latest/admin_api/rooms.html#list-room-api object
     matrix_obj: MatrixRoomAttributes = None
 
     generated_matrix_room_attr: MatrixRoomCreateAttributes = None
@@ -140,9 +141,12 @@ class Bot:
         self.api_client_matrix = matrix_api_client
         self.server_tick_wait_time_sec_int = server_tick_wait_time_sec_int
         self._space_cache: MatrixRoomAttributes = None
+        self._media_info_cache: Optional[List[Dict[str, None | int | str | bool]]] = (
+            None
+        )
 
     def start(self):
-        self._set_bot_avatar()
+        self.set_bot_avatar_if_nessecary()
         log.debug("DEEEBUG IS ON BABY")
         while True:
             self.server_tik()
@@ -270,8 +274,6 @@ class Bot:
         )
         for room in mapped_rooms:
             self._update_group_room_avatar_from_authentik_attr_url(room)
-
-            # todo: update name and topic
             target_room_attributes: MatrixRoomCreateAttributes = (
                 self._get_matrix_room_attrs_from_authentik_group(room.authentik_api_obj)
             )
@@ -287,7 +289,7 @@ class Bot:
     def update_space_attributes(self):
         space = self._get_parent_space_if_needed()
         if space:
-            self._update_room_avatar_if_changed(
+            self._update_room_avatar_if_nessecary(
                 room=space,
                 avatar_source_url=self.config.create_matrix_rooms_in_a_matrix_space.create_matrix_space_if_not_exists.avatar_url,
             )
@@ -854,7 +856,7 @@ class Bot:
         ):
             if matrix_user["name"] in self.config.matrix_user_ignore_list:
                 continue
-            # matrix_user is object from https://matrix-org.github.io/synapse/latest/admin_api/user_admin_api.html#list-accounts
+            # matrix_user is object from https://element-hq.github.io/synapse/latest/admin_api/user_admin_api.html#list-accounts
             for authentik_user in authentik_users:
                 if authentik_user.generated_matrix_id == matrix_user["name"]:
                     authentik_user.matrix_api_obj = matrix_user
@@ -879,15 +881,15 @@ class Bot:
         avatar_url_from_authentik = room.authentik_api_obj["attributes"][
             self.config.sync_matrix_rooms_based_on_authentik_groups.room_avatar_url_attribute
         ]
-        self._update_room_avatar_if_changed(
+        self._update_room_avatar_if_nessecary(
             room=room.matrix_obj, avatar_source_url=avatar_url_from_authentik
         )
         return room
 
-    def _update_room_avatar_if_changed(
+    def _update_room_avatar_if_nessecary(
         self, room: MatrixRoomAttributes, avatar_source_url: str
     ):
-        if avatar_source_url is None or avatar_source_url == "":
+        if not avatar_source_url:
             # the avatar source url is empty. nothing to do here
             return
         if room.room_state is None:
@@ -895,18 +897,10 @@ class Bot:
         if room.room_state.avatar_source_url == avatar_source_url:
             # the room avatar is allready set to the source url. nothing to do here
             return
-        try:
-            avatar_file = download_file(avatar_source_url)
-        except Exception as e:
-            log.error(traceback.format_exc())
-            log.error(
-                f"Failed to download room avatar from {avatar_source_url} for room {room.name} ({room.canonical_alias}). Error: {e}"
-            )
-            return
-
-        avatar_matrix_media_url: str = self.api_client_matrix.upload_media(
-            content=avatar_file.content, filename=avatar_file.filename
+        avatar_matrix_media_url = self._upload_media_from_url_if_not_exists(
+            url=avatar_source_url
         )
+
         self.api_client_matrix.set_room_avatar_url(
             room_id=room.room_id, room_avatar_url=avatar_matrix_media_url
         )
@@ -1045,23 +1039,52 @@ class Bot:
         """
         return f"{prefix}{local_name}:{self.config.synapse_server.server_name}"
 
-    def _set_bot_avatar(self):
+    def set_bot_avatar_if_nessecary(self):
         if self.config.synapse_server.bot_avatar_url:
-            try:
-                avatar_file = download_file(self.config.synapse_server.bot_avatar_url)
-            except Exception as e:
-                log.error(traceback.format_exc())
-                log.error(
-                    f"Failed to download bot avatar from {self.config.synapse_server.bot_avatar_url}. Error: {e}"
+            bot_profile = self.api_client_matrix.get_user_profile(
+                self.config.synapse_server.bot_user_id
+            )
+            matrix_media_url = self._upload_media_from_url_if_not_exists(
+                self.config.synapse_server.bot_avatar_url
+            )
+            if matrix_media_url and matrix_media_url != bot_profile["avatar_url"]:
+                self.api_client_matrix.set_user_avatar_url(
+                    user_id=self.config.synapse_server.bot_user_id,
+                    user_avatar_url=matrix_media_url,
                 )
-                return
-            log.warning(
-                "TODO: we still upload the avatar image on each start. we need to find a way to onyl update the image if changed."
+
+    def _upload_media_from_url_if_not_exists(
+        self, url: str, filename: str = None
+    ) -> str:
+        # return "mxc://example.com/AQwafuaFswefuhsfAFAgsw"
+        h = hashlib.new("md5")
+        h.update(url.encode())
+        hashed_url = h.hexdigest()
+        for existing_media in self._get_media_info():
+            if existing_media["upload_name"].split("_")[0] == hashed_url:
+                return f"mxc://{self.config.synapse_server.server_name}/{existing_media['media_id']}"
+        try:
+            media = download_file(url)
+        except Exception as e:
+            log.error(traceback.format_exc())
+            log.error(f"Failed to download media from {url}. Error: {e}")
+            return
+
+        # self.config.synapse_server.server_url
+
+        matrix_media_url = self.api_client_matrix.upload_media(
+            content=media.content, filename=f"{hashed_url}_{media.filename}"
+        )
+        # since we uploaded new media we need to refersh the local media info cache
+        self._get_media_info(no_cache=True)
+        return matrix_media_url
+
+    def _get_media_info(
+        self, no_cache: bool = False
+    ) -> List[Dict[str, None | int | str | bool]]:
+        # https://element-hq.github.io/synapse/latest/admin_api/user_admin_api.html#list-media-uploaded-by-a-user
+        if self._media_info_cache is None or no_cache:
+            self._media_info_cache = self.api_client_synapse_admin.list_user_media(
+                user_id=self.config.synapse_server.bot_user_id
             )
-            matrix_media_url = self.api_client_matrix.upload_media(
-                content=avatar_file.content, filename=avatar_file.filename
-            )
-            self.api_client_matrix.set_user_avatar_url(
-                user_id=self.config.synapse_server.bot_user_id,
-                user_avatar_url=matrix_media_url,
-            )
+        return self._media_info_cache

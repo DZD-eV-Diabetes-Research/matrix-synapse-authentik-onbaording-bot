@@ -1,4 +1,4 @@
-from typing import List, Dict, Union, Awaitable, BinaryIO, Literal
+from typing import List, Dict, Union, Awaitable, BinaryIO, Literal, Optional
 import logging
 import requests
 import mimetypes
@@ -248,20 +248,24 @@ class ApiClientMatrix:
         return space_create_response
 
     def set_room_name(self, room_id: str, room_name: str):
-        # https://matrix-org.github.io/synapse/develop/admin_api/user_admin_api.html#list-room-memberships-of-a-user
+        # https://element-hq.github.io/synapse/develop/admin_api/user_admin_api.html#list-room-memberships-of-a-user
         return self._put(f"v3/rooms/{room_id}/state/m.room.name", {"name": room_name})
 
     def set_room_topic(self, room_id: str, room_topic: str):
-        # https://matrix-org.github.io/synapse/develop/admin_api/user_admin_api.html#list-room-memberships-of-a-user
+        # https://element-hq.github.io/synapse/develop/admin_api/user_admin_api.html#list-room-memberships-of-a-user
         return self._put(
             f"v3/rooms/{room_id}/state/m.room.topic", {"topic": room_topic}
         )
 
     def set_room_avatar_url(self, room_id: str, room_avatar_url: str):
-        # https://matrix-org.github.io/synapse/develop/admin_api/user_admin_api.html#list-room-memberships-of-a-user
+        # https://element-hq.github.io/synapse/develop/admin_api/user_admin_api.html#list-room-memberships-of-a-user
         return self._put(
             f"v3/rooms/{room_id}/state/m.room.avatar", {"url": room_avatar_url}
         )
+
+    def get_user_profile(self, user_id: str) -> Dict[str, str]:
+        # https://spec.matrix.org/v1.11/client-server-api/#get_matrixclientv3profileuserid
+        return self._get(f"v3/profile/{user_id}")
 
     def set_user_avatar_url(self, user_id: str, user_avatar_url: str):
         # https://spec.matrix.org/v1.2/client-server-api/#put_matrixclientv3profileuseridavatar_url
@@ -372,7 +376,7 @@ class ApiClientMatrix:
     def upload_media(
         self,
         content: Path | BinaryIO,
-        filename: str = None,
+        filename: Optional[str] = None,
     ) -> str:
         """_summary_
 

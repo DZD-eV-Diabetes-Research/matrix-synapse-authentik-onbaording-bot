@@ -5,7 +5,7 @@
 synapse_server:
   ### Server Name - 'server_name'###
   # Type: string
-  # Description: Synapse's public facing domain https://matrix-org.github.io/synapse/latest/usage/configuration/config_documentation.html#server_name
+  # Description: Synapse's public facing domain https://element-hq.github.io/synapse/latest/usage/configuration/config_documentation.html#server_name
   #   This is not necessarily the domain under which the Synapse server is reachable. See the docs and your configuration.
   # Required: True
   # EnvVar name to override: 'ONBOT_SYNAPSE_SERVER__ONBOT_SERVER_NAME'
