@@ -379,62 +379,8 @@ sync_matrix_rooms_based_on_authentik_groups:
   # Default:      '"chatroom_avatar_url"'
   # Env-var:      'SYNC_MATRIX_ROOMS_BASED_ON_AUTHENTIK_GROUPS__ROOM_AVATAR_URL_ATTRIBUTE'
   # Description:  Define an Authentik custom room attribute that can contain an url to a media that will be configured as the rooms avatar
-  # Example No. 1:
-  # >room_avatar_url_attribute: c
-  # >
-  # Example No. 2:
-  # >room_avatar_url_attribute: h
-  # >
-  # Example No. 3:
-  # >room_avatar_url_attribute: a
-  # >
-  # Example No. 4:
-  # >room_avatar_url_attribute: t
-  # >
-  # Example No. 5:
-  # >room_avatar_url_attribute: r
-  # >
-  # Example No. 6:
-  # >room_avatar_url_attribute: o
-  # >
-  # Example No. 7:
-  # >room_avatar_url_attribute: o
-  # >
-  # Example No. 8:
-  # >room_avatar_url_attribute: m
-  # >
-  # Example No. 9:
-  # >room_avatar_url_attribute: _
-  # >
-  # Example No. 10:
-  # >room_avatar_url_attribute: a
-  # >
-  # Example No. 11:
-  # >room_avatar_url_attribute: v
-  # >
-  # Example No. 12:
-  # >room_avatar_url_attribute: a
-  # >
-  # Example No. 13:
-  # >room_avatar_url_attribute: t
-  # >
-  # Example No. 14:
-  # >room_avatar_url_attribute: a
-  # >
-  # Example No. 15:
-  # >room_avatar_url_attribute: r
-  # >
-  # Example No. 16:
-  # >room_avatar_url_attribute: _
-  # >
-  # Example No. 17:
-  # >room_avatar_url_attribute: u
-  # >
-  # Example No. 18:
-  # >room_avatar_url_attribute: r
-  # >
-  # Example No. 19:
-  # >room_avatar_url_attribute: l
+  # Example:
+  # >room_avatar_url_attribute: chatroom_avatar_url
   room_avatar_url_attribute: chatroom_avatar_url
 
   # ## only_for_groupnames_starting_with ###
