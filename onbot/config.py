@@ -292,7 +292,7 @@ class OnbotConfig(BaseSettings):
                 description=inspect.cleandoc(
                     """Define an Authentik custom room attribute that can contain an url to a media that will be configured as the rooms avatar"""
                 ),
-                examples="chatroom_avatar_url",
+                examples=["chatroom_avatar_url"],
                 default="chatroom_avatar_url",
             ),
         ]
