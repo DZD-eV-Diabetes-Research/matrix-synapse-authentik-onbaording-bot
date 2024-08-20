@@ -8,13 +8,29 @@ import yaml
 
 
 def get_config() -> "OnbotConfig":
-    yaml_file = Path(os.environ.get("ONBOT_CONFIG_FILE_PATH", "../config.dev.yml"))
-
-    if yaml_file.exists() and yaml_file.is_file():
+    yaml_file = get_config_file_path()
+    if yaml_file:
         with open(yaml_file) as yaml_file_reader:
             return OnbotConfig.model_validate(yaml.safe_load(yaml_file_reader.read()))
     else:
         return OnbotConfig()
+
+
+def get_config_file_path(not_exists_ok: bool = False) -> Optional[Path]:
+    yaml_file = Path(os.environ.get("ONBOT_CONFIG_FILE_PATH", "../config.dev.yml"))
+
+    if (yaml_file.exists() and yaml_file.is_file) or not_exists_ok:
+        return yaml_file
+
+
+def generate_config_file():
+    from psyplus import YamlSettingsPlus
+
+    config_file_path = os.getenv("ONBOT_CONFIG_FILE_PATH", "")
+    y = YamlSettingsPlus(
+        OnbotConfig, file_path=get_config_file_path(not_exists_ok=True)
+    )
+    y.generate_config_file(overwrite_existing=True)
 
 
 class OnbotConfig(BaseSettings):
