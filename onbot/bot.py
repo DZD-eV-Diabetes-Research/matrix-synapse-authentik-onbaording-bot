@@ -847,14 +847,16 @@ class Bot:
         authentik_users = self.get_authentik_accounts_that_need_mapped_synapse_account(
             only_accounts_from_group_with_pk=only_accounts_from_group_with_pk
         )
-
+        room_member_ids: Optional[List[str]] = None
+        if from_matrix_room_id:
+            room_member_ids = self.api_client_synapse_admin.list_room_members(
+                from_matrix_room_id
+            )
         matched_users: List[UserMap] = []
-        for matrix_user in (
-            self.api_client_synapse_admin.list_users()
-            if not from_matrix_room_id
-            else self.api_client_synapse_admin.list_room_members(from_matrix_room_id)
-        ):
+        for matrix_user in self.api_client_synapse_admin.list_users():
             if matrix_user["name"] in self.config.matrix_user_ignore_list:
+                continue
+            if room_member_ids and matrix_user not in room_member_ids:
                 continue
             # matrix_user is object from https://element-hq.github.io/synapse/latest/admin_api/user_admin_api.html#list-accounts
             for authentik_user in authentik_users:

@@ -317,13 +317,13 @@ class ApiClientMatrix:
             return res
 
     def get_room_power_levels(self, room_id: str) -> Dict | None:
-        # https://spec.matrix.org/legacy/client_server/r0.2.0.html#m-room-power-levels -> content
+        # https://spec.matrix.org/v1.11/client-server-api/#mroompower_levels -> content
         return self.get_room_state_event(
             room_id=room_id, event_type="m.room.power_levels"
         )["content"]
 
     def set_room_power_levels(self, room_id: str, power_levels: Dict):
-        # https://spec.matrix.org/legacy/client_server/r0.2.0.html#m-room-power-levels -> content
+        # https://spec.matrix.org/v1.11/client-server-api/#mroompower_levels -> content
         self.put_room_state_event(
             room_id=room_id, event_type="m.room.power_levels", content=power_levels
         )

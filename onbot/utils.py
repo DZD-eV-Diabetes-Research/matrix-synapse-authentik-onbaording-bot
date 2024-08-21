@@ -56,6 +56,21 @@ def get_nested_dict_val_by_path(
             raise
 
 
+def dict_has_nested_attr(
+    data: Dict, key_path: List[str], must_have_val: bool = False
+) -> bool:
+    """Provide a key path and check if a dict has these nested keys"""
+    current_sub_dict = data
+    for key in key_path:
+        if key in current_sub_dict:
+            current_sub_dict = current_sub_dict[key]
+        else:
+            return False
+    if must_have_val and not current_sub_dict:
+        return False
+    return True
+
+
 def create_nested_dict_by_path(
     path: str, value: Any, path_seperator: str = "."
 ) -> Dict:
