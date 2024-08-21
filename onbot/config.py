@@ -26,7 +26,6 @@ def get_config_file_path(not_exists_ok: bool = False) -> Optional[Path]:
 def generate_config_file():
     from psyplus import YamlSettingsPlus
 
-    config_file_path = os.getenv("ONBOT_CONFIG_FILE_PATH", "")
     y = YamlSettingsPlus(
         OnbotConfig, file_path=get_config_file_path(not_exists_ok=True)
     )
@@ -36,7 +35,7 @@ def generate_config_file():
 class OnbotConfig(BaseSettings):
     log_level: Literal["INFO", "DEBUG"] = "INFO"
     storage_dir: str = Field(
-        description="A directory to story any states fpr the bot. Only for saving encryption keys/state at the moment.",
+        description="A directory to story any states for the bot. Only for saving encryption keys/state at the moment.",
         default_factory=lambda: str(Path(PurePath(Path().home(), ".config/onbot/"))),
     )
     storage_encryption_key: Annotated[
@@ -164,11 +163,13 @@ class OnbotConfig(BaseSettings):
     authentik_server: AuthentikServer
 
     # The bot will invite the new user to a direct chat and send following message
-    welcome_new_users_messages: List[str] = [
-        "Welcome to the company chat. I am the company bot. I will invite you to the groups you are assigned too. If you have any technical questions write a message to @admin-person:matrix.company.org.",
-        "If you need some guidance on how to use this chat have a look at the official documentations. For the basic have a look at https://matrix.org/docs/chat_basics/matrix-for-im/ and for more details see https://element.io/user-guide",
-        "🛑 🔐 The Chat software will ask you to setup a 'Security Key Backup'. <b>This is very important<b>. Save the file on a secure location. Otherwise you could lose access to older enrypted messages later. Please follow the request.",
-    ]
+    welcome_new_users_messages: Optional[List[str]] = Field(
+        default=[
+            "Welcome to the company chat. I am the company bot. I will invite you to the groups you are assigned too. If you have any technical questions write a message to @admin-person:matrix.company.org.",
+            "If you need some guidance on how to use this chat have a look at the official documentations. For the basic have a look at https://matrix.org/docs/chat_basics/matrix-for-im/ and for more details see https://element.io/user-guide",
+            "🛑 🔐 The Chat software will ask you to setup a 'Security Key Backup'. <b>This is very important<b>. Save the file on a secure location. Otherwise you could lose access to older enrypted messages later. Please follow the request.",
+        ]
+    )
 
     class SyncAuthentikUsersWithMatrix(BaseModel):
         enabled: bool = True
@@ -231,16 +232,41 @@ class OnbotConfig(BaseSettings):
     )
 
     class CreateMatrixRoomsInAMatrixSpace(BaseModel):
-        enabled: bool = True
-        alias: str = (
-            "MyCompanySpace"  # the name part of a "canonical_alias". e.g. if the room canonical alias is (or should be) "#MyCompanySpace:matrix.company.org", enter "MyCompanySpace" here
+        enabled: bool = Field(
+            default=True,
+            description="If set to true all authentik group rooms will be created in an extra space.",
+        )
+        alias: str = Field(
+            default="OnBotSpace",
+            description='The name part of a "canonical_alias". e.g. if the room canonical alias is (or should be if `create_matrix_space_if_not_exists.enable=true`) "#MyCompanySpace:matrix.company.org", enter "MyCompanySpace" here.',
+            examples=["myspace", "companyspace"],
         )
 
         class CreateMatrixSpaceIfNotExists(BaseModel):
-            enabled: bool = True
-            name: str = "Our cozy space"
-            topic: str = "The Company Space"
-            avatar_url: Optional[str] = None
+            enabled: bool = Field(
+                default=True,
+                description="If set to true, a the space, for the on authenik group-rooms, will be created if it not exists.",
+            )
+            name: str = Field(
+                default="OnBotSpace",
+                description="Display name of the space to create all rooms.",
+                examples=["My Company", "AuthentikRooms"],
+            )
+            topic: str = Field(
+                default="Space for authentik group rooms",
+                description="Matrix Topic for the space. this will be a tagline for the space.",
+                examples=[
+                    "Gather here authentik users",
+                    "No skating, food or drinks allowed here.",
+                ],
+            )
+            avatar_url: Optional[str] = Field(
+                default=None,
+                description="The avatar picture for the Bot Matrix space. Can be any unauthenticated http/s url that points to an picture.",
+                examples=[
+                    "https://upload.wikimedia.org/wikipedia/en/e/e8/SnakePlissken.jpeg"
+                ],
+            )
 
             # https://spec.matrix.org/v1.6/client-server-api/#post_matrixclientv3createroom
             # all available params at https://matrix-nio.readthedocs.io/en/latest/nio.html?highlight=room_create#nio.AsyncClient.room_create
@@ -256,17 +282,22 @@ class OnbotConfig(BaseSettings):
             #
             # default_room_params
 
-            space_params: Dict = {
-                "preset": "private_chat",
-                "visibility": "private",
-            }
+            space_params: Dict = Field(
+                default={
+                    "preset": "private_chat",
+                    "visibility": "private",
+                },
+                description="Any extra parameters (as a dict/object) you want to assign to the space. Have a look at https://matrix-nio.readthedocs.io/en/latest/nio.html#nio.AsyncClient.room_create for all possible parameters.",
+            )
 
-        create_matrix_space_if_not_exists: CreateMatrixSpaceIfNotExists = (
-            CreateMatrixSpaceIfNotExists()
+        create_matrix_space_if_not_exists: CreateMatrixSpaceIfNotExists = Field(
+            default=CreateMatrixSpaceIfNotExists(),
+            description="This chapter will define if and how the authentik-group-rooms are created in an designated Matrix space",
         )
 
-    create_matrix_rooms_in_a_matrix_space: CreateMatrixRoomsInAMatrixSpace = (
-        CreateMatrixRoomsInAMatrixSpace()
+    create_matrix_rooms_in_a_matrix_space: CreateMatrixRoomsInAMatrixSpace = Field(
+        default=CreateMatrixRoomsInAMatrixSpace(),
+        description="If you want all authentik-group-rooms in a designated space, the following chapter will let you configure this.",
     )
 
     class SyncMatrixRoomsBasedOnAuthentikGroups(BaseModel):
@@ -315,9 +346,11 @@ class OnbotConfig(BaseSettings):
                     """Define an Authentik group custom attribute path (elements seperated by '.') that contains an integer from 0-100. 
                     Members of this group will get this integer applied as Matrix power level in the rooms they are member of(https://matrix.org/docs/communities/moderation/)
                     e.g. you could create an Authentik group named "Matrix-Moderators" with `{"attributes":{"chat-powerlevel":50}}`. All members of this group will get Matrix power level 50 in their onbot group rooms
-                    If a user gets admin via `sync_matrix_rooms_based_on_authentik_groups.make_authentik_superusers_matrix_room_admin` `authentik_group_attr_for_matrix_power_level` will be ignored """
+                    If a user gets admin via `sync_matrix_rooms_based_on_authentik_groups.make_authentik_superusers_matrix_room_admin` `authentik_group_attr_for_matrix_power_level` will be ignored.
+                    If a user has multiple group memberships with different Matrix power level definitions, the highest value will be aplied
+                    WARNING: Once a user has elevated power levels via a authentik group membership, the new power level will not be withdrawn with losing the authentik group membership. this maybe implemented in a future version of this bot"""
                 ),
-                examples=["synapse-options.chat-powerlevel"],
+                examples=["matrix-userpowerlevel", "synapse-options.chat-powerlevel"],
             ),
         ] = "chat-powerlevel"
 
@@ -374,6 +407,7 @@ class OnbotConfig(BaseSettings):
     per_authentik_group_pk_matrix_room_settings: Annotated[
         Optional[Dict[str, MatrixDynamicRoomSettings]],
         Field(
+            description="Override default room settings and define custom room settings for a specific authentikgroup based matrix room group. Specify the authentik group by its primary key ('pk')",
             examples=[
                 {
                     "80439f0d-d936-4118-8017-52a95d6dd1bc": MatrixDynamicRoomSettings(
@@ -381,9 +415,10 @@ class OnbotConfig(BaseSettings):
                         topic_prefix="TOPIC PREFIX FOR SPECIFIC ROOM:",
                     )
                 }
-            ]
+            ],
+            default_factory=dict,
         ),
-    ] = {}
+    ]
 
     matrix_user_ignore_list: Annotated[
         Optional[List[str]],

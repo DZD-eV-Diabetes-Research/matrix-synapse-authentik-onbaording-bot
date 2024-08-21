@@ -3,6 +3,8 @@ import json
 import requests
 import logging
 
+from onbot.utils import dict_has_nested_attr
+
 log = logging.getLogger(__name__)
 
 
@@ -42,6 +44,8 @@ class ApiClientAuthentik:
         filter_members_by_username: Union[str, List[str]] = None,
         filter_members_by_pk: Union[str, List[str]] = None,
         filter_by_attribute: Dict = None,
+        filter_has_attributes: List[str] = None,
+        filter_has_non_empty_attributes: List[str] = None,
         filter_is_superuser: bool = None,
         include_inactive_users_obj: bool = False,
     ) -> Dict:
@@ -56,6 +60,24 @@ class ApiClientAuthentik:
         if not include_inactive_users_obj:
             for group in groups:
                 self._remove_inactive_users_from_group_user_list(group)
+        if filter_has_attributes:
+            new_group_list = []
+            for group in groups:
+                for fattr in filter_has_attributes:
+                    if dict_has_nested_attr(
+                        group["attributes"], fattr.split("."), must_have_val=False
+                    ):
+                        new_group_list.append(group)
+            groups = new_group_list
+        if filter_has_non_empty_attributes:
+            new_group_list = []
+            for group in groups:
+                for fattr in filter_has_non_empty_attributes:
+                    if dict_has_nested_attr(
+                        group["attributes"], fattr.split("."), must_have_val=True
+                    ):
+                        new_group_list.append(group)
+            groups = new_group_list
         return groups
 
     def _remove_inactive_users_from_group_user_list(self, group_obj: Dict) -> Dict:
