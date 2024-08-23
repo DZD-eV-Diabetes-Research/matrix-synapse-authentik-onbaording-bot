@@ -352,7 +352,7 @@ class OnbotConfig(BaseSettings):
                 ),
                 examples=["matrix-userpowerlevel", "synapse-options.chat-powerlevel"],
             ),
-        ] = "chat-powerlevel"
+        ] = "chat-systemwide-powerlevel"
 
     sync_matrix_rooms_based_on_authentik_groups: (
         SyncMatrixRoomsBasedOnAuthentikGroups
