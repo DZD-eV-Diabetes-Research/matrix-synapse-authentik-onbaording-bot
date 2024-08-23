@@ -52,7 +52,9 @@ class ApiClientAuthentik:
         query = {
             "members_by_username": filter_members_by_username,
             "members_by_pk": filter_members_by_pk,
-            "attributes": json.dumps(filter_by_attribute),
+            "attributes": (
+                json.dumps(filter_by_attribute) if filter_by_attribute else None
+            ),
             "is_superuser": filter_is_superuser,
         }
         # https://auth.mycompany.org/api/v3/#get-/core/groups/
@@ -70,9 +72,12 @@ class ApiClientAuthentik:
                         new_group_list.append(group)
             groups = new_group_list
         if filter_has_non_empty_attributes:
+            print("HERE WE GO", filter_has_non_empty_attributes)
             new_group_list = []
             for group in groups:
+                print(group["name"], group["attributes"])
                 for fattr in filter_has_non_empty_attributes:
+
                     if dict_has_nested_attr(
                         group["attributes"], fattr.split("."), must_have_val=True
                     ):
