@@ -23,7 +23,7 @@ class RoomPowerLevelState(BaseModel):
         return self.new
 
     @property
-    def have_changed(self):
+    def has_changed(self):
         if self.new and self.new != self.old:
             return True
         return False
@@ -137,7 +137,7 @@ class AuthenikGroupMatrixRoomPowerLevelManager:
     def commit_new_power_levels(self):
 
         for room_id, power_levels in self.room_power_levels.items():
-            if power_levels.have_changed:
+            if power_levels.has_changed:
                 log.debug(f"Set new power level: {power_levels.new}")
                 self.bot.api_client_matrix.set_room_power_levels(
                     room_id=room_id, power_levels=power_levels.new
