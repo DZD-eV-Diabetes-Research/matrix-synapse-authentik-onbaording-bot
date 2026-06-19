@@ -6,7 +6,8 @@ targeting the modern Matrix protocol (MAS / next-gen auth, authenticated media, 
 dependencies and a real test suite (unit + integration against a live Matrix stack).
 **Approach:** **Clean slate.** We design the architecture we want and port only the *valuable logic* from the
 old code; we do not preserve the old structure.
-**Plan authored:** 2026-06-19 · **Revised:** 2026-06-19 (architecture decisions agreed)
+**Plan authored:** 2026-06-19 · **Revised:** 2026-06-19 (architecture decisions agreed; Phase 1–2 executed —
+PDM + Python 3.14 chosen over uv/3.11–3.13)
 
 ---
 
@@ -15,7 +16,7 @@ old code; we do not preserve the old structure.
 | Phase | Theme | Outcome |
 |-------|-------|---------|
 | **1** | 🔴 Security triage | Rotate leaked credentials, purge secrets from repo/history |
-| **2** | Project skeleton & tooling | New package layout, `pyproject.toml`/`uv`, lint/type/test/CI |
+| **2** | Project skeleton & tooling | New package layout, `pyproject.toml`/PDM (Py 3.14), lint/type/test/CI |
 | **3** | Reconciler core | Idempotent Authentik→Matrix reconcile (rooms, membership, power levels) |
 | **4** | Onboarding bot | Event-driven welcome/onboarding via sliding sync |
 | **5** | Lifecycle (quarantined) | Account deactivate/delete with dry-run + audit defaults |
@@ -181,20 +182,20 @@ desired-vs-actual result, behind dry-run. All three share `clients/` + `auth/`.
 
 ## 5. Phase-by-phase plan
 
-### Phase 1 — 🔴 Security triage (blocks everything)
-- [ ] Rotate every exposed credential (tokens in [config.yml](config.yml)/[onbot/test.py](onbot/test.py),
-      passwords in [get_access_token.sh](get_access_token.sh)).
-- [ ] `git rm --cached config.yml`; ship `config.example.yml` only; gitignore real configs.
-- [ ] Delete scratch scripts with secrets.
-- [ ] Scrub history with `git filter-repo`; coordinate force-push (shared repo).
-- [ ] Add `pre-commit` + `detect-secrets`/`gitleaks`.
+### Phase 1 — 🔴 Security triage (blocks everything)  ⚠️ partially done 2026-06-19
+- [ ] **⚠️ MAINTAINER:** Rotate every exposed credential — @dzd-bot Synapse tokens, the @admin/@dzd-bot
+      login passwords (`get_access_token.sh`), and the Authentik `api_key` (`config.dev.yml`). *(only you can.)*
+- [x] `git rm --cached config.yml`; ship `config.example.yml` only; gitignore real configs (`config*.yml`).
+- [x] Delete scratch scripts with secrets (`git rm onbot/test.py`; legacy run scripts removed).
+- [ ] **⚠️ MAINTAINER:** Scrub history with `git filter-repo`; coordinate force-push (shared repo — open Q6).
+- [x] Add `pre-commit` + `gitleaks` (pre-commit hook **and** CI job).
 
-### Phase 2 — Project skeleton & tooling
-- [ ] Create the package layout (§4). `pyproject.toml` (PEP 621), package name `onbot`, console entry point.
-- [ ] **`uv`** for deps + committed lockfile (drop `setup.py`/`reqs.txt`).
-- [ ] `ruff` (lint+format), `mypy`, `pytest` (+`pytest-asyncio`, `respx`, `pytest-cov`), `pre-commit`.
-- [ ] GitHub Actions CI: lint → typecheck → unit. Python 3.11–3.13.
-- [ ] `docs/adr/` with AD-1…AD-7 from §1. Remove hard-coded absolute paths; sane config-path default.
+### Phase 2 — Project skeleton & tooling  ✅ done 2026-06-19
+- [x] Create the package layout (§4). `pyproject.toml` (PEP 621), package name `onbot`, console entry point.
+- [x] **`PDM`** (`pdm-backend`) for deps + committed `pdm.lock` (dropped `setup.py`/`reqs.txt`/run scripts).
+- [x] `ruff` (lint+format), `mypy`, `pytest` (+`pytest-asyncio`, `respx`, `pytest-cov`), `pre-commit`.
+- [x] GitHub Actions CI: lint → typecheck → unit + secret scan. **Python 3.14** (`requires-python >=3.14`).
+- [x] `docs/adr/` with AD-1…AD-7 from §1. Removed hard-coded absolute paths (deleted legacy run scripts).
 
 ### Phase 3 — Reconciler core (AD-2, AD-7)
 - [ ] Async `clients/base.py` (httpx + tenacity retries + **pagination** + typed errors).
@@ -236,7 +237,7 @@ desired-vs-actual result, behind dry-run. All three share `clients/` + `auth/`.
 - [ ] Coverage gate (start ~60% unit, ratchet up; lifecycle held higher).
 
 ### Phase 8 — Packaging, docs & release
-- [ ] Rewrite `Dockerfile`: multi-stage, pinned digest, non-root, `.dockerignore`, `uv` install, healthcheck.
+- [ ] Rewrite `Dockerfile`: multi-stage, pinned digest, non-root, `.dockerignore`, `pdm install`, healthcheck.
 - [ ] CI publish image (GHCR) on tag; semver; CHANGELOG.
 - [ ] Rewrite `README.md`: MAS-era setup (Authentik-as-upstream topology, MXID/localpart contract), config
       reference (auto-gen from pydantic), Docker/compose deploy, troubleshooting.
@@ -280,7 +281,7 @@ group→room projection + membership + power levels + (quarantined) lifecycle.
 ## 8. Suggested execution order (first PRs)
 
 1. **PR1 — Security:** rotate, remove tracked secrets, secret-scan pre-commit. (History scrub coordinated.)
-2. **PR2 — Skeleton & tooling:** layout + `pyproject`/`uv` + ruff/mypy/pytest + CI + ADRs. No behavior.
+2. **PR2 — Skeleton & tooling:** layout + `pyproject`/PDM (Py 3.14) + ruff/mypy/pytest + CI + ADRs. No behavior.
 3. **PR3 — Base client + Authentik/Admin clients (async, paginated) + first unit/contract tests.**
 4. **PR4 — Auth/TokenProvider spike + MAS topology validation (ADR).**
 5. **PR5 — Reconciler engine + ported rooms/membership/power-level logic.**

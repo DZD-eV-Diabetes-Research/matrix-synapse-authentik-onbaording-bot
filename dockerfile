@@ -1,15 +1,15 @@
-# specify start image
+# NOTE: placeholder image. BATTLE_PLAN.md Phase 8 replaces this with a multi-stage,
+# pinned-digest, non-root build using PDM + a healthcheck. This minimal version just
+# keeps the image buildable against the new package layout.
 FROM python:3.11
-
-RUN apt-get update && apt-get install -y libolm-dev
 
 WORKDIR /app
 
 COPY . .
 
 RUN pip install .
-# set a default environment variable for the name of your bot
+
 ENV ONBOT_CONFIG_FILE_PATH='/config/onbot.yaml'
 
-# set the start command
-CMD [ "python3", "onbot/main.py"]
+# Uses the console entry point defined in pyproject.toml ([project.scripts]).
+CMD ["onbot", "run"]
