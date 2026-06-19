@@ -1,0 +1,149 @@
+"""Integration-style tests for the reconciler engine using in-memory fakes."""
+
+import asyncio
+from typing import Any
+
+import pytest
+
+from onbot.config import OnbotConfig
+from onbot.events import EventBus, Signal
+from onbot.reconciler.effectors import DryRunEffectors
+from onbot.reconciler.engine import ReconcilerEngine
+
+_BASE = {
+    "synapse_server": {
+        "server_name": "company.org",
+        "server_url": "https://internal.matrix",
+        "bot_user_id": "@bot:company.org",
+        "bot_access_token": "tok",
+    },
+    "authentik_server": {"url": "https://authentik/", "api_key": "key"},
+}
+
+_GROUP_G1 = {
+    "pk": "g1",
+    "name": "Team",
+    "attributes": {"chat-systemwide-powerlevel": 50},
+    "users": ["alice-pk"],
+}
+
+
+class FakeAuthentik:
+    async def list_users(self, **_: Any) -> list[dict[str, Any]]:
+        return [
+            {"username": "alice", "pk": "alice-pk", "is_superuser": False, "groups_obj": [{"pk": "g1"}]},
+            {"username": "bob", "pk": "bob-pk", "is_superuser": False, "groups_obj": [{"pk": "g1"}]},
+            {"username": "carol", "pk": "carol-pk", "is_superuser": False, "groups_obj": [{"pk": "g2"}]},
+        ]
+
+    async def list_groups(self, **_: Any) -> list[dict[str, Any]]:
+        return [_GROUP_G1]
+
+
+class FakeAdmin:
+    def __init__(self) -> None:
+        self.added: list[tuple[str, str]] = []
+        self.blocked_changes: list[tuple[str, bool]] = []
+
+    async def list_users(self) -> list[dict[str, Any]]:
+        return [{"name": f"@{u}:company.org"} for u in ("alice", "bob", "carol")]
+
+    async def list_non_space_rooms(self) -> list[dict[str, Any]]:
+        return [{"room_id": "!room1:company.org", "canonical_alias": "#g1:company.org", "name": "Team"}]
+
+    async def list_spaces(self) -> list[dict[str, Any]]:
+        return [{"room_id": "!space:company.org", "canonical_alias": "#OnBotSpace:company.org"}]
+
+    async def list_room_members(self, room_id: str) -> list[str]:
+        if room_id == "!space:company.org":
+            return ["@alice:company.org"]
+        return ["@alice:company.org", "@stale:company.org", "@bot:company.org"]
+
+    async def room_is_blocked(self, room_id: str) -> bool:
+        return False
+
+    async def room_set_blocked(self, room_id: str, *, blocked: bool) -> None:
+        self.blocked_changes.append((room_id, blocked))
+
+    async def add_user_to_room(self, room_id: str, user_id: str) -> None:
+        self.added.append((room_id, user_id))
+
+
+class RecordingEffectors(DryRunEffectors):
+    def __init__(self) -> None:
+        self.kicks: list[tuple[str, str]] = []
+        self.power_levels: list[tuple[str, dict[str, Any]]] = []
+
+    async def kick_user(self, room_id: str, user_id: str, reason: str | None = None) -> None:
+        self.kicks.append((room_id, user_id))
+
+    async def set_room_power_levels(self, room_id: str, power_levels: dict[str, Any]) -> None:
+        self.power_levels.append((room_id, power_levels))
+
+
+def _engine(events: EventBus | None = None) -> tuple[ReconcilerEngine, FakeAdmin, RecordingEffectors]:
+    config = OnbotConfig.model_validate(_BASE)
+    admin = FakeAdmin()
+    effectors = RecordingEffectors()
+    engine = ReconcilerEngine(config, FakeAuthentik(), admin, effectors, events)  # type: ignore[arg-type]
+    return engine, admin, effectors
+
+
+async def test_reconcile_once_converges() -> None:
+    engine, admin, effectors = _engine()
+    await engine.reconcile_once()
+
+    # space membership: bob & carol added (alice already present)
+    assert ("!space:company.org", "@bob:company.org") in admin.added
+    assert ("!space:company.org", "@carol:company.org") in admin.added
+
+    # room membership: bob added to g1 room; stale kicked; bot protected
+    assert ("!room1:company.org", "@bob:company.org") in admin.added
+    assert effectors.kicks == [("!room1:company.org", "@stale:company.org")]
+
+    # power levels: alice gets 50 in the g1 room
+    assert effectors.power_levels == [("!room1:company.org", {"users": {"@alice:company.org": 50}})]
+
+
+async def test_reconcile_emits_user_synced_events() -> None:
+    bus = EventBus()
+    seen: list[str] = []
+
+    async def handler(event: Any) -> None:
+        seen.append(event.payload["mxid"])
+
+    bus.subscribe(Signal.user_synced, handler)
+    engine, _, _ = _engine(events=bus)
+    await engine.reconcile_once()
+    assert set(seen) == {"@alice:company.org", "@bob:company.org", "@carol:company.org"}
+
+
+async def test_run_stops_gracefully_after_trigger() -> None:
+    engine, _, _ = _engine()
+    calls = 0
+
+    async def one_pass() -> None:
+        nonlocal calls
+        calls += 1
+        engine.request_stop()
+
+    engine.reconcile_once = one_pass  # type: ignore[method-assign]
+    await asyncio.wait_for(engine.run(), timeout=2)
+    assert calls == 1
+
+
+async def test_run_survives_a_failing_pass(caplog: pytest.LogCaptureFixture) -> None:
+    engine, _, _ = _engine()
+    calls = 0
+
+    async def flaky() -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("boom")
+        engine.request_stop()
+
+    engine.reconcile_once = flaky  # type: ignore[method-assign]
+    engine.config.server_tick_rate_sec = 0  # don't actually wait between passes
+    await asyncio.wait_for(engine.run(), timeout=2)
+    assert calls == 2  # first pass failed but the loop continued

@@ -197,14 +197,22 @@ desired-vs-actual result, behind dry-run. All three share `clients/` + `auth/`.
 - [x] GitHub Actions CI: lint → typecheck → unit + secret scan. **Python 3.14** (`requires-python >=3.14`).
 - [x] `docs/adr/` with AD-1…AD-7 from §1. Removed hard-coded absolute paths (deleted legacy run scripts).
 
-### Phase 3 — Reconciler core (AD-2, AD-7)
-- [ ] Async `clients/base.py` (httpx + tenacity retries + **pagination** + typed errors).
-- [ ] Authentik + Synapse-Admin clients on the base (no Matrix deps → lowest risk first).
-- [ ] `reconciler/engine.py`: idempotent desired-vs-actual diff/apply; **scheduled + on-demand** (no
-      `while True`); graceful shutdown via signals; `reconcile-once` CLI mode.
-- [ ] Port rooms/membership/space/power-level logic; fix the §3 bugs in the rewrite.
-- [ ] Versioned onbot room-state schemas (`reconciler/state.py`).
-- [ ] Unit + contract tests alongside (Phase 7).
+### Phase 3 — Reconciler core (AD-2, AD-7)  ✅ done 2026-06-19
+- [x] Async `clients/base.py` (httpx + tenacity retries + **pagination** + typed `ApiError`).
+- [x] Authentik + Synapse-Admin clients on the base (paginated; §3 bugs fixed — token no longer
+      `lstrip`-corrupted, `delete_room` sends its body, `make_room_admin`/`set_user_server_admin_state`
+      hit real endpoints, `room_is_blocked` returns a bool).
+- [x] `reconciler/engine.py`: idempotent desired-vs-actual convergence; **scheduled + on-demand**
+      (`trigger()`), graceful shutdown via SIGINT/SIGTERM; `reconcile-once` + `run` CLI modes. Also
+      ported config (`config.py`), dict helpers (`utils.py`), MXID mapping (`identity.py`, AD-6),
+      domain models (`models.py`), and the `events.py` signal bus.
+- [x] Ported rooms/membership/space/power-level logic as **pure** functions; fixed the §3 substring
+      membership bug and the room-create-params split-path bug; **added power-level withdrawal (G8.4)**.
+- [x] Versioned onbot room-state schemas (`reconciler/state.py`, `schema_version`).
+- [x] Unit + contract tests (48 tests, 83% cov; pure logic 100%). CI green (ruff/format/mypy/pytest).
+- ⏭️ **Deferred to Phase 4:** Matrix CS writes (room/space create, kick, power levels, room
+      name/topic, custom state events) run behind the `MatrixEffectors` seam — currently
+      `DryRunEffectors` (logs, mutates nothing). The concrete CS-API impl lands with the Matrix client.
 
 ### Phase 4 — Onboarding bot (AD-3)
 - [ ] Matrix CS client + sliding-sync stream in `clients/matrix.py`.
