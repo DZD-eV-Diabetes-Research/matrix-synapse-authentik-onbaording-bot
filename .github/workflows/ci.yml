@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: lint · type · test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up PDM (Python 3.14)
+        uses: pdm-project/setup-pdm@v4
+        with:
+          python-version: "3.14"
+          cache: true
+
+      - name: Install dependencies
+        run: pdm install --dev
+
+      - name: Ruff lint
+        run: pdm run ruff check .
+
+      - name: Ruff format check
+        run: pdm run ruff format --check .
+
+      - name: Mypy
+        run: pdm run mypy onbot
+
+      - name: Pytest (unit + contract)
+        run: pdm run pytest -m "not integration" --cov --cov-report=term-missing
+
+  secrets:
+    name: secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
