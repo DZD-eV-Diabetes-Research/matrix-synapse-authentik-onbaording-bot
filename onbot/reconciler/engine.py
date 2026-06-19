@@ -21,6 +21,7 @@ from onbot.clients.synapse_admin import ApiClientSynapseAdmin
 from onbot.config import OnbotConfig, SyncMatrixRoomsBasedOnAuthentikGroups
 from onbot.events import EventBus, Signal
 from onbot.identity import build_canonical, compute_mxid
+from onbot.lifecycle.accounts import AccountLifecycleManager
 from onbot.logging import get_logger
 from onbot.models import GroupRoomMap, MappedUser, MatrixRoom
 from onbot.reconciler.effectors import DryRunEffectors, MatrixEffectors
@@ -59,12 +60,14 @@ class ReconcilerEngine:
         admin: ApiClientSynapseAdmin,
         effectors: MatrixEffectors | None = None,
         events: EventBus | None = None,
+        lifecycle: AccountLifecycleManager | None = None,
     ) -> None:
         self.config = config
         self.authentik = authentik
         self.admin = admin
         self.effectors: MatrixEffectors = effectors or DryRunEffectors()
         self.events = events or EventBus()
+        self.lifecycle = lifecycle
         self.server_name = config.synapse_server.server_name
         self._stop = asyncio.Event()
         self._trigger = asyncio.Event()
@@ -112,7 +115,8 @@ class ReconcilerEngine:
 
     async def reconcile_once(self) -> None:
         log.info("reconcile: gathering desired (Authentik) and actual (Synapse) state")
-        users = await self._gather_mapped_users()
+        matrix_users = await self.admin.list_users()
+        users = await self._gather_mapped_users(matrix_users)
         space = await self._resolve_space()
         group_maps = await self._gather_group_room_maps()
 
@@ -120,9 +124,10 @@ class ReconcilerEngine:
         if space is not None:
             await self._converge_space_membership(space, users)
         await self._converge_room_membership_and_levels(group_maps, users)
+        await self._converge_lifecycle(matrix_users, {u.mxid for u in users})
         log.info("reconcile: done (%d users, %d group rooms)", len(users), len(group_maps))
 
-    async def _gather_mapped_users(self) -> list[MappedUser]:
+    async def _gather_mapped_users(self, matrix_users: list[dict[str, Any]]) -> list[MappedUser]:
         cfg = self.config.sync_authentik_users_with_matrix_rooms
         if not cfg.enabled:
             return []
@@ -154,7 +159,7 @@ class ReconcilerEngine:
                 by_mxid[mxid] = user
 
         mapped: list[MappedUser] = []
-        for matrix_user in await self.admin.list_users():
+        for matrix_user in matrix_users:
             mxid = matrix_user["name"]
             if mxid in self.config.matrix_user_ignore_list:
                 continue
@@ -294,3 +299,50 @@ class ReconcilerEngine:
             await self.effectors.set_room_name(gm.room.room_id, gm.desired.name)
         if gm.desired.topic is not None and gm.room.topic != gm.desired.topic:
             await self.effectors.set_room_topic(gm.room.room_id, gm.desired.topic)
+
+    # --- lifecycle (AD-5, G9.*): quarantined, invoked only from the reconcile result ---
+
+    async def _converge_lifecycle(self, matrix_users: list[dict[str, Any]], active_mxids: set[str]) -> None:
+        if self.lifecycle is None:
+            return
+        sync_cfg = self.config.sync_authentik_users_with_matrix_rooms
+        if not sync_cfg.deactivate_disabled_authentik_users_in_matrix.enabled:
+            return
+        orphaned = await self._gather_orphaned_mxids(matrix_users, active_mxids)
+        await self.lifecycle.reconcile_accounts(orphaned)
+
+    async def _gather_orphaned_mxids(
+        self, matrix_users: list[dict[str, Any]], active_mxids: set[str]
+    ) -> set[str]:
+        """MXIDs whose Authentik account is disabled but a Matrix account still exists (G9.1).
+
+        Scoped to *disabled* Authentik users we can positively map — never sweeping arbitrary Matrix
+        accounts that simply lack an Authentik counterpart (e.g. admin/service users), so the
+        destructive path can only ever touch accounts we provisioned from a now-disabled directory
+        entry. The bot user and the ignore lists (G12.1) are always excluded.
+        """
+        cfg = self.config.sync_authentik_users_with_matrix_rooms
+        disabled_users = await self.authentik.list_users(
+            filter_by_attribute=cfg.sync_only_users_with_authentik_attributes,
+            filter_is_active=False,
+        )
+        matrix_mxids = {u["name"] for u in matrix_users}
+        bot_id = self.config.synapse_server.bot_user_id
+        orphaned: set[str] = set()
+        for user in disabled_users:
+            if user.get("username") in self.config.authentik_user_ignore_list:
+                continue
+            try:
+                mxid = compute_mxid(
+                    user,
+                    username_attribute=cfg.authentik_username_mapping_attribute,
+                    server_name=self.server_name,
+                )
+            except KeyError:
+                continue
+            if mxid == bot_id or mxid in self.config.matrix_user_ignore_list:
+                continue
+            if mxid in active_mxids or mxid not in matrix_mxids:
+                continue
+            orphaned.add(mxid)
+        return orphaned

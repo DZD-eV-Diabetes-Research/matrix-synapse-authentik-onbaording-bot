@@ -132,6 +132,59 @@ async def test_run_stops_gracefully_after_trigger() -> None:
     assert calls == 1
 
 
+async def _async(value: Any) -> Any:
+    return value
+
+
+class FakeLifecycle:
+    """Captures the orphaned set the engine feeds the lifecycle manager."""
+
+    def __init__(self) -> None:
+        self.calls: list[set[str]] = []
+
+    async def reconcile_accounts(self, orphaned_mxids: set[str]) -> list[Any]:
+        self.calls.append(set(orphaned_mxids))
+        return []
+
+
+class LifecycleAuthentik(FakeAuthentik):
+    """Returns active users for is_active=True and one disabled user otherwise."""
+
+    async def list_users(self, **kwargs: Any) -> list[dict[str, Any]]:
+        if kwargs.get("filter_is_active") is False:
+            return [
+                {"username": "dave", "pk": "dave-pk"},  # disabled, has a Matrix account → orphan
+                {"username": "eve", "pk": "eve-pk"},  # disabled, but no Matrix account → ignored
+            ]
+        return await super().list_users(**kwargs)
+
+
+def _lifecycle_engine(config: OnbotConfig, admin: FakeAdmin, lifecycle: FakeLifecycle) -> ReconcilerEngine:
+    return ReconcilerEngine(config, LifecycleAuthentik(), admin, RecordingEffectors(), lifecycle=lifecycle)  # type: ignore[arg-type]
+
+
+async def test_lifecycle_invoked_with_scoped_orphans() -> None:
+    config = OnbotConfig.model_validate(_BASE)
+    admin = FakeAdmin()
+    # @dave exists in Matrix and is disabled upstream; @eve does not exist in Matrix.
+    admin.list_users = lambda: _async(  # type: ignore[method-assign]
+        [{"name": f"@{u}:company.org"} for u in ("alice", "bob", "carol", "dave")]
+    )
+    lifecycle = FakeLifecycle()
+    await _lifecycle_engine(config, admin, lifecycle).reconcile_once()
+
+    assert lifecycle.calls == [{"@dave:company.org"}]
+
+
+async def test_lifecycle_skipped_when_disabled() -> None:
+    config = OnbotConfig.model_validate(_BASE)
+    lc = config.sync_authentik_users_with_matrix_rooms.deactivate_disabled_authentik_users_in_matrix
+    lc.enabled = False
+    lifecycle = FakeLifecycle()
+    await _lifecycle_engine(config, FakeAdmin(), lifecycle).reconcile_once()
+    assert lifecycle.calls == []
+
+
 async def test_run_survives_a_failing_pass(caplog: pytest.LogCaptureFixture) -> None:
     engine, _, _ = _engine()
     calls = 0
