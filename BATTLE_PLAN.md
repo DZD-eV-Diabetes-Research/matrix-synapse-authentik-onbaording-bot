@@ -210,15 +210,30 @@ desired-vs-actual result, behind dry-run. All three share `clients/` + `auth/`.
       membership bug and the room-create-params split-path bug; **added power-level withdrawal (G8.4)**.
 - [x] Versioned onbot room-state schemas (`reconciler/state.py`, `schema_version`).
 - [x] Unit + contract tests (48 tests, 83% cov; pure logic 100%). CI green (ruff/format/mypy/pytest).
-- ⏭️ **Deferred to Phase 4:** Matrix CS writes (room/space create, kick, power levels, room
-      name/topic, custom state events) run behind the `MatrixEffectors` seam — currently
-      `DryRunEffectors` (logs, mutates nothing). The concrete CS-API impl lands with the Matrix client.
+- ✅ **(Resolved in Phase 4):** the Matrix CS writes behind the `MatrixEffectors` seam now have a
+      concrete impl (`clients/matrix.py::CSApiEffectors`); `app.py` wires it in place of
+      `DryRunEffectors` (which stays for tests/`reconcile` dry-runs).
 
-### Phase 4 — Onboarding bot (AD-3)
-- [ ] Matrix CS client + sliding-sync stream in `clients/matrix.py`.
-- [ ] `onboarding/listener.py` consuming sliding sync; `welcome.py` flow made idempotent via room-state.
-- [ ] `onboarding/identity.py`: MXID computation matching MAS localpart template (AD-6).
-- [ ] Wire reconciler "new user" signal → onboarding (`events.py`).
+### Phase 4 — Onboarding bot (AD-3)  ✅ done 2026-06-19
+- [x] Matrix CS client (`clients/matrix.py`, `ApiClientMatrix` on the async base client — AD-7,
+      *not* a new library; that's the Phase 6 ADR) + **Simplified Sliding Sync** stream (MSC4186),
+      normalised to `SyncResult` so the listener is transport-agnostic. Also resolves the Phase 3
+      deferral: concrete `CSApiEffectors` (room/space create, kick, power levels, name/topic, custom
+      state events).
+- [x] `onboarding/listener.py` consuming the sync stream (welcomes on join events) **and**
+      subscribing to the reconciler signal; `welcome.py` flow idempotent two ways — one DM per user
+      (via `m.direct` account data) and each message once (content-hashed in the `direct_room`
+      onbot state event, G4.3).
+- [x] MXID computation matching the MAS localpart template (AD-6) — provided by the shared
+      `onbot/identity.py` (built in Phase 3), reused by onboarding (no separate `onboarding/identity.py`).
+- [x] Wired reconciler "user provisioned" signal → onboarding via `events.py` (`Signal.user_synced`);
+      `app.py` runs the reconcile loop + sliding-sync listener concurrently.
+- [x] Tests: Matrix client contract tests (`respx`), welcome idempotency + listener unit tests
+      (61 tests total, gate green: ruff/format/mypy/pytest under Python 3.14).
+- ⏭️ **Deferred to Phase 6:** the sliding-sync endpoint is still unstable — CS-API version
+      negotiation and the MAS-auth/library ADR (kept behind `ApiClientMatrix.sliding_sync`).
+      Placing onboarding DMs inside the managed space (G4.5) and the admin control room (G4.6) are
+      not yet implemented.
 
 ### Phase 5 — Lifecycle, quarantined (AD-5)
 - [ ] `lifecycle/accounts.py`: deactivate/delete with cooldowns, **dry-run + audit-log default**.
