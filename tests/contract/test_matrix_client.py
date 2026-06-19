@@ -3,9 +3,10 @@
 import json
 
 import httpx
+import pytest
 import respx
 
-from onbot.clients.matrix import ApiClientMatrix
+from onbot.clients.matrix import ApiClientMatrix, SyncNotSupportedError
 
 
 def _client() -> ApiClientMatrix:
@@ -126,3 +127,110 @@ async def test_sliding_sync_normalises_rooms_and_pos() -> None:
     assert result.pos == "s2"
     assert len(result.rooms) == 1
     assert result.rooms[0].member_events()[0]["state_key"] == "@a:x"
+
+
+@respx.mock
+async def test_negotiate_versions_reports_capabilities() -> None:
+    respx.get("https://matrix.test/_matrix/client/versions").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "versions": ["v1.11"],
+                "unstable_features": {"org.matrix.simplified_msc3575": True},
+            },
+        )
+    )
+    client = _client()
+    try:
+        versions = await client.negotiate_versions()
+    finally:
+        await client.aclose()
+    assert versions.supports_simplified_sliding_sync()
+    assert versions.supports_authenticated_media()
+    assert client.versions is versions
+
+
+@respx.mock
+async def test_sliding_sync_raises_when_unsupported_after_negotiation() -> None:
+    respx.get("https://matrix.test/_matrix/client/versions").mock(
+        return_value=httpx.Response(200, json={"versions": ["v1.10"], "unstable_features": {}})
+    )
+    client = _client()
+    try:
+        await client.negotiate_versions()
+        with pytest.raises(SyncNotSupportedError):
+            await client.sliding_sync(None)
+    finally:
+        await client.aclose()
+
+
+@respx.mock
+async def test_upload_media_returns_content_uri() -> None:
+    route = respx.post("https://matrix.test/_matrix/media/v3/upload").mock(
+        return_value=httpx.Response(200, json={"content_uri": "mxc://matrix.test/abc"})
+    )
+    client = _client()
+    try:
+        mxc = await client.upload_media(b"\x89PNG", content_type="image/png", filename="a.png")
+    finally:
+        await client.aclose()
+    assert mxc == "mxc://matrix.test/abc"
+    req = route.calls[0].request
+    assert req.headers["content-type"] == "image/png"
+    assert req.url.params["filename"] == "a.png"
+    assert req.content == b"\x89PNG"
+
+
+@respx.mock
+async def test_download_media_uses_authenticated_endpoint() -> None:
+    route = respx.get("https://matrix.test/_matrix/client/v1/media/download/matrix.test/abc").mock(
+        return_value=httpx.Response(200, content=b"bytes")
+    )
+    client = _client()
+    try:
+        data = await client.download_media("mxc://matrix.test/abc")
+    finally:
+        await client.aclose()
+    assert data == b"bytes"
+    assert route.calls[0].request.headers["authorization"] == "Bearer tok"
+
+
+@respx.mock
+async def test_set_user_avatar_puts_profile() -> None:
+    route = respx.put("https://matrix.test/_matrix/client/v3/profile/@bot:matrix.test/avatar_url").mock(
+        return_value=httpx.Response(200, json={})
+    )
+    client = _client()
+    try:
+        await client.set_user_avatar("@bot:matrix.test", "mxc://matrix.test/abc")
+    finally:
+        await client.aclose()
+    assert json.loads(route.calls[0].request.content) == {"avatar_url": "mxc://matrix.test/abc"}
+
+
+@respx.mock
+async def test_resolve_room_alias_returns_none_on_404() -> None:
+    respx.get("https://matrix.test/_matrix/client/v3/directory/room/%23nope%3Amatrix.test").mock(
+        return_value=httpx.Response(404, json={"errcode": "M_NOT_FOUND"})
+    )
+    client = _client()
+    try:
+        assert await client.resolve_room_alias("#nope:matrix.test") is None
+    finally:
+        await client.aclose()
+
+
+@respx.mock
+async def test_link_room_to_space_writes_child_and_parent() -> None:
+    child = respx.put(
+        "https://matrix.test/_matrix/client/v3/rooms/!space:matrix.test/state/m.space.child/!r:matrix.test"
+    ).mock(return_value=httpx.Response(200, json={"event_id": "$c"}))
+    parent = respx.put(
+        "https://matrix.test/_matrix/client/v3/rooms/!r:matrix.test/state/m.space.parent/!space:matrix.test"
+    ).mock(return_value=httpx.Response(200, json={"event_id": "$p"}))
+    client = _client()
+    try:
+        await client.link_room_to_space("!space:matrix.test", "!r:matrix.test")
+    finally:
+        await client.aclose()
+    assert child.called and parent.called

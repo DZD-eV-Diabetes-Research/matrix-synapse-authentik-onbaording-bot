@@ -262,16 +262,36 @@ desired-vs-actual result, behind dry-run. All three share `clients/` + `auth/`.
 - ⏭️ **Deferred:** the rich, self-documenting `config.example.yml` regeneration (the new field
       `dry_run` is live in `config.py` but the example file's doc-generator is a Phase 8 deliverable).
 
-### Phase 6 — Matrix 2.0 / MAS integration (spike early, lands across 3–5)
-- [ ] `auth/token_provider.py`: static/compat token (`mas-cli issue-compatibility-token`) **and** OAuth2
-      client-credentials + refresh; works under MAS *or* legacy auth.
-- [ ] **Authenticated media (MSC3916):** uploads/downloads via `/_matrix/client/v1/media/*` with auth headers
-      (bot/room/space avatars).
-- [ ] **Library decision (ADR):** keep `matrix-nio` vs. drive CS API via base httpx vs. `mautrix-python` —
-      judged on MAS/OAuth support, sliding-sync, maintenance, async fit, e2ee needs.
-- [ ] **E2EE stance (ADR):** if the bot only sends plaintext + manages state, likely drop deprecated
-      libolm; if it must operate inside e2ee rooms, plan the rust-sdk crypto path.
-- [ ] CS API version negotiation (`/_matrix/client/versions`); centralize API versions.
+### Phase 6 — Matrix 2.0 / MAS integration  ✅ done 2026-06-19
+- [x] `auth/token_provider.py`: `StaticTokenProvider` (compat/legacy token) **and**
+      `OAuth2ClientCredentialsTokenProvider` (client-credentials + transparent refresh, falling back
+      to a fresh grant if a refresh is rejected). Behind one `TokenProvider` protocol that
+      `BaseApiClient` resolves **per request** (token can rotate under a long-lived client). `app.py`
+      picks the strategy from config (`synapse_server.oauth2` else `bot_access_token`); admin + CS
+      clients share one provider.
+- [x] **Authenticated media (MSC3916):** `ApiClientMatrix.upload_media` / `download_media` (the latter
+      via `/_matrix/client/v1/media/download/*` with auth) + `set_user_avatar`/`set_room_avatar`;
+      `onbot/media.py::MediaUploader` fetches a remote URL → uploads → **dedupes by source URL**
+      (G10.1/G10.2). Bot avatar applied on startup from `bot_avatar_url` (G6.8). Needed `base.request_raw`
+      for byte bodies + absolute-URL passthrough (media repo lives off the CS base path). *Room/space
+      avatar **application** during reconcile (G6.4/G6.9) is a small reconciler follow-up — the
+      capability (`set_room_avatar`/`MediaUploader`) is in place; the engine just doesn't call it yet.*
+- [x] **Library decision (ADR-0008):** drive the CS API over the shared httpx base client; do **not**
+      adopt `matrix-nio`/`mautrix` (MAS/OAuth fit, unstable sliding sync, no e2ee need, async base).
+- [x] **E2EE stance (ADR-0009):** bot operates **outside** encrypted rooms — plaintext welcome DMs
+      (unencrypted `trusted_private_chat`) + state-only writes in encrypted group rooms; drop libolm.
+      Answers §7 Q3. Revisit (rust-sdk) only if the bot must read/post inside e2ee rooms.
+- [x] CS API version negotiation: `clients/versions.py` (`ServerVersions`) + `negotiate_versions()`
+      against `/_matrix/client/versions`, run at startup. `sliding_sync` is now **gated** — raises
+      `SyncNotSupportedError` when MSC4186 is unadvertised, and the listener falls back to the
+      reconciler-signal path instead of looping on errors (resolves the Phase 4 sliding-sync deferral).
+- [x] **Phase 4 deferral G4.5:** opt-in `place_onboarding_rooms_in_space` places freshly created
+      onboarding DMs in the managed space (alias-resolved + `link_room_to_space`).
+- ⏭️ **Deferred — G4.6 admin control/broadcast room:** intentionally **not** built here. It is a
+      product-design open question (GOALS G4.6 itself hedges "not sure about this idea… maybe a better
+      mechanism"), not an auth/Matrix-2.0 concern, and delivering broadcasts *into encrypted rooms*
+      would collide with the no-crypto stance (ADR-0009). Needs a maintainer decision on the mechanism
+      before implementation; tracked for a later phase.
 
 ### Phase 7 — Test suite (grows during 3–5)
 - [ ] **Unit:** mapping rules, power-level calc, identity/MXID, config, room-state (de)serialization.

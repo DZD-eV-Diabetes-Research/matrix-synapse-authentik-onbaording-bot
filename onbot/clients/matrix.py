@@ -26,17 +26,24 @@ import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import quote
 
+from onbot.auth.token_provider import TokenProvider
 from onbot.clients.base import ApiError, BaseApiClient
+from onbot.clients.versions import CLIENT_VERSIONS_PATH, ServerVersions
 from onbot.logging import get_logger
 from onbot.models import RoomCreateAttributes
 
 log = get_logger(__name__)
 
-# MSC4186 Simplified Sliding Sync. Unstable path — re-validated/negotiated in Phase 6.
+# MSC4186 Simplified Sliding Sync. Unstable path — gated by version negotiation (Phase 6).
 SLIDING_SYNC_PATH = "unstable/org.matrix.simplified_msc3575/sync"
 
 ENCRYPTION_ALGORITHM = "m.megolm.v1.aes-sha2"
+
+
+class SyncNotSupportedError(RuntimeError):
+    """The homeserver does not advertise Simplified Sliding Sync (MSC4186)."""
 
 
 @dataclass(slots=True)
@@ -65,15 +72,37 @@ class ApiClientMatrix(BaseApiClient):
     def __init__(
         self,
         server_url: str,
-        access_token: str,
+        access_token: str | None = None,
+        *,
         server_name: str,
+        token_provider: TokenProvider | None = None,
         **kwargs: Any,
     ) -> None:
-        base = f"{server_url.rstrip('/')}/_matrix/client"
+        self.server_url = server_url.rstrip("/")
+        base = f"{self.server_url}/_matrix/client"
         # Sliding sync long-polls; allow a generous read timeout unless the caller overrides it.
         kwargs.setdefault("timeout", 60.0)
-        super().__init__(base_url=base, auth_token=access_token, **kwargs)
+        super().__init__(base_url=base, auth_token=access_token, token_provider=token_provider, **kwargs)
         self.server_name = server_name
+        self._versions: ServerVersions | None = None
+
+    # --- version negotiation (Phase 6) --------------------------------------
+
+    async def negotiate_versions(self) -> ServerVersions:
+        """Fetch + cache ``GET /_matrix/client/versions`` (the bot's capability source of truth)."""
+        payload = await self.get_json(CLIENT_VERSIONS_PATH)
+        self._versions = ServerVersions.from_payload(payload)
+        log.info(
+            "negotiated CS-API: sliding_sync=%s authenticated_media=%s",
+            self._versions.supports_simplified_sliding_sync(),
+            self._versions.supports_authenticated_media(),
+        )
+        return self._versions
+
+    @property
+    def versions(self) -> ServerVersions | None:
+        """Cached negotiation result, or ``None`` until :meth:`negotiate_versions` has run."""
+        return self._versions
 
     # --- room / space creation ----------------------------------------------
 
@@ -157,6 +186,35 @@ class ApiClientMatrix(BaseApiClient):
             room_params={"preset": "trusted_private_chat"},
         )
 
+    async def resolve_room_alias(self, alias: str) -> str | None:
+        """Resolve a room alias (``#name:server``) to its ``room_id``, or ``None`` if unknown."""
+        # https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3directoryroomroomalias
+        # The alias (e.g. "#room:server") must be percent-encoded — notably "#" and ":".
+        try:
+            result = await self.get_json(f"v3/directory/room/{quote(alias, safe='')}")
+        except ApiError as exc:
+            if exc.status_code == 404:
+                return None
+            raise
+        room_id: str = result["room_id"]
+        return room_id
+
+    async def link_room_to_space(self, space_id: str, room_id: str, *, suggested: bool = False) -> None:
+        """Add ``room_id`` to ``space_id`` (m.space.child on the space + m.space.parent on the room)."""
+        # https://spec.matrix.org/latest/client-server-api/#mspacechild
+        await self.put_room_state_event(
+            space_id,
+            "m.space.child",
+            {"suggested": suggested, "via": [self.server_name]},
+            state_key=room_id,
+        )
+        await self.put_room_state_event(
+            room_id,
+            "m.space.parent",
+            {"canonical": True, "via": [self.server_name]},
+            state_key=space_id,
+        )
+
     # --- membership ----------------------------------------------------------
 
     async def kick_user(self, room_id: str, user_id: str, reason: str | None = None) -> None:
@@ -206,6 +264,45 @@ class ApiClientMatrix(BaseApiClient):
     async def set_room_topic(self, room_id: str, topic: str) -> None:
         await self.put_room_state_event(room_id, "m.room.topic", {"topic": topic})
 
+    async def set_room_avatar(self, room_id: str, mxc_uri: str) -> None:
+        # https://spec.matrix.org/latest/client-server-api/#mroomavatar
+        await self.put_room_state_event(room_id, "m.room.avatar", {"url": mxc_uri})
+
+    async def set_user_avatar(self, user_id: str, mxc_uri: str) -> None:
+        # https://spec.matrix.org/latest/client-server-api/#put_matrixclientv3profileuseridavatar_url
+        await self.put_json(f"v3/profile/{user_id}/avatar_url", json_body={"avatar_url": mxc_uri})
+
+    # --- media (authenticated, MSC3916) --------------------------------------
+
+    async def upload_media(self, content: bytes, *, content_type: str, filename: str | None = None) -> str:
+        """Upload bytes to the media repo, returning the ``mxc://`` URI (G10.1).
+
+        Uploads are authenticated by the bot's token; the resulting ``mxc`` is later fetched via the
+        authenticated download endpoint below.
+        https://spec.matrix.org/latest/client-server-api/#post_matrixmediav3upload
+        """
+        params = {"filename": filename} if filename else None
+        result = await self.request_raw(
+            "POST",
+            f"{self.server_url}/_matrix/media/v3/upload",
+            params=params,
+            content=content,
+            headers={"Content-Type": content_type},
+        )
+        content_uri: str = result["content_uri"]
+        return content_uri
+
+    async def download_media(self, mxc_uri: str) -> bytes:
+        """Download media by ``mxc://`` URI over the **authenticated** endpoint (MSC3916).
+
+        https://spec.matrix.org/latest/client-server-api/#get_matrixclientv1mediadownloadservernamemediaid
+        """
+        server, media_id = _parse_mxc(mxc_uri)
+        data: bytes = await self.request_raw(
+            "GET", f"v1/media/download/{server}/{media_id}", parse_json=False
+        )
+        return data
+
     # --- messaging -----------------------------------------------------------
 
     async def send_text_message(self, room_id: str, body: str) -> str:
@@ -240,7 +337,14 @@ class ApiClientMatrix(BaseApiClient):
         Long-polls server-side for up to ``timeout_ms``; pass the returned ``pos`` back to continue
         the stream. Subscribes to all rooms and asks for member state so the listener can react to
         joins (AD-3). The wire shape is unstable (Phase 6 negotiation) — kept behind this method.
+
+        Raises :class:`SyncNotSupportedError` if version negotiation ran and the server does not
+        advertise Simplified Sliding Sync, so the listener can fall back to the signal-only path.
         """
+        if self._versions is not None and not self._versions.supports_simplified_sliding_sync():
+            raise SyncNotSupportedError(
+                "homeserver does not advertise org.matrix.simplified_msc3575 (MSC4186)"
+            )
         params: dict[str, Any] = {"timeout": timeout_ms}
         if pos:
             params["pos"] = pos
@@ -264,6 +368,16 @@ class ApiClientMatrix(BaseApiClient):
             for room_id, room in (data.get("rooms") or {}).items()
         ]
         return SyncResult(pos=data.get("pos"), rooms=rooms)
+
+
+def _parse_mxc(mxc_uri: str) -> tuple[str, str]:
+    """Split ``mxc://server/media_id`` into ``(server, media_id)``."""
+    if not mxc_uri.startswith("mxc://"):
+        raise ValueError(f"not an mxc URI: {mxc_uri!r}")
+    server, _, media_id = mxc_uri.removeprefix("mxc://").partition("/")
+    if not server or not media_id:
+        raise ValueError(f"malformed mxc URI: {mxc_uri!r}")
+    return server, media_id
 
 
 class CSApiEffectors:

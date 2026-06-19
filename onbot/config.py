@@ -30,6 +30,38 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 CONFIG_FILE_ENV_VAR = "ONBOT_CONFIG_FILE_PATH"
 
 
+class MatrixOAuth2(BaseModel):
+    """OAuth2 client-credentials auth against MAS (AD-6, Phase 6).
+
+    The forward-looking alternative to a static compatibility token: the bot is a confidential
+    OAuth2 client of MAS and mints short-lived access tokens that refresh transparently. When this
+    block is set it takes precedence over ``bot_access_token``.
+    """
+
+    token_endpoint: Annotated[
+        str,
+        Field(
+            description="MAS OAuth2 token endpoint (the ``token_endpoint`` from MAS discovery).",
+            examples=["https://auth.company.org/oauth2/token"],
+        ),
+    ]
+    client_id: Annotated[
+        str,
+        Field(description="OAuth2 client id registered for the bot in MAS."),
+    ]
+    client_secret: Annotated[
+        str,
+        Field(description="OAuth2 client secret for the bot client. Provide the bare secret."),
+    ]
+    scope: Annotated[
+        str | None,
+        Field(
+            description="Optional space-separated scopes to request (e.g. the Synapse admin scope).",
+            examples=["urn:matrix:org.matrix.msc2967.client:api:* urn:synapse:admin:*"],
+        ),
+    ] = None
+
+
 class SynapseServer(BaseModel):
     server_name: Annotated[
         str,
@@ -60,16 +92,27 @@ class SynapseServer(BaseModel):
         ),
     ]
     bot_access_token: Annotated[
-        str,
+        str | None,
         Field(
             description=inspect.cleandoc(
                 """Access token authorising the bot against the Synapse APIs. Under MAS this is a
                 compatibility token issued via ``mas-cli manage issue-compatibility-token`` (AD-6).
-                Provide the bare token; do not prefix it with ``Bearer`` (the client adds that)."""
+                Provide the bare token; do not prefix it with ``Bearer`` (the client adds that).
+                Leave unset (``null``) when using ``oauth2`` instead."""
             ),
             examples=["syt_ONLY_AN_EXAMPLE_TOKEN_sadaw4"],
         ),
-    ]
+    ] = None
+    oauth2: Annotated[
+        MatrixOAuth2 | None,
+        Field(
+            description=inspect.cleandoc(
+                """Optional OAuth2 client-credentials auth against MAS (AD-6). When set, it is used
+                instead of ``bot_access_token`` and tokens refresh automatically. Provide exactly one
+                of ``bot_access_token`` or ``oauth2``."""
+            ),
+        ),
+    ] = None
     bot_avatar_url: Annotated[
         str | None,
         Field(
@@ -312,6 +355,17 @@ class OnbotConfig(BaseSettings):
             "encrypted messages later. Please follow the request.",
         ]
     )
+
+    place_onboarding_rooms_in_space: Annotated[
+        bool,
+        Field(
+            description=inspect.cleandoc(
+                """Gather the 1:1 onboarding/welcome rooms under the managed parent space (G4.5).
+                Off by default — whether direct rooms belong in a space is a matter of taste. Only
+                applies when the parent space is enabled."""
+            ),
+        ),
+    ] = False
 
     sync_authentik_users_with_matrix_rooms: SyncAuthentikUsersWithMatrix = Field(
         default_factory=SyncAuthentikUsersWithMatrix

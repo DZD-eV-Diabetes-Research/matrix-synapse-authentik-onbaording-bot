@@ -12,10 +12,15 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
+from onbot.auth.token_provider import (
+    OAuth2ClientCredentialsTokenProvider,
+    StaticTokenProvider,
+    TokenProvider,
+)
 from onbot.clients.authentik import ApiClientAuthentik
 from onbot.clients.matrix import ApiClientMatrix, CSApiEffectors
 from onbot.clients.synapse_admin import ApiClientSynapseAdmin
-from onbot.config import OnbotConfig
+from onbot.config import OnbotConfig, SynapseServer
 from onbot.events import EventBus
 from onbot.lifecycle.accounts import (
     AccountLifecycleManager,
@@ -23,11 +28,43 @@ from onbot.lifecycle.accounts import (
     MatrixAccountDataLedgerStore,
 )
 from onbot.logging import get_logger
+from onbot.media import MediaUploader
 from onbot.onboarding.listener import OnboardingListener
 from onbot.onboarding.welcome import WelcomeService
 from onbot.reconciler.engine import ReconcilerEngine
 
 log = get_logger(__name__)
+
+
+def build_matrix_token_provider(synapse: SynapseServer) -> TokenProvider:
+    """Pick the bot's auth strategy (AD-6): OAuth2 client-credentials if configured, else a static
+    compatibility/legacy token. Raises if neither is provided."""
+    if synapse.oauth2 is not None:
+        return OAuth2ClientCredentialsTokenProvider(
+            token_endpoint=synapse.oauth2.token_endpoint,
+            client_id=synapse.oauth2.client_id,
+            client_secret=synapse.oauth2.client_secret,
+            scope=synapse.oauth2.scope,
+        )
+    if synapse.bot_access_token:
+        return StaticTokenProvider(synapse.bot_access_token)
+    raise ValueError("synapse_server needs either bot_access_token or an oauth2 block")
+
+
+async def _apply_bot_avatar(matrix: ApiClientMatrix, config: OnbotConfig) -> None:
+    """Set the bot's own avatar from the configured URL on startup (G6.8), best-effort."""
+    url = config.synapse_server.bot_avatar_url
+    if not url:
+        return
+    uploader = MediaUploader(matrix)
+    try:
+        mxc = await uploader.upload_from_url(url)
+        await matrix.set_user_avatar(config.synapse_server.bot_user_id, mxc)
+        log.info("set bot avatar from %s", url)
+    except Exception:
+        log.exception("failed to set bot avatar from %s", url)
+    finally:
+        await uploader.aclose()
 
 
 @dataclass(slots=True)
@@ -45,16 +82,25 @@ async def build_app(config: OnbotConfig) -> AsyncIterator[App]:
         url=config.authentik_server.url,
         api_key=config.authentik_server.api_key,
     )
+    # One MAS-aware token provider shared by the admin + CS clients (same bot identity, AD-6).
+    token_provider = build_matrix_token_provider(config.synapse_server)
     admin = ApiClientSynapseAdmin(
         server_url=config.synapse_server.server_url,
-        access_token=config.synapse_server.bot_access_token,
+        token_provider=token_provider,
         admin_api_path=config.synapse_server.admin_api_path,
     )
     matrix = ApiClientMatrix(
         server_url=config.synapse_server.server_url,
-        access_token=config.synapse_server.bot_access_token,
+        token_provider=token_provider,
         server_name=config.synapse_server.server_name,
     )
+    # Negotiate CS-API capabilities up front (sliding sync / authenticated media); best-effort so a
+    # transient failure does not block startup — the listener re-checks and falls back if needed.
+    try:
+        await matrix.negotiate_versions()
+    except Exception:
+        log.exception("CS-API version negotiation failed; continuing with defaults")
+    await _apply_bot_avatar(matrix, config)
     events = EventBus()
     lifecycle = AccountLifecycleManager(
         config,

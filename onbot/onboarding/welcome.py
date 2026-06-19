@@ -45,6 +45,12 @@ class WelcomeService:
         self.bot_id = config.synapse_server.bot_user_id
         self.server_name = config.synapse_server.server_name
         self._direct_event_type = event_type_name(self.server_name, OnbotRoomType.direct_room)
+        # G4.5: optionally gather onboarding DMs under the managed space (opt-in — 1:1 rooms in a
+        # space is a matter of taste). Resolved lazily from the configured space alias and cached.
+        space_cfg = config.create_matrix_rooms_in_a_matrix_space
+        self._place_in_space = config.place_onboarding_rooms_in_space and space_cfg.enabled
+        self._space_alias = f"#{space_cfg.alias}:{self.server_name}"
+        self._space_id: str | None = None
 
     async def welcome_user(self, mxid: str) -> None:
         """Ensure ``mxid`` has a DM with all configured welcome messages delivered (idempotent)."""
@@ -87,7 +93,19 @@ class WelcomeService:
         room_id = await self.client.create_direct_message_room(mxid)
         direct.setdefault(mxid, []).append(room_id)
         await self.client.set_account_data(self.bot_id, M_DIRECT, direct)
+        await self._maybe_place_in_space(room_id)
         return room_id, True
+
+    async def _maybe_place_in_space(self, room_id: str) -> None:
+        """Add a freshly created DM to the managed space, if configured (G4.5)."""
+        if not self._place_in_space:
+            return
+        if self._space_id is None:
+            self._space_id = await self.client.resolve_room_alias(self._space_alias)
+        if self._space_id is None:
+            log.warning("cannot place DM in space: alias %s does not resolve yet", self._space_alias)
+            return
+        await self.client.link_room_to_space(self._space_id, room_id)
 
     async def _load_direct_state(self, room_id: str, mxid: str) -> DirectRoomState:
         content = await self.client.get_room_state_event(room_id, self._direct_event_type)

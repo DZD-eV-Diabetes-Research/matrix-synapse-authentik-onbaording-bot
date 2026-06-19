@@ -15,6 +15,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+from onbot.auth.token_provider import TokenProvider
 from onbot.clients.base import BaseApiClient
 from onbot.logging import get_logger
 
@@ -41,13 +42,14 @@ class ApiClientSynapseAdmin(BaseApiClient):
     def __init__(
         self,
         server_url: str,
-        access_token: str,
+        access_token: str | None = None,
         *,
         admin_api_path: str = "_synapse/admin",
+        token_provider: TokenProvider | None = None,
         **kwargs: Any,
     ) -> None:
         base = f"{server_url.rstrip('/')}/{admin_api_path.strip('/')}"
-        super().__init__(base_url=base, auth_token=access_token, **kwargs)
+        super().__init__(base_url=base, auth_token=access_token, token_provider=token_provider, **kwargs)
 
     # --- reads (paginated) ---------------------------------------------------
 

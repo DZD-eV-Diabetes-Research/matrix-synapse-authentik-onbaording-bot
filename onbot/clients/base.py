@@ -8,7 +8,7 @@ tokens are stored bare and the ``Bearer`` prefix is added exactly once here.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from types import TracebackType
 from typing import Any
 
@@ -20,6 +20,7 @@ from tenacity import (
     wait_exponential,
 )
 
+from onbot.auth.token_provider import StaticTokenProvider, TokenProvider
 from onbot.logging import get_logger
 
 log = get_logger(__name__)
@@ -62,20 +63,25 @@ class BaseApiClient:
     def __init__(
         self,
         base_url: str,
-        auth_token: str,
+        auth_token: str | None = None,
         *,
+        token_provider: TokenProvider | None = None,
         max_retry_attempts: int = 4,
         timeout: float = 30.0,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/") + "/"
         self._max_retry_attempts = max_retry_attempts
-        headers = {
-            "Authorization": f"Bearer {auth_token}",
-            "Accept": "application/json",
-        }
+        # Auth is resolved per request (AD-6): a static token or an OAuth2 provider that may
+        # rotate the token underneath this long-lived client. A bare token is just the static case.
+        if token_provider is None:
+            if auth_token is None:
+                raise ValueError("BaseApiClient needs either auth_token or token_provider")
+            token_provider = StaticTokenProvider(auth_token)
+        self._token_provider = token_provider
+        headers = {"Accept": "application/json"}
         self._client = client or httpx.AsyncClient(headers=headers, timeout=timeout)
-        # When an external client is injected (tests), make sure auth headers are present.
+        # When an external client is injected (tests), make sure the Accept header is present.
         if client is not None:
             self._client.headers.update(headers)
 
@@ -92,9 +98,29 @@ class BaseApiClient:
 
     async def aclose(self) -> None:
         await self._client.aclose()
+        await self._token_provider.aclose()
 
     def _build_url(self, path: str) -> str:
+        # Absolute URLs pass through unchanged so callers can reach sibling APIs off the same
+        # host (e.g. the Matrix media repo at /_matrix/media, outside this client's base path).
+        if path.startswith(("http://", "https://")):
+            return path
         return f"{self._base_url}{path.lstrip('/')}"
+
+    async def _auth_headers(self) -> dict[str, str]:
+        """Per-request Authorization header (the token may have rotated; see AD-6)."""
+        return {"Authorization": f"Bearer {await self._token_provider.get_token()}"}
+
+    async def _with_retry(self, do: Callable[[], Awaitable[Any]]) -> Any:
+        async for attempt in AsyncRetrying(
+            stop=stop_after_attempt(self._max_retry_attempts),
+            wait=wait_exponential(multiplier=0.5, max=10),
+            retry=retry_if_exception(_is_retryable_exc),
+            reraise=True,
+        ):
+            with attempt:
+                return await do()
+        raise AssertionError("unreachable")  # pragma: no cover
 
     async def request_json(
         self,
@@ -110,22 +136,53 @@ class BaseApiClient:
         clean_params = {k: v for k, v in (params or {}).items() if v is not None}
 
         async def _do() -> Any:
-            response = await self._client.request(method, url, params=clean_params or None, json=json_body)
+            headers = await self._auth_headers()
+            response = await self._client.request(
+                method, url, params=clean_params or None, json=json_body, headers=headers
+            )
             if response.status_code >= 400:
                 raise ApiError(method, url, response.status_code, _safe_payload(response))
             if not response.content:
                 return None
             return response.json()
 
-        async for attempt in AsyncRetrying(
-            stop=stop_after_attempt(self._max_retry_attempts),
-            wait=wait_exponential(multiplier=0.5, max=10),
-            retry=retry_if_exception(_is_retryable_exc),
-            reraise=True,
-        ):
-            with attempt:
-                return await _do()
-        raise AssertionError("unreachable")  # pragma: no cover
+        return await self._with_retry(_do)
+
+    async def request_raw(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: Mapping[str, Any] | None = None,
+        content: bytes | None = None,
+        headers: Mapping[str, str] | None = None,
+        parse_json: bool = True,
+    ) -> Any:
+        """Like :meth:`request_json` but for raw byte bodies (media upload/download, MSC3916).
+
+        Sends ``content`` verbatim with the caller's ``headers`` (e.g. ``Content-Type``). Returns
+        decoded JSON when ``parse_json`` is true (upload responses), else the raw response bytes
+        (authenticated media downloads).
+        """
+        url = self._build_url(path)
+        clean_params = {k: v for k, v in (params or {}).items() if v is not None}
+
+        async def _do() -> Any:
+            req_headers = await self._auth_headers()
+            if headers:
+                req_headers.update(headers)
+            response = await self._client.request(
+                method, url, params=clean_params or None, content=content, headers=req_headers
+            )
+            if response.status_code >= 400:
+                raise ApiError(method, url, response.status_code, _safe_payload(response))
+            if not parse_json:
+                return response.content
+            if not response.content:
+                return None
+            return response.json()
+
+        return await self._with_retry(_do)
 
     async def get_json(self, path: str, *, params: Mapping[str, Any] | None = None) -> Any:
         return await self.request_json("GET", path, params=params)
