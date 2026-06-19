@@ -1,5 +1,7 @@
 """Unit tests for power-level computation, incl. withdrawal (G8.4)."""
 
+from typing import Any
+
 from onbot.models import MappedUser
 from onbot.reconciler.power_levels import (
     PowerLevelGroup,
@@ -14,15 +16,15 @@ def _user(pk: str, mxid: str, *, superuser: bool = False) -> MappedUser:
 
 
 def test_extract_power_level_groups_reads_attribute() -> None:
-    groups = [
-        {"users": [1, 2], "attributes": {"chat-powerlevel": 50}},
-        {"users": [3], "attributes": {"chat-powerlevel": "nope"}},  # non-int ignored
-        {"users": [4], "attributes": {}},  # missing ignored
+    groups: list[dict[str, Any]] = [
+        {"users": ["1", "2"], "attributes": {"chat-powerlevel": 50}},
+        {"users": ["3"], "attributes": {"chat-powerlevel": "nope"}},  # non-int ignored
+        {"users": ["4"], "attributes": {}},  # missing ignored
     ]
     result = extract_power_level_groups(groups, "chat-powerlevel")
     assert len(result) == 1
     assert result[0].level == 50
-    assert result[0].member_pks == {1, 2}
+    assert result[0].member_pks == {"1", "2"}
 
 
 def test_highest_level_wins_and_superuser_is_admin() -> None:

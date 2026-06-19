@@ -17,6 +17,11 @@ from onbot.clients.matrix import ApiClientMatrix, CSApiEffectors
 from onbot.clients.synapse_admin import ApiClientSynapseAdmin
 from onbot.config import OnbotConfig
 from onbot.events import EventBus
+from onbot.lifecycle.accounts import (
+    AccountLifecycleManager,
+    AdminApiLifecycleEffectors,
+    MatrixAccountDataLedgerStore,
+)
 from onbot.logging import get_logger
 from onbot.onboarding.listener import OnboardingListener
 from onbot.onboarding.welcome import WelcomeService
@@ -51,7 +56,16 @@ async def build_app(config: OnbotConfig) -> AsyncIterator[App]:
         server_name=config.synapse_server.server_name,
     )
     events = EventBus()
-    engine = ReconcilerEngine(config, authentik, admin, effectors=CSApiEffectors(matrix), events=events)
+    lifecycle = AccountLifecycleManager(
+        config,
+        store=MatrixAccountDataLedgerStore(
+            matrix, config.synapse_server.bot_user_id, config.synapse_server.server_name
+        ),
+        effectors=AdminApiLifecycleEffectors(admin),
+    )
+    engine = ReconcilerEngine(
+        config, authentik, admin, effectors=CSApiEffectors(matrix), events=events, lifecycle=lifecycle
+    )
     welcome = WelcomeService(matrix, config)
     listener = OnboardingListener(matrix, welcome, config, events)
     listener.start()  # subscribe onboarding to the reconciler's user-provisioned signal (AD-4)

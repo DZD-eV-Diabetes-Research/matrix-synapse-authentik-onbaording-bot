@@ -15,7 +15,7 @@ def test_parser_exposes_all_subcommands() -> None:
     parser = build_parser()
     subactions = [a for a in parser._actions if a.dest == "command"]
     assert subactions, "expected a 'command' subparser"
-    choices = set(subactions[0].choices)
+    choices = set(subactions[0].choices or [])
     assert {"run", "reconcile-once", "generate-config", "healthcheck"} <= choices
 
 

@@ -116,6 +116,17 @@ class DeactivateDisabledAuthentikUsersInMatrix(BaseModel):
             description="Lock out Matrix accounts whose Authentik account was disabled/deleted.",
         ),
     ] = True
+    dry_run: Annotated[
+        bool,
+        Field(
+            description=inspect.cleandoc(
+                """Quarantine switch (AD-5): while ``true`` the bot only records bookkeeping and logs
+                what it *would* do to the ``onbot.lifecycle.audit`` channel — no session is revoked
+                and no account is deactivated. Set ``false`` to actually perform destructive
+                lifecycle actions. Defaults to ``true`` so destructive offboarding is opt-in."""
+            ),
+        ),
+    ] = True
     deactivate_after_n_sec: Annotated[
         int,
         Field(

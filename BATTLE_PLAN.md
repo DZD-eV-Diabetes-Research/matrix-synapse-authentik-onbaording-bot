@@ -235,10 +235,32 @@ desired-vs-actual result, behind dry-run. All three share `clients/` + `auth/`.
       Placing onboarding DMs inside the managed space (G4.5) and the admin control room (G4.6) are
       not yet implemented.
 
-### Phase 5 — Lifecycle, quarantined (AD-5)
-- [ ] `lifecycle/accounts.py`: deactivate/delete with cooldowns, **dry-run + audit-log default**.
-- [ ] Verify MAS deactivation-propagation behavior (§7 Q1) and define the bot's exact responsibility.
-- [ ] Heaviest test coverage of any module (destructive).
+### Phase 5 — Lifecycle, quarantined (AD-5)  ✅ done 2026-06-19
+- [x] `lifecycle/accounts.py`: a **pure state machine** (`decide_account_action`) — detect →
+      `mark` (start cooldown, no destructive action) → `logout` after `deactivate_after_n_sec`
+      (revoke sessions, G9.2) → `erase` after `delete_after_n_sec` (deactivate + optional media,
+      G9.4/G9.5) → `reenable` if the user returns first (G9.6). Effects isolated behind a
+      `LifecycleEffectors` seam (`AdminApiLifecycleEffectors`) + a `LifecycleLedgerStore`
+      (per-user bookkeeping as one versioned blob in the bot's Matrix **account data** — no DB,
+      decoupled from the onboarding DM).
+- [x] **Dry-run + audit-log default (Q6, AD-5):** new `dry_run` config flag (defaults `true`);
+      while dry-run only non-destructive timestamps are recorded and every would-be destructive
+      action goes to the dedicated `onbot.lifecycle.audit` log. Operators opt in explicitly.
+- [x] Reconciler integration: `_gather_orphaned_mxids` scopes candidates to Matrix accounts whose
+      Authentik user is **disabled** (never sweeping unrelated admin/service accounts); bot user +
+      ignore lists excluded (G12.1). `app.py` wires `AccountLifecycleManager` into the engine.
+- [x] Heaviest coverage: `lifecycle/accounts.py` at **100%** (exhaustive state-machine table +
+      dry-run/live + multi-tick progression + ledger round-trip + effectors); engine orphan-scoping
+      tests. Full gate green (ruff/format/mypy/pytest, 88 tests). Also fixed pre-existing mypy slips
+      in `test_power_levels.py`/`test_skeleton.py` that were failing the gate.
+- 🔬 **§7 Q1 — decision (2026-06-19): answer empirically, not by guesswork.** Whether MAS itself
+      revokes sessions / locks the account on upstream Authentik disable will be settled by a
+      dedicated experiment in the **Phase 7 integration harness** (real Synapse + MAS + Authentik),
+      then this module's exact responsibility finalized from the observed facts. The module is the
+      safe enforcement backstop regardless (it only ever *removes* access, behind dry-run); see
+      ADR-0005 and the Phase 7 task below.
+- ⏭️ **Deferred:** the rich, self-documenting `config.example.yml` regeneration (the new field
+      `dry_run` is live in `config.py` but the example file's doc-generator is a Phase 8 deliverable).
 
 ### Phase 6 — Matrix 2.0 / MAS integration (spike early, lands across 3–5)
 - [ ] `auth/token_provider.py`: static/compat token (`mas-cli issue-compatibility-token`) **and** OAuth2
@@ -257,6 +279,10 @@ desired-vs-actual result, behind dry-run. All three share `clients/` + `auth/`.
 - [ ] **Integration:** `testcontainers`/compose with **Synapse + MAS + Postgres** + Authentik (real or
       mocked, with Authentik as MAS upstream). Assert end-to-end: group→room, membership, onboarding,
       deactivation cooldowns, power levels, media. Marked `@pytest.mark.integration`, own CI job.
+- [ ] **🔬 Resolve §7 Q1 by experiment (per 2026-06-19 decision):** in the live harness, disable a
+      user in Authentik and observe MAS/Synapse — do existing sessions get revoked / the account
+      locked automatically, or do they persist? Record the facts, then finalize the lifecycle
+      module's responsibility (redundant backstop vs. the enforcement path) and update ADR-0005 + §7.
 - [ ] Coverage gate (start ~60% unit, ratchet up; lifecycle held higher).
 
 ### Phase 8 — Packaging, docs & release
@@ -264,7 +290,9 @@ desired-vs-actual result, behind dry-run. All three share `clients/` + `auth/`.
 - [ ] CI publish image (GHCR) on tag; semver; CHANGELOG.
 - [ ] Rewrite `README.md`: MAS-era setup (Authentik-as-upstream topology, MXID/localpart contract), config
       reference (auto-gen from pydantic), Docker/compose deploy, troubleshooting.
-
+- [ ] Overhaul all config meta data in `onbot/config.py`: Add meaningfull desc. Add meaningfull examples. Check typing hints.
+- [ ] Generate config markdown docs with https://pypi.org/project/psyplus/
+- [ ] Generate yaml template config with https://pypi.org/project/psyplus/ and provide examples how to use ut
 ---
 
 ## 6. Reuse vs. rebuild — quick reference
@@ -286,7 +314,10 @@ desired-vs-actual result, behind dry-run. All three share `clients/` + `auth/`.
 ## 7. Open questions for the maintainer
 
 1. **MAS deactivation propagation:** when Authentik disables a user upstream, does MAS revoke sessions / lock
-   the Matrix account automatically, or must the lifecycle module enforce it? (Defines Phase 5 scope.)
+   the Matrix account automatically, or must the lifecycle module enforce it?
+   *Decision (2026-06-19): defer the answer to facts — settle it with an experiment in the Phase 7
+   integration harness (real Synapse+MAS+Authentik), then finalize the lifecycle module's
+   responsibility. The Phase 5 module ships now as the safe backstop either way.*
 2. **MXID localpart template:** what localpart rule does (will) MAS use for accounts provisioned from
    Authentik? The bot's identity mapping must match it exactly (AD-6).
 3. **E2EE requirement:** must the bot operate *inside encrypted rooms*, or is plaintext welcome + state mgmt
