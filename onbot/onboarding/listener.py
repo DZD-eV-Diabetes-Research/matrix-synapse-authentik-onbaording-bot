@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 
-from onbot.clients.matrix import ApiClientMatrix, SyncResult
+from onbot.clients.matrix import ApiClientMatrix, SyncNotSupportedError, SyncResult
 from onbot.config import OnbotConfig
 from onbot.events import Event, EventBus, Signal
 from onbot.logging import get_logger
@@ -81,6 +81,11 @@ class OnboardingListener:
         while not self._stop.is_set():
             try:
                 result = await self.client.sliding_sync(self._pos)
+            except SyncNotSupportedError:
+                # The homeserver does not support Simplified Sliding Sync; rely on the reconciler
+                # signal path for onboarding (the listener stays subscribed via start()).
+                log.warning("sliding sync unsupported; onboarding via reconciler signal only")
+                break
             except Exception:
                 log.exception("sync failed; backing off %.0fs", _ERROR_BACKOFF_SEC)
                 await self._sleep(_ERROR_BACKOFF_SEC)

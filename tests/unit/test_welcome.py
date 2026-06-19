@@ -16,6 +16,14 @@ class FakeMatrixClient:
         self.room_state: dict[tuple[str, str], dict[str, Any]] = {}
         self.sent: list[tuple[str, str]] = []
         self.created_dms = 0
+        self.aliases: dict[str, str] = {}
+        self.space_links: list[tuple[str, str]] = []
+
+    async def resolve_room_alias(self, alias: str) -> str | None:
+        return self.aliases.get(alias)
+
+    async def link_room_to_space(self, space_id: str, room_id: str, *, suggested: bool = False) -> None:
+        self.space_links.append((space_id, room_id))
 
     async def get_account_data(self, user_id: str, data_type: str) -> dict[str, Any]:
         return dict(self.account_data.get((user_id, data_type), {}))
@@ -42,7 +50,7 @@ class FakeMatrixClient:
         return f"$e{len(self.sent)}"
 
 
-def _config(messages: list[str] | None) -> OnbotConfig:
+def _config(messages: list[str] | None, *, place_in_space: bool = False) -> OnbotConfig:
     return OnbotConfig(
         synapse_server=SynapseServer(
             server_name="matrix.test",
@@ -52,6 +60,7 @@ def _config(messages: list[str] | None) -> OnbotConfig:
         ),
         authentik_server=AuthentikServer(url="https://authentik.test", api_key="k"),
         welcome_new_users_messages=messages,
+        place_onboarding_rooms_in_space=place_in_space,
     )
 
 
@@ -97,3 +106,23 @@ async def test_welcome_noop_without_messages() -> None:
     await svc.welcome_user("@alice:matrix.test")
     assert client.created_dms == 0
     assert client.sent == []
+
+
+async def test_welcome_places_new_dm_in_space_when_enabled() -> None:
+    client = FakeMatrixClient()
+    # The managed space resolves; the freshly created DM should be linked into it (G4.5).
+    client.aliases["#OnBotSpace:matrix.test"] = "!space:matrix.test"
+    svc = WelcomeService(client, _config(["hi"], place_in_space=True))  # type: ignore[arg-type]
+
+    await svc.welcome_user("@alice:matrix.test")
+    await svc.welcome_user("@alice:matrix.test")  # idempotent: DM reused, not re-linked
+
+    assert client.space_links == [("!space:matrix.test", "!dm-1:matrix.test")]
+
+
+async def test_welcome_does_not_place_dm_in_space_by_default() -> None:
+    client = FakeMatrixClient()
+    client.aliases["#OnBotSpace:matrix.test"] = "!space:matrix.test"
+    svc = WelcomeService(client, _config(["hi"]))  # type: ignore[arg-type]
+    await svc.welcome_user("@alice:matrix.test")
+    assert client.space_links == []
