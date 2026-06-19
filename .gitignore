@@ -165,7 +165,6 @@ cython_debug/
 # Secrets & local-only configs — never commit real credentials.
 # Only config.example.yml is tracked; all other config*.yml are local.
 get_access_token.sh
-test_.py
 test_state
 config.yml
 config.*.yml

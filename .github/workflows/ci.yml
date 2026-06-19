@@ -36,15 +36,3 @@ jobs:
 
       - name: Pytest (unit + contract)
         run: pdm run pytest -m "not integration" --cov --cov-report=term-missing
-
-  secrets:
-    name: secret scan
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Gitleaks
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

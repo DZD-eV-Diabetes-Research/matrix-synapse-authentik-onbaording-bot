@@ -1,4 +1,4 @@
-"""Smoke tests for the Phase 2 skeleton: package imports and the CLI wires up."""
+"""Smoke tests for the CLI wiring."""
 
 import pytest
 
@@ -13,15 +13,23 @@ def test_package_has_version() -> None:
 
 def test_parser_exposes_all_subcommands() -> None:
     parser = build_parser()
-    # argparse stores subcommand names on the 'command' subparsers action.
     subactions = [a for a in parser._actions if a.dest == "command"]
     assert subactions, "expected a 'command' subparser"
     choices = set(subactions[0].choices)
     assert {"run", "reconcile-once", "generate-config", "healthcheck"} <= choices
 
 
-def test_commands_not_implemented_yet() -> None:
-    # Phase 2 is skeleton-only; every command should exit cleanly-but-unimplemented.
+def test_generate_config_prints_valid_yaml(capsys: pytest.CaptureFixture[str]) -> None:
+    import yaml
+
+    assert main(["generate-config"]) == 0
+    out = capsys.readouterr().out
+    parsed = yaml.safe_load(out)
+    assert parsed["synapse_server"]["server_name"] is None
+    assert parsed["log_level"] == "INFO"
+
+
+def test_healthcheck_not_implemented_yet() -> None:
     with pytest.raises(SystemExit) as exc:
-        main(["reconcile-once"])
+        main(["healthcheck"])
     assert "not implemented" in str(exc.value)
