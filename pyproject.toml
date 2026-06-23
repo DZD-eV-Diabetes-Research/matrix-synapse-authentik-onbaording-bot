@@ -36,19 +36,6 @@ build-backend = "pdm.backend"
 [tool.pdm]
 distribution = true
 
-[tool.pdm.dev-dependencies]
-dev = [
-    "ruff>=0.8",
-    "mypy>=1.13",
-    "pytest>=8.3",
-    "pytest-asyncio>=0.24",
-    "pytest-cov>=6.0",
-    "respx>=0.21",
-    "pre-commit>=4.0",
-    "types-pyyaml>=6.0",
-]
-
-# --- Ruff: lint + format -----------------------------------------------------
 [tool.ruff]
 target-version = "py314"
 line-length = 110
@@ -85,3 +72,31 @@ markers = [
 [tool.coverage.run]
 source = ["onbot"]
 branch = true
+# Phase 7b: nothing is omitted. The composition root (`app.py`) is now exercised end-to-end by the
+# integration harness (live Synapse+MAS+Authentik) and `__main__.py` by a unit import test. The
+# authoritative coverage gate runs in the *integration* CI job (the full suite, where app.py's code
+# paths execute); the fast job reports coverage without gating (it cannot reach app.py).
+
+[tool.coverage.report]
+# Phase 7 coverage gate (BATTLE_PLAN §5): a floor over the FULL suite, meant to ratchet upward.
+fail_under = 88
+show_missing = true
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "\\.\\.\\.",  # Protocol method bodies
+    "if __name__ == .__main__.:",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.8",
+    "mypy>=1.13",
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=6.0",
+    "respx>=0.21",
+    "pre-commit>=4.0",
+    "types-pyyaml>=6.0",
+    "testcontainers>=4.0",
+]

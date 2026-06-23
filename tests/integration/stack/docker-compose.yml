@@ -1,0 +1,118 @@
+# Phase 7b live integration stack: Synapse + MAS + Postgres + Authentik (ADR-0006 topology).
+# Brought up by tests/integration/conftest.py via testcontainers. Images are pinned by digest.
+# Host ports are fixed (8008/8080/9000) so the in-network issuer string (`mas:8080`,
+# `authentik-server:9000`) and the host-side test login helper can agree on one identity (the
+# helper rewrites those hostnames to localhost on browser hops).
+name: onbot-itest
+
+services:
+  postgres:
+    image: postgres@sha256:e013e867e712fec275706a6c51c966f0bb0c93cfa8f51000f85a15f9865a28cb
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: onbot
+      POSTGRES_DB: postgres
+    volumes:
+      - ./postgres/10-init-dbs.sh:/docker-entrypoint-initdb.d/10-init-dbs.sh:ro
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  authentik-server:
+    image: ghcr.io/goauthentik/server@sha256:377ee38726785f98aafc3665202ad198a366fa979b0f61c0660a9c05e3a9b1b3
+    command: server
+    environment: &authentik_env
+      AUTHENTIK_SECRET_KEY: "onbot-integration-authentik-secret-key-do-not-use-in-prod"
+      AUTHENTIK_POSTGRESQL__HOST: postgres
+      AUTHENTIK_POSTGRESQL__USER: postgres
+      AUTHENTIK_POSTGRESQL__PASSWORD: onbot
+      AUTHENTIK_POSTGRESQL__NAME: authentik
+      AUTHENTIK_REDIS__HOST: redis
+      AUTHENTIK_BOOTSTRAP_PASSWORD: "onbot-admin-password"
+      AUTHENTIK_BOOTSTRAP_TOKEN: "onbot-authentik-bootstrap-token"
+      AUTHENTIK_BOOTSTRAP_EMAIL: "admin@onbot.test"
+      AUTHENTIK_DISABLE_UPDATE_CHECK: "true"
+      AUTHENTIK_DISABLE_STARTUP_ANALYTICS: "true"
+      AUTHENTIK_ERROR_REPORTING__ENABLED: "false"
+      AUTHENTIK_AVATARS: "none"
+    volumes:
+      - ./authentik/blueprints/onbot.yaml:/blueprints/onbot.yaml:ro
+    ports:
+      - "9000:9000"
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "ak", "healthcheck"]
+      interval: 10s
+      timeout: 30s
+      retries: 30
+      start_period: 120s
+
+  authentik-worker:
+    image: ghcr.io/goauthentik/server@sha256:377ee38726785f98aafc3665202ad198a366fa979b0f61c0660a9c05e3a9b1b3
+    command: worker
+    environment: *authentik_env
+    volumes:
+      - ./authentik/blueprints/onbot.yaml:/blueprints/onbot.yaml:ro
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "ak", "healthcheck"]
+      interval: 10s
+      timeout: 30s
+      retries: 30
+      start_period: 120s
+
+  mas:
+    image: ghcr.io/element-hq/matrix-authentication-service@sha256:5a24857b4cf429d21eb823cc80bf0bc78ffc055c303ef898a0f2e32cbf57c194
+    # Distroless image; entrypoint is `mas-cli`. The server applies pending DB migrations and
+    # synchronises config-defined clients/upstream providers on startup.
+    command: ["server", "--config", "/config/config.yaml"]
+    volumes:
+      - ./mas/config.yaml:/config/config.yaml:ro
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres: {condition: service_healthy}
+
+  synapse:
+    image: ghcr.io/element-hq/synapse@sha256:925534da6deefc83d3b82bdb08acd7bedfd34ca29f8d47a27c386c0ece9a0515
+    # Wait for MAS (auth is delegated to it via MSC3861), generate the signing key, then run.
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - >
+        until curl -sfo /dev/null http://mas:8080/.well-known/openid-configuration; do
+          echo 'waiting for MAS...'; sleep 2;
+        done;
+        python -m synapse.app.homeserver --config-path /config/homeserver.yaml --generate-keys &&
+        exec python -m synapse.app.homeserver --config-path /config/homeserver.yaml
+    volumes:
+      - ./synapse/homeserver.yaml:/config/homeserver.yaml:ro
+      - ./synapse/log.config:/config/log.config:ro
+    tmpfs:
+      - /data
+    ports:
+      - "8008:8008"
+    depends_on:
+      postgres: {condition: service_healthy}
+      mas: {condition: service_started}
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8008/health"]
+      interval: 5s
+      timeout: 10s
+      retries: 40
+      start_period: 60s

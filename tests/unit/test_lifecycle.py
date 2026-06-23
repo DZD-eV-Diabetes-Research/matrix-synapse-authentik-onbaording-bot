@@ -162,10 +162,14 @@ class InMemoryLedgerStore:
 class RecordingEffectors:
     def __init__(self) -> None:
         self.logouts: list[str] = []
+        self.reenables: list[str] = []
         self.erases: list[tuple[str, bool]] = []
 
     async def logout(self, mxid: str) -> None:
         self.logouts.append(mxid)
+
+    async def reenable(self, mxid: str) -> None:
+        self.reenables.append(mxid)
 
     async def erase(self, mxid: str, *, delete_media: bool) -> None:
         self.erases.append((mxid, delete_media))

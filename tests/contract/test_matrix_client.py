@@ -6,7 +6,14 @@ import httpx
 import pytest
 import respx
 
-from onbot.clients.matrix import ApiClientMatrix, SyncNotSupportedError
+from onbot.clients.base import ApiError
+from onbot.clients.matrix import (
+    ApiClientMatrix,
+    CSApiEffectors,
+    SyncNotSupportedError,
+    _parse_mxc,
+)
+from onbot.models import RoomCreateAttributes
 
 
 def _client() -> ApiClientMatrix:
@@ -234,3 +241,188 @@ async def test_link_room_to_space_writes_child_and_parent() -> None:
     finally:
         await client.aclose()
     assert child.called and parent.called
+
+
+@respx.mock
+async def test_create_direct_message_room_is_direct_and_invites() -> None:
+    route = respx.post("https://matrix.test/_matrix/client/v3/createRoom").mock(
+        return_value=httpx.Response(200, json={"room_id": "!dm:matrix.test"})
+    )
+    client = _client()
+    try:
+        room_id = await client.create_direct_message_room("@u:matrix.test")
+    finally:
+        await client.aclose()
+    assert room_id == "!dm:matrix.test"
+    body = json.loads(route.calls[0].request.content)
+    assert body["is_direct"] is True
+    assert body["invite"] == ["@u:matrix.test"]
+    assert body["preset"] == "trusted_private_chat"
+    assert "initial_state" not in body
+
+
+@respx.mock
+async def test_resolve_room_alias_returns_room_id() -> None:
+    respx.get("https://matrix.test/_matrix/client/v3/directory/room/%23team%3Amatrix.test").mock(
+        return_value=httpx.Response(200, json={"room_id": "!r:matrix.test"})
+    )
+    client = _client()
+    try:
+        assert await client.resolve_room_alias("#team:matrix.test") == "!r:matrix.test"
+    finally:
+        await client.aclose()
+
+
+@respx.mock
+async def test_resolve_room_alias_reraises_non_404() -> None:
+    respx.get("https://matrix.test/_matrix/client/v3/directory/room/%23team%3Amatrix.test").mock(
+        return_value=httpx.Response(500, json={"errcode": "M_UNKNOWN"})
+    )
+    client = _client()
+    try:
+        with pytest.raises(ApiError):
+            await client.resolve_room_alias("#team:matrix.test")
+    finally:
+        await client.aclose()
+
+
+@respx.mock
+async def test_kick_user_includes_reason() -> None:
+    route = respx.post("https://matrix.test/_matrix/client/v3/rooms/!r:x/kick").mock(
+        return_value=httpx.Response(200, json={})
+    )
+    client = _client()
+    try:
+        await client.kick_user("!r:x", "@u:x", "left group")
+    finally:
+        await client.aclose()
+    assert json.loads(route.calls[0].request.content) == {"user_id": "@u:x", "reason": "left group"}
+
+
+@respx.mock
+async def test_set_room_name_topic_and_avatar() -> None:
+    name = respx.put("https://matrix.test/_matrix/client/v3/rooms/!r:x/state/m.room.name").mock(
+        return_value=httpx.Response(200, json={"event_id": "$n"})
+    )
+    topic = respx.put("https://matrix.test/_matrix/client/v3/rooms/!r:x/state/m.room.topic").mock(
+        return_value=httpx.Response(200, json={"event_id": "$t"})
+    )
+    avatar = respx.put("https://matrix.test/_matrix/client/v3/rooms/!r:x/state/m.room.avatar").mock(
+        return_value=httpx.Response(200, json={"event_id": "$a"})
+    )
+    client = _client()
+    try:
+        await client.set_room_name("!r:x", "Team")
+        await client.set_room_topic("!r:x", "topic")
+        await client.set_room_avatar("!r:x", "mxc://matrix.test/abc")
+    finally:
+        await client.aclose()
+    assert json.loads(name.calls[0].request.content) == {"name": "Team"}
+    assert json.loads(topic.calls[0].request.content) == {"topic": "topic"}
+    assert json.loads(avatar.calls[0].request.content) == {"url": "mxc://matrix.test/abc"}
+
+
+@respx.mock
+async def test_set_account_data_puts_content() -> None:
+    route = respx.put("https://matrix.test/_matrix/client/v3/user/@bot:x/account_data/m.direct").mock(
+        return_value=httpx.Response(200, json={})
+    )
+    client = _client()
+    try:
+        await client.set_account_data("@bot:x", "m.direct", {"@u:x": ["!dm:x"]})
+    finally:
+        await client.aclose()
+    assert json.loads(route.calls[0].request.content) == {"@u:x": ["!dm:x"]}
+
+
+@respx.mock
+async def test_get_account_data_reraises_non_404() -> None:
+    respx.get("https://matrix.test/_matrix/client/v3/user/@bot:x/account_data/m.direct").mock(
+        return_value=httpx.Response(500, json={"errcode": "M_UNKNOWN"})
+    )
+    client = _client()
+    try:
+        with pytest.raises(ApiError):
+            await client.get_account_data("@bot:x", "m.direct")
+    finally:
+        await client.aclose()
+
+
+def test_parse_mxc_rejects_malformed() -> None:
+    assert _parse_mxc("mxc://server/media") == ("server", "media")
+    with pytest.raises(ValueError):
+        _parse_mxc("https://not-mxc/x")
+    with pytest.raises(ValueError):
+        _parse_mxc("mxc://server-only")
+
+
+class _RecordingMatrixClient:
+    """Records the CS-API calls the effectors delegate, without any HTTP."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, tuple[object, ...], dict[str, object]]] = []
+
+    async def create_room(self, **kwargs: object) -> str:
+        self.calls.append(("create_room", (), kwargs))
+        return "!room:matrix.test"
+
+    async def create_space(self, **kwargs: object) -> str:
+        self.calls.append(("create_space", (), kwargs))
+        return "!space:matrix.test"
+
+    async def kick_user(self, *args: object) -> None:
+        self.calls.append(("kick_user", args, {}))
+
+    async def get_room_power_levels(self, room_id: str) -> dict[str, object]:
+        self.calls.append(("get_room_power_levels", (room_id,), {}))
+        return {"users": {}}
+
+    async def set_room_power_levels(self, room_id: str, power_levels: dict[str, object]) -> None:
+        self.calls.append(("set_room_power_levels", (room_id, power_levels), {}))
+
+    async def set_room_name(self, room_id: str, name: str) -> None:
+        self.calls.append(("set_room_name", (room_id, name), {}))
+
+    async def set_room_topic(self, room_id: str, topic: str) -> None:
+        self.calls.append(("set_room_topic", (room_id, topic), {}))
+
+    async def put_room_state_event(self, room_id: str, event_type: str, content: dict[str, object]) -> None:
+        self.calls.append(("put_room_state_event", (room_id, event_type, content), {}))
+
+
+async def test_cs_api_effectors_delegate_to_client() -> None:
+    client = _RecordingMatrixClient()
+    effectors = CSApiEffectors(client)  # type: ignore[arg-type]
+
+    attrs = RoomCreateAttributes(
+        alias="team", canonical_alias="#team:matrix.test", name="Team", topic="t", encrypted=True
+    )
+    assert await effectors.create_group_room(attrs, "!space:matrix.test") == "!room:matrix.test"
+    assert (
+        await effectors.create_space(
+            alias="onbot", name="OnBot", topic="space", params={"visibility": "private"}
+        )
+        == "!space:matrix.test"
+    )
+    await effectors.kick_user("!r:x", "@u:x", "gone")
+    assert await effectors.get_room_power_levels("!r:x") == {"users": {}}
+    await effectors.set_room_power_levels("!r:x", {"users": {"@a:x": 50}})
+    await effectors.set_room_name("!r:x", "Team")
+    await effectors.set_room_topic("!r:x", "topic")
+    await effectors.put_room_state(["!r:x"][0], "org.onbot.state", {"v": 1})
+
+    names = [c[0] for c in client.calls]
+    assert names == [
+        "create_room",
+        "create_space",
+        "kick_user",
+        "get_room_power_levels",
+        "set_room_power_levels",
+        "set_room_name",
+        "set_room_topic",
+        "put_room_state_event",
+    ]
+    # create_group_room forwards the alias and parent space verbatim.
+    create_kwargs = client.calls[0][2]
+    assert create_kwargs["alias_localpart"] == "team"
+    assert create_kwargs["parent_space_id"] == "!space:matrix.test"

@@ -1,0 +1,131 @@
+# Matrix Authentication Service config for the Phase 7b integration stack (ADR-0006).
+# Test-only secrets — this whole directory is a throwaway, hermetic stack, never a real deployment.
+#
+# Topology: Matrix client -> MAS -> Authentik (upstream IdP). public_base/issuer use the in-network
+# service name `mas:8080` so Synapse (container) and the upstream callback agree on one issuer
+# string; the host-side test login helper rewrites `mas:8080`/`authentik-server:9000` to localhost.
+
+http:
+  public_base: "http://mas:8080/"
+  issuer: "http://mas:8080/"
+  listeners:
+    - name: web
+      resources:
+        - name: discovery
+        - name: human
+        - name: oauth
+        - name: compat
+        - name: assets
+        - name: adminapi
+      binds:
+        - host: 0.0.0.0
+          port: 8080
+
+database:
+  host: postgres
+  port: 5432
+  username: postgres
+  password: onbot
+  database: mas
+
+secrets:
+  encryption: "44e5d2fb33447bb04ea926dc8030bbe7e7da17d561f0ff65e26771b2fdaee772"
+  keys:
+    - kid: "onbot-int-ec-1"
+      key: |
+        -----BEGIN PRIVATE KEY-----
+        MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg/KOpPBwMqa0dZ3fn
+        /H24AYCHd02RtLw1BQ8PXXJs132hRANCAATiXHAZgICU5+/DltVWXiM1AqHW5HEU
+        wIqrfycLvu38hexkyWFjheapYnThm2kGhofBy416HnMCxVJ2OAWqu43l
+        -----END PRIVATE KEY-----
+    - kid: "onbot-int-rsa-1"
+      key: |
+        -----BEGIN PRIVATE KEY-----
+        MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQC1Q00xmhd1Ya/0
+        +ZSN5TUvPCTS7zE/VKI2TiJmJ++t4hs1x5uPAuWBHh/OGBmpNajXC61b67RA/JKb
+        GAlK/5K2iQdEQGDLUoZbLKKuCk0hsaY1fIN87QagpDOiG7Msq2Ka2LMDD2WLpmDZ
+        /VZq33V+rYxy2L9u8vFEk3KduJH2eLEUhzzCUfjb3r/hipb81FjVXItZNersiRBo
+        E4HlArnvMEHjAtRyLFCjkWet4vBq6ZhcQSvZWF1DFKZXRntw9zmRKxvXyfGSCt1T
+        Kk4T08QS7DSfgWycwElLOIkxpDaISuu4/uDUwtn0XFl3Xh8E+e8zCLlfW8MgNp4t
+        8sq4kjb7AgMBAAECggEADC6YPweooPJuRWwKoFixsNl9bhG2QRfaiQTKSgxQDuMd
+        ygj+uudKblmMcKjs/JLHJKC7x2w5Yo62+aZtZXV0skDWVK9w8ek7b2A6FLFLisKq
+        NXkHSzuQ0PYIJFJxQcTI7Tg4G7IKtI57ftsIVklrV5apVESd5QJ91YqFTvVLFgHc
+        YhrM7KnCqKNbEXx1as8yUs/ozbepoCdqV2Pc0FYf/eVS2qu9FP0A7lBEnQyPv+BZ
+        OYjyavimP/Y0rMCL7LqyO6iR80cGyylgf6H95pgEl36f8WJ3sT8AtZXjYXgJ2MXG
+        DLsFgXQ2AB1kKmi4zOU99YcZY6Fp4nR0iU3m7OHDSQKBgQDvrpjp4q29kn6IZwaE
+        t5FUG0UVCFdk6nVakxhBGNF5tEfRsyxx4pzr1SILDHBukocKLdqR8NaW3pa1IZTm
+        E0EQuUpgj2le3Nk0xVL085DK1bofv8DoRTRDB6LZKQhyRSkWaFhbGcp6AjPw1DiZ
+        7DFm+u3RuyH6hkb8O5GJ2xtgYwKBgQDBmoVh0CuUc8Z4lbcyE7Sytzro++Vy+9OS
+        kB+nqaRmvCdex499dVAaa52LV7V50/ZEfSWJM+qzupLjLPZj29vw95Dk6D6CXU2T
+        sASJTfNVzFak5pYrmxLmaGZKcataqjSHqc5Z/qQhCeDJIc0/uI8sfIMBwRDdVF91
+        521qqup2iQKBgQC/AiGSordbEFgOVCx5r+D9ag4PyOn83mxPllIJ7sFhgC6MC4Ir
+        8DCmMOBEddFUDSnZDtnU3F3nNdRc3TpQcJ+1uDRx51hN5SqkR2zpEQIe41zE2Iff
+        kucnU/qPnYfBqSQpW1auo0sdGIxULIw+/mAQdYD5V2yovkHr2X0Oo7KZiQKBgQCb
+        ivawgBwTN/Tzum0leXmKv/U/a+mLONFhhhM4k+22cGI9Hp2k0RSbNWysn7n4eBf6
+        LIV0ttZQsYwDooMN9Xy+G1g44HIgMK/8AMWUPqFKhFH0SCHMRNmpbaUJGEvwGqD7
+        gax81z2sIZCMZ3DMSg4VUq+6QA+5kmjjhBx/P3QB6QKBgHRNzCShQn4hY44uX4Pm
+        q5K2vDPOL0/Xo7l4YCcPCxoC5pwjXDAgxd9memv1LEgOQhubmg5nhDa4vOcSnken
+        CuyZz+oNFJci8nDla0fqH97vgeTEWdytzUI6zxgjw6na+2KP4uw1TpPZU+X+ccyq
+        dCtpVxIFF4M9ODiyVQotL5VF
+        -----END PRIVATE KEY-----
+
+matrix:
+  homeserver: "onbot.test"
+  secret: "fdaec979e563f67d6941b8263248e495ae49c7be7e59d2d4ecda601a830f4ed5"
+  endpoint: "http://synapse:8008"
+
+clients:
+  # The homeserver itself — Synapse introspects tokens against MAS using these credentials.
+  - client_id: "0000000000000000000SYNAPSE"
+    client_auth_method: client_secret_basic
+    client_secret: "7ad6a9abfd83a14c730e376e7e2627424194aef6212e8cc07328199ed708aebd"
+  # The integration test's OIDC client — drives a real authorization-code login to provision a user.
+  - client_id: "0000000000000000000000TEST"
+    client_auth_method: client_secret_post
+    client_secret: "557eddece563d23e6d6effec55b10f331f02faddb108208d427b389d3aa2e47f"
+    redirect_uris:
+      - "http://localhost:9999/callback"
+  # The bot's MAS-admin client (client_credentials -> urn:mas:admin). Onbot's lifecycle module
+  # uses this to revoke MAS sessions / deactivate users — the Synapse admin API cannot (§7 Q1).
+  - client_id: "0000000000000000000MASADMN"
+    client_auth_method: client_secret_basic
+    client_secret: "04ca2b8aa47c1d270cd6fa3d72f5e8750ca5e66cb57a6783ccb01be6fffa483b"
+
+# Allow the bot's admin client to obtain the urn:mas:admin scope via client_credentials.
+policy:
+  data:
+    admin_clients:
+      - "0000000000000000000MASADMN"
+
+upstream_oauth2:
+  providers:
+    - id: "01HFS67GJ145HCM9ZASYS9DC3J"
+      human_name: "Authentik"
+      issuer: "http://authentik-server:9000/application/o/mas/"
+      client_id: "mas-upstream-client-id"
+      client_secret: "mas-upstream-client-secret"
+      token_endpoint_auth_method: client_secret_post
+      scope: "openid profile email"
+      discovery_mode: insecure
+      pkce_method: auto
+      # All imports non-interactive (force/ignore) so first login provisions headlessly with no
+      # "complete your registration" browser form (ADR-0006: MAS auto-provisions on first login).
+      claims_imports:
+        subject:
+          template: "{{ user.sub }}"
+        localpart:
+          action: force
+          template: "{{ user.preferred_username }}"
+        displayname:
+          action: force
+          template: "{{ user.preferred_username }}"
+        email:
+          action: ignore
+
+account:
+  password_registration_enabled: false
+
+# Local passwords disabled: the only login method is the single Authentik upstream, so MAS skips its
+# login selector and redirects straight to Authentik (keeps the test login flow headless).
+passwords:
+  enabled: false

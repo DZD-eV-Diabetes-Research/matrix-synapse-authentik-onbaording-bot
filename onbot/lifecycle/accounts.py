@@ -107,14 +107,23 @@ class LifecycleEffectors(Protocol):
     """The destructive Matrix/Synapse operations, isolated behind a seam (separate boundary, AD-5)."""
 
     async def logout(self, mxid: str) -> None:
-        """Revoke every session/device for ``mxid`` (G9.2)."""
+        """Revoke every session for ``mxid`` (G9.2). Reversible (see :meth:`reenable`)."""
+
+    async def reenable(self, mxid: str) -> None:
+        """Reverse a non-destructive logout when the user returns (G9.6). May be a no-op."""
 
     async def erase(self, mxid: str, *, delete_media: bool) -> None:
         """Deactivate/erase the account (G9.4) and optionally its uploaded media (G9.5)."""
 
 
 class AdminApiLifecycleEffectors:
-    """Concrete effectors over the Synapse Admin API."""
+    """Concrete effectors over the Synapse Admin API.
+
+    NOTE (BATTLE_PLAN §7 Q1, verified by the Phase 7b harness): under MAS these do **not** revoke a
+    live MAS-issued session — deleting devices/deactivating in Synapse leaves the MAS token valid.
+    Use :class:`MasLifecycleEffectors` for real enforcement under the MAS topology (ADR-0006). These
+    remain correct for non-MAS Synapse deployments.
+    """
 
     def __init__(self, admin: Any) -> None:
         self.admin = admin
@@ -122,10 +131,53 @@ class AdminApiLifecycleEffectors:
     async def logout(self, mxid: str) -> None:
         await self.admin.logout_account(mxid)
 
+    async def reenable(self, mxid: str) -> None:
+        # Synapse logout deletes devices; there is nothing to restore — the user logs in afresh.
+        return None
+
     async def erase(self, mxid: str, *, delete_media: bool) -> None:
         if delete_media:
             await self.admin.delete_user_media(mxid)
         await self.admin.deactivate_account(mxid, erase=delete_media)
+
+
+class MasLifecycleEffectors:
+    """Effectors that enforce lockout through the **MAS admin API** (ADR-0006, §7 Q1).
+
+    This is the path that actually works under MAS: ``logout`` locks the MAS user (revoking live
+    sessions, reversibly), ``reenable`` unlocks them when their upstream account returns (G9.6), and
+    ``erase`` deactivates the account irreversibly. Media deletion still goes through the Synapse
+    admin API (MAS does not own media).
+    """
+
+    def __init__(self, mas_admin: Any, synapse_admin: Any | None = None) -> None:
+        self.mas = mas_admin
+        self.synapse_admin = synapse_admin
+
+    async def _resolve(self, mxid: str) -> str | None:
+        from onbot.clients.mas_admin import mxid_localpart
+
+        uid: str | None = await self.mas.get_user_id_by_username(mxid_localpart(mxid))
+        if uid is None:
+            log.warning("no MAS user for %s; cannot enforce lifecycle action", mxid)
+        return uid
+
+    async def logout(self, mxid: str) -> None:
+        uid = await self._resolve(mxid)
+        if uid is not None:
+            await self.mas.lock_user(uid)
+
+    async def reenable(self, mxid: str) -> None:
+        uid = await self._resolve(mxid)
+        if uid is not None:
+            await self.mas.unlock_user(uid)
+
+    async def erase(self, mxid: str, *, delete_media: bool) -> None:
+        uid = await self._resolve(mxid)
+        if uid is not None:
+            await self.mas.deactivate_user(uid)
+        if delete_media and self.synapse_admin is not None:
+            await self.synapse_admin.delete_user_media(mxid)
 
 
 @runtime_checkable
@@ -212,6 +264,9 @@ class AccountLifecycleManager:
     async def _apply(self, ledger: LifecycleLedger, mxid: str, action: LifecycleAction, now: float) -> bool:
         """Carry out one decision; return whether the ledger changed. Destructive ops respect dry-run."""
         if action is LifecycleAction.reenable:
+            # Restorative (only ever grants access back), so it runs even under dry-run — it undoes a
+            # prior real logout/lock. A no-op when nothing was locked.
+            await self.effectors.reenable(mxid)
             ledger.entries.pop(mxid, None)
             audit.info("re-enabled %s (Authentik account active again); cleared lifecycle state", mxid)
             return True

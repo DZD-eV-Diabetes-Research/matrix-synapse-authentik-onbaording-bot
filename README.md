@@ -25,6 +25,21 @@ pdm install                 # create the venv and install deps (incl. dev)
 pdm run pre-commit install  # enable lint + secret-scan hooks
 ```
 
+### Helper scripts
+
+Convenience wrappers live at the repo root (all use PDM under the hood):
+
+```bash
+source ./build_dev_env.sh        # install PDM if needed, set up + activate the venv
+./run_onbot.sh                   # start the service (reconcile loop + onboarding)
+./run_onbot_reconcile_once.sh    # a single reconcile pass, then exit (dry-run by default)
+./run_tests.sh                   # fast unit + contract suite, with the coverage gate
+./run_tests.sh --dev             #   ...stop at first failure, full tracebacks (-x -s --tb=long)
+./run_integration_tests.sh       # Phase 7b: end-to-end vs a live Synapse+MAS+Authentik stack
+```
+
+The `run_onbot*` scripts read config from `$ONBOT_CONFIG_FILE_PATH` (default `./config.yml`).
+
 ## Run
 
 ```bash
@@ -32,15 +47,13 @@ pdm run onbot --help        # see available commands
 pdm run onbot reconcile-once
 ```
 
-> Commands currently exit "not implemented yet" — behaviour lands in upcoming phases.
-
 ## Test & check
 
 ```bash
-pdm run pytest -m "not integration"   # fast unit + contract tests
-pdm run ruff check .                   # lint
-pdm run ruff format --check .          # formatting
-pdm run mypy onbot                     # type check
+./run_tests.sh                         # fast unit + contract tests (+ coverage gate)
+pdm run ruff check .                    # lint
+pdm run ruff format --check .           # formatting
+pdm run mypy onbot                      # type check
 ```
 
 ## License
