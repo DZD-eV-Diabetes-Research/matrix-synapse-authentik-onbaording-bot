@@ -294,16 +294,44 @@ desired-vs-actual result, behind dry-run. All three share `clients/` + `auth/`.
       before implementation; tracked for a later phase.
 
 ### Phase 7 — Test suite (grows during 3–5)
-- [ ] **Unit:** mapping rules, power-level calc, identity/MXID, config, room-state (de)serialization.
-- [ ] **Contract:** each client via `respx` against recorded fixtures.
-- [ ] **Integration:** `testcontainers`/compose with **Synapse + MAS + Postgres** + Authentik (real or
-      mocked, with Authentik as MAS upstream). Assert end-to-end: group→room, membership, onboarding,
-      deactivation cooldowns, power levels, media. Marked `@pytest.mark.integration`, own CI job.
-- [ ] **🔬 Resolve §7 Q1 by experiment (per 2026-06-19 decision):** in the live harness, disable a
-      user in Authentik and observe MAS/Synapse — do existing sessions get revoked / the account
-      locked automatically, or do they persist? Record the facts, then finalize the lifecycle
-      module's responsibility (redundant backstop vs. the enforcement path) and update ADR-0005 + §7.
-- [ ] Coverage gate (start ~60% unit, ratchet up; lifecycle held higher).
+
+**Split decision (2026-06-23):** Phase 7 is divided into **7a (fast tiers, no infra)** and **7b (live
+integration harness).** Rationale: 7b carries everything slow/uncertain (Docker images, version drift,
+network flakiness, a separate CI job, and the §7 Q1 *research* question); it must not hold the fast,
+deterministic wins hostage. **Both are now done (7a 2026-06-23, 7b 2026-06-23).**
+
+#### Phase 7a — fast tiers + coverage gate  ✅ done 2026-06-23
+- [x] **Unit:** mapping rules, power-level calc, identity/MXID, config, room-state (de)serialization
+      (grown through Phases 3–5; `tests/unit/`).
+- [x] **Contract:** each client via `respx`. Filled the remaining gaps —
+      `clients/synapse_admin.py` 72→**100%** (lifecycle ops, membership, media pagination, room
+      details, block/admin state), `clients/matrix.py` 76→**95%** (DM creation, alias resolve,
+      kick-with-reason, room name/topic/avatar, account-data error paths, `_parse_mxc`,
+      `CSApiEffectors` delegation), `onboarding/listener.py` 63→**94%** (the `run()` sync loop,
+      backoff, unsupported-fallback), and `DryRunEffectors` 66→**100%**.
+- [x] **Coverage gate (BATTLE_PLAN §5):** `fail_under = 85` in `[tool.coverage.report]` (fast suite
+      sits ~91%); `app.py` + `__main__.py` omitted as integration-only composition root (covered by
+      7b). The gate fires in the existing CI `--cov` step. Floor, meant to ratchet up.
+
+#### Phase 7b — live integration harness  ✅ done 2026-06-23
+- [x] **Integration:** `testcontainers` (compose) brings up **Synapse + MAS + Postgres + Authentik**
+      (Authentik as MAS upstream IdP, ADR-0006), images pinned by digest, Authentik OIDC provider
+      blueprint-provisioned (`tests/integration/stack/`). Session fixtures yield ready
+      `ApiClientMatrix`/`ApiClientSynapseAdmin`/`ApiClientAuthentik` + a loaded `OnbotConfig`. A real
+      MAS→Authentik **OIDC login helper** provisions accounts (no admin pre-create). End-to-end
+      tests (all `@pytest.mark.integration`, own CI job) assert: group→room, membership, idempotent
+      welcome DM, power levels, deactivation cooldowns (dry-run + live), authenticated media, and the
+      **MXID localpart contract** (Q2 — provisioned localpart == `compute_mxid`).
+- [x] **🔬 §7 Q1 resolved empirically** (see §7 Q1 + ADR-0005): upstream Authentik disable does **not**
+      revoke existing Matrix sessions (only blocks new logins); the **Synapse admin API cannot revoke**
+      a MAS session — only MAS can. ⇒ the lifecycle module is the **enforcement path** and now acts via
+      the MAS admin API (`clients/mas_admin.py` + `MasLifecycleEffectors`, config `mas_admin`).
+- [x] Composition root covered: `app.py`/`__main__.py` `omit`s dropped; the full-suite coverage gate
+      (`fail_under = 88`, ~90% actual) runs in the integration CI job where app.py executes end-to-end.
+- 🐞 **Two real MAS-integration bugs surfaced + fixed:** `synapse_admin.list_users` must pass
+      `guests=false` under MSC3861; the bot must register its device (`ApiClientMatrix.ensure_device_registered`,
+      run at startup) or welcome DM sends 500 (`event_txn_id_device_id` FK) — MAS-issued devices aren't
+      in Synapse's `devices` table until keys are uploaded.
 
 ### Phase 8 — Packaging, docs & release
 - [ ] Rewrite `Dockerfile`: multi-stage, pinned digest, non-root, `.dockerignore`, `pdm install`, healthcheck.
@@ -335,9 +363,15 @@ desired-vs-actual result, behind dry-run. All three share `clients/` + `auth/`.
 
 1. **MAS deactivation propagation:** when Authentik disables a user upstream, does MAS revoke sessions / lock
    the Matrix account automatically, or must the lifecycle module enforce it?
-   *Decision (2026-06-19): defer the answer to facts — settle it with an experiment in the Phase 7
-   integration harness (real Synapse+MAS+Authentik), then finalize the lifecycle module's
-   responsibility. The Phase 5 module ships now as the safe backstop either way.*
+   *✅ ANSWERED EMPIRICALLY (Phase 7b, 2026-06-23, live Synapse+MAS+Authentik harness):*
+   - *MAS does **not** propagate the upstream disable — **existing Matrix sessions persist** (the
+     token keeps working). New logins **are** blocked (Authentik denies the disabled user).*
+   - *The **Synapse admin API cannot revoke** a MAS session: device deletion and
+     `/_synapse/admin/v1/deactivate` both leave the MAS token valid. Only **MAS** revokes it
+     (`/api/admin/v1/users/{id}/lock`|`/deactivate`, or `mas-cli kill-sessions`/`lock-user`).*
+   - *⇒ The lifecycle module is the **enforcement path, not a redundant backstop**, and must act via
+     the MAS admin API. Implemented: `clients/mas_admin.py` + `MasLifecycleEffectors` (logout→lock,
+     reenable→unlock, erase→deactivate), selected when `mas_admin` is configured. See ADR-0005.*
 2. **MXID localpart template:** what localpart rule does (will) MAS use for accounts provisioned from
    Authentik? The bot's identity mapping must match it exactly (AD-6).
 3. **E2EE requirement:** must the bot operate *inside encrypted rooms*, or is plaintext welcome + state mgmt

@@ -34,5 +34,26 @@ jobs:
       - name: Mypy
         run: pdm run mypy onbot
 
-      - name: Pytest (unit + contract)
-        run: pdm run pytest -m "not integration" --cov --cov-report=term-missing
+      - name: Pytest (unit + contract — fast, coverage reported but not gated)
+        run: pdm run pytest -m "not integration" --cov --cov-report=term-missing --cov-fail-under=0
+
+  integration:
+    name: integration (live Synapse · MAS · Authentik)
+    runs-on: ubuntu-latest
+    # Slow (boots a 6-container stack) and needs Docker — kept separate from the fast quality job.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up PDM (Python 3.14)
+        uses: pdm-project/setup-pdm@v4
+        with:
+          python-version: "3.14"
+          cache: true
+
+      - name: Install dependencies
+        run: pdm install --dev
+
+      # The full suite (incl. integration) — the testcontainers fixture brings up the stack. This is
+      # the authoritative coverage gate: app.py + __main__.py are exercised end-to-end here.
+      - name: Pytest (full suite + coverage gate)
+        run: pdm run pytest --cov --cov-report=term-missing

@@ -55,9 +55,12 @@ class ApiClientSynapseAdmin(BaseApiClient):
 
     async def list_users(self) -> list[dict[str, Any]]:
         # https://element-hq.github.io/synapse/latest/admin_api/user_admin_api.html#list-accounts
+        # ``guests=false`` is required under MAS/MSC3861 (Synapse rejects the endpoint's default
+        # ``guests`` handling with M_INVALID_PARAM) and is harmless otherwise — there are no guest
+        # accounts in the MAS topology (ADR-0006). Verified by the Phase 7b integration harness.
         return await self.paginate_collect(
             "v2/users",
-            params={"limit": _DEFAULT_PAGE_SIZE},
+            params={"limit": _DEFAULT_PAGE_SIZE, "guests": "false"},
             extract_items=lambda page: page["users"],
             next_params=_next_token_params("next_token"),
         )

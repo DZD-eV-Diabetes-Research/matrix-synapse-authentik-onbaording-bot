@@ -62,6 +62,33 @@ class MatrixOAuth2(BaseModel):
     ] = None
 
 
+class MasAdmin(BaseModel):
+    """MAS admin API credentials for lifecycle enforcement (ADR-0005/0006, §7 Q1).
+
+    Under MAS the Matrix token is owned by MAS, so the Synapse admin API cannot revoke a live
+    session — only MAS can (lock/deactivate). When this block is set, the lifecycle module enforces
+    lockout through the MAS admin API using an OAuth2 ``client_credentials`` token with the
+    ``urn:mas:admin`` scope (the client must be listed in MAS ``policy.data.admin_clients``). Leave
+    unset to fall back to the Synapse-admin effectors (which do NOT revoke MAS sessions).
+    """
+
+    url: Annotated[
+        str,
+        Field(
+            description="Base URL of the Matrix Authentication Service.",
+            examples=["https://auth.company.org"],
+        ),
+    ]
+    client_id: Annotated[
+        str,
+        Field(description="OAuth2 client id of the bot's MAS admin client (client_credentials)."),
+    ]
+    client_secret: Annotated[
+        str,
+        Field(description="OAuth2 client secret of the bot's MAS admin client."),
+    ]
+
+
 class SynapseServer(BaseModel):
     server_name: Annotated[
         str,
@@ -342,6 +369,17 @@ class OnbotConfig(BaseSettings):
         ),
     ]
     authentik_server: AuthentikServer
+
+    mas_admin: Annotated[
+        MasAdmin | None,
+        Field(
+            description=inspect.cleandoc(
+                """Optional MAS admin API credentials. Required for the lifecycle module to actually
+                revoke sessions / deactivate accounts under MAS — the Synapse admin API cannot
+                (ADR-0005, BATTLE_PLAN §7 Q1). Leave unset on non-MAS deployments."""
+            ),
+        ),
+    ] = None
 
     welcome_new_users_messages: list[str] | None = Field(
         default_factory=lambda: [

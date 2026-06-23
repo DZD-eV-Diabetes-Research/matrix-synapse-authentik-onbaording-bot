@@ -35,13 +35,41 @@ Isolate the lifecycle domain in its own module (`lifecycle/`) with:
   Authentik user and that already have a Matrix account; the bot user and ignore lists (G12.1) are
   excluded, so the destructive path can never touch unrelated admin/service accounts.
 
+## §7 Q1 resolved empirically (Phase 7b, 2026-06-23)
+
+The live Synapse + MAS + Authentik harness (`tests/integration/`) answered the open question. When an
+Authentik user is disabled **upstream**:
+
+1. **Existing Matrix sessions persist.** MAS does **not** propagate the upstream disable — a token
+   minted before the disable keeps passing `/whoami` indefinitely. (No automatic session revocation
+   or account lock.)
+2. **New logins are blocked.** Authentik denies the disabled user at its auth flow
+   (`ak-stage-access-denied`), so MAS can never mint a *new* session for them.
+3. **The Synapse admin API cannot revoke a MAS session.** Deleting the user's devices *and*
+   `POST /_synapse/admin/v1/deactivate` both leave the MAS-issued token valid — Synapse delegates
+   token validation to MAS, which still considers the session active. Only **MAS** can revoke it
+   (`POST /api/admin/v1/users/{id}/lock` or `/deactivate`; equivalently `mas-cli manage
+   kill-sessions`/`lock-user`).
+
+**Conclusion — this module is the enforcement path, not a redundant backstop.** Because existing
+sessions survive an upstream disable, onbot is the *only* thing that revokes them, and it must do so
+through MAS. The Synapse-admin effectors are insufficient under the MAS topology.
+
+## Implementation update (Phase 7b)
+
+- `clients/mas_admin.py` (`ApiClientMasAdmin`) wraps the MAS admin API (`by-username` lookup,
+  `lock`/`unlock`/`deactivate`), authenticated by an OAuth2 `client_credentials` token with the
+  `urn:mas:admin` scope (config: `mas_admin`; the bot's client must be in MAS `policy.data.admin_clients`).
+- `MasLifecycleEffectors` maps the state machine to MAS: `logout` → **lock** (reversible session
+  revocation), `reenable` → **unlock** (G9.6), `erase` → **deactivate** (+ media via Synapse admin).
+  `app.py` selects it whenever `mas_admin` is configured, else falls back to
+  `AdminApiLifecycleEffectors` (correct only on non-MAS Synapse).
+- The lifecycle protocol gained a restorative `reenable` op so a returning user is unlocked.
+
 ## Consequences
 
 - Operators must explicitly opt in to real destructive actions (G12.2); cooldown delays absorb
   accidental upstream disables (G9.3, G12.3).
-- **Open question (BATTLE_PLAN §7 Q1) — to be answered empirically (decided 2026-06-19):** whether
-  MAS itself revokes sessions / locks the account when Authentik disables a user upstream will be
-  settled by a dedicated experiment in the Phase 7 integration harness (real Synapse+MAS+Authentik),
-  not by guesswork; this module's exact responsibility (redundant backstop vs. enforcement path) is
-  finalized from the observed facts. Either way the design is safe — the module never *grants*
-  access, only removes it, behind dry-run.
+- Under MAS, configure `mas_admin` or **lifecycle enforcement is a no-op against live sessions**
+  (the Synapse-admin path silently fails to revoke). The design stays safe — the module never
+  *grants* access, only removes it, behind dry-run.

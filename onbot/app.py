@@ -18,6 +18,7 @@ from onbot.auth.token_provider import (
     TokenProvider,
 )
 from onbot.clients.authentik import ApiClientAuthentik
+from onbot.clients.mas_admin import ApiClientMasAdmin
 from onbot.clients.matrix import ApiClientMatrix, CSApiEffectors
 from onbot.clients.synapse_admin import ApiClientSynapseAdmin
 from onbot.config import OnbotConfig, SynapseServer
@@ -25,6 +26,8 @@ from onbot.events import EventBus
 from onbot.lifecycle.accounts import (
     AccountLifecycleManager,
     AdminApiLifecycleEffectors,
+    LifecycleEffectors,
+    MasLifecycleEffectors,
     MatrixAccountDataLedgerStore,
 )
 from onbot.logging import get_logger
@@ -100,14 +103,34 @@ async def build_app(config: OnbotConfig) -> AsyncIterator[App]:
         await matrix.negotiate_versions()
     except Exception:
         log.exception("CS-API version negotiation failed; continuing with defaults")
+    # Register the bot's device so welcome DM sends work under MAS (compat-token devices are
+    # otherwise absent from Synapse's devices table; ADR-0006/0009).
+    await matrix.ensure_device_registered()
     await _apply_bot_avatar(matrix, config)
     events = EventBus()
+    # Lifecycle enforcement: under MAS only the MAS admin API can revoke a live session (§7 Q1), so
+    # prefer it when configured; otherwise fall back to the Synapse-admin effectors.
+    mas_admin: ApiClientMasAdmin | None = None
+    lifecycle_effectors: LifecycleEffectors
+    if config.mas_admin is not None:
+        mas_admin = ApiClientMasAdmin(
+            mas_url=config.mas_admin.url,
+            token_provider=OAuth2ClientCredentialsTokenProvider(
+                token_endpoint=f"{config.mas_admin.url.rstrip('/')}/oauth2/token",
+                client_id=config.mas_admin.client_id,
+                client_secret=config.mas_admin.client_secret,
+                scope="urn:mas:admin",
+            ),
+        )
+        lifecycle_effectors = MasLifecycleEffectors(mas_admin, synapse_admin=admin)
+    else:
+        lifecycle_effectors = AdminApiLifecycleEffectors(admin)
     lifecycle = AccountLifecycleManager(
         config,
         store=MatrixAccountDataLedgerStore(
             matrix, config.synapse_server.bot_user_id, config.synapse_server.server_name
         ),
-        effectors=AdminApiLifecycleEffectors(admin),
+        effectors=lifecycle_effectors,
     )
     engine = ReconcilerEngine(
         config, authentik, admin, effectors=CSApiEffectors(matrix), events=events, lifecycle=lifecycle
@@ -121,6 +144,8 @@ async def build_app(config: OnbotConfig) -> AsyncIterator[App]:
         await authentik.aclose()
         await admin.aclose()
         await matrix.aclose()
+        if mas_admin is not None:
+            await mas_admin.aclose()
 
 
 async def run_service(config: OnbotConfig) -> None:

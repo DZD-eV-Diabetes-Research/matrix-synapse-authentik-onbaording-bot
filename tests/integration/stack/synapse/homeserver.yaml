@@ -1,0 +1,59 @@
+# Synapse homeserver config for the Phase 7b integration stack.
+# Auth is fully delegated to MAS via MSC3861 (ADR-0006): Synapse creates no accounts of its own and
+# introspects every token against MAS. The shared `admin_token` lets MAS act on the admin API and
+# doubles as the bot's path to admin operations (the bot's compat token is granted admin scope).
+server_name: "onbot.test"
+public_baseurl: "http://localhost:8008/"
+pid_file: /data/homeserver.pid
+signing_key_path: /data/onbot.test.signing.key
+log_config: /config/log.config
+report_stats: false
+presence:
+  enabled: false
+enable_metrics: false
+
+listeners:
+  - port: 8008
+    type: http
+    tls: false
+    bind_addresses: ['0.0.0.0']
+    x_forwarded: true
+    resources:
+      - names: [client, federation]
+        compress: false
+
+database:
+  name: psycopg2
+  args:
+    user: postgres
+    password: onbot
+    database: synapse
+    host: postgres
+    port: 5432
+    cp_min: 1
+    cp_max: 5
+
+media_store_path: /data/media_store
+# Federation off — the stack is hermetic.
+federation_domain_whitelist: []
+trusted_key_servers: []
+enable_registration: false
+
+experimental_features:
+  msc3861:
+    enabled: true
+    issuer: "http://mas:8080/"
+    client_id: "0000000000000000000SYNAPSE"
+    client_auth_method: client_secret_basic
+    client_secret: "7ad6a9abfd83a14c730e376e7e2627424194aef6212e8cc07328199ed708aebd"
+    admin_token: "fdaec979e563f67d6941b8263248e495ae49c7be7e59d2d4ecda601a830f4ed5"
+    account_management_url: "http://localhost:8080/account"
+
+# Quieter logs; this is a test server.
+rc_message:
+  per_second: 1000
+  burst_count: 1000
+rc_login:
+  address:
+    per_second: 1000
+    burst_count: 1000

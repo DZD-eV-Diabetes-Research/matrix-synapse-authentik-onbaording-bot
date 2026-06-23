@@ -104,6 +104,42 @@ class ApiClientMatrix(BaseApiClient):
         """Cached negotiation result, or ``None`` until :meth:`negotiate_versions` has run."""
         return self._versions
 
+    # --- device registration (MAS compatibility) ----------------------------
+
+    async def ensure_device_registered(self) -> None:
+        """Register the bot's device so it can send messages under MAS.
+
+        A MAS-issued token (a ``mas-cli`` compatibility token or a client login) carries a device
+        id, but Synapse only persists a ``devices`` row once the client uploads device keys. Until
+        then, *sending a message* — which records the transaction id per device — fails with a
+        foreign-key 500 (``event_txn_id_device_id``). State-only writes (room create, power levels,
+        account data) are unaffected, which is why this only bites the welcome DM flow.
+
+        The bot advertises **no** encryption algorithms (ADR-0009: it operates outside encrypted
+        rooms), so this is purely the device-bookkeeping registration, not an e2ee opt-in. Verified
+        against the Phase 7b live stack; idempotent. Best-effort: never blocks startup.
+        """
+        try:
+            whoami = await self.get_json("v3/account/whoami")
+            device_id = whoami.get("device_id")
+            if not device_id:
+                return
+            await self.post_json(
+                "v3/keys/upload",
+                json_body={
+                    "device_keys": {
+                        "user_id": whoami["user_id"],
+                        "device_id": device_id,
+                        "algorithms": [],
+                        "keys": {},
+                        "signatures": {},
+                    }
+                },
+            )
+            log.info("registered bot device %s for message sending (MAS compatibility)", device_id)
+        except Exception:
+            log.exception("could not register bot device; welcome DM sends may fail under MAS")
+
     # --- room / space creation ----------------------------------------------
 
     async def create_room(
