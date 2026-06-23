@@ -54,15 +54,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "generate-config":
         return _cmd_generate_config(args.output)
 
-    if args.command == "healthcheck":
-        raise SystemExit("'healthcheck' is not implemented yet (Phase 8, see BATTLE_PLAN.md).")
-
     # Commands that need live configuration + the async runtime.
-    from onbot import app  # local import keeps `generate-config` usable without a config file
-
     if get_config_file_path() is None:
         log.warning("no config file found; relying on ONBOT_* environment variables")
     config = load_config()
+
+    if args.command == "healthcheck":
+        from onbot.healthcheck import run_healthcheck
+
+        return asyncio.run(run_healthcheck(config))
+
+    from onbot import app  # local import keeps `generate-config` usable without a config file
 
     if args.command == "run":
         asyncio.run(app.run_service(config))

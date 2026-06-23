@@ -1,0 +1,41 @@
+# Keep the build context (and image) small and secret-free.
+
+# VCS / CI / docs / IDE
+.git
+.github
+.gitignore
+*.md
+!README.md
+docs
+
+# Tests & dev tooling (not needed in the prod image)
+tests
+.pre-commit-config.yaml
+.ruff_cache
+.mypy_cache
+.pytest_cache
+htmlcov
+.coverage
+.coverage.*
+
+# Local virtualenvs & caches
+.venv
+.dzdonbot
+__pypackages__
+**/__pycache__
+*.py[cod]
+.pdm-python
+.pdm-build
+
+# Secrets / local configs — never copy real credentials into the build context.
+config.yml
+config.*.yml
+!config.example.yml
+get_access_token.sh
+*.env
+
+# Legacy reference code (not part of the runtime package)
+legacy
+
+# Helper scripts
+*.sh

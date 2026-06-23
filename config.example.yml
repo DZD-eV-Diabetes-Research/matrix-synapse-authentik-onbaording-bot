@@ -1,665 +1,720 @@
+# Onbot configuration template — GENERATED from onbot/config.py.
+# Regenerate with `pdm run gen-config-docs`; do not edit by hand.
+# Copy this to config.yml and fill in the required (Required: True) values. Every setting can
+# also be supplied via its ONBOT_* environment variable (shown per field below).
+
+
 # ## log_level ###
-# Type:          Enum
-# Required:      False
-# Default:       "INFO"
-# Allowed vals:  ['INFO', 'DEBUG']
-# Env-var:       'ONBOT_LOG_LEVEL'
+# Type:         Enum
+# Required:     False
+# Default:      "INFO"
+# Allowed vals: ['INFO', 'DEBUG']
+# Env-var:      'ONBOT_LOG_LEVEL'
+# Description:  Logging verbosity. ``DEBUG`` is noisy but useful while wiring up the bot.
+# Example No. 1:
+#  >log_level: INFO
+# Example No. 2:
+#  >log_level: DEBUG
 log_level: INFO
 
-# ## storage_dir ###
-# Type:         str
-# Required:     False
-# Env-var:      'ONBOT_STORAGE_DIR'
-# Description:  A directory to story any states for the bot. Only for saving encryption keys/state at the moment.
-storage_dir: /home/username/.config/onbot
-
-# ## storage_encryption_key ###
-# Type:         str
-# Required:     False
-# Default:      null/None
-# Env-var:      'ONBOT_STORAGE_ENCRYPTION_KEY'
-# Description:  A passphrase that will be used to encrypt end to end encryption keys https://github.com/poljar/matrix-nio/blob/2632a72e7acee401c4354646a40f31db04db4258/nio/client/base_client.py#L145
-storage_encryption_key:
-
 # ## server_tick_rate_sec ###
-# Type:         int
-# Required:     False
-# Default:      20
-# Env-var:      'ONBOT_SERVER_TICK_RATE_SEC'
-# Description:  The bot poll every n seconds to sync the status between Authentik and Synapse.
+# Type:        int
+# Required:    False
+# Default:     20
+# Env-var:     'ONBOT_SERVER_TICK_RATE_SEC'
+# Description: How often (seconds) the reconciler re-converges Authentik→Matrix state, in
+#              addition to on-demand triggers. The reconcile is idempotent (AD-2), so this is a
+#              safety net for drift, not the only path — onboarding still reacts to live events.
+# Example No. 1:
+#  >server_tick_rate_sec: 20
+# Example No. 2:
+#  >server_tick_rate_sec: 300
 server_tick_rate_sec: 20
 
 # ## synapse_server - Synapse Server Configuration ###
-# Type:         Object
-# Required:     True
-# Env-var:      'ONBOT_SYNAPSE_SERVER'
-# Description:  To manage users on the Synapse server, the bot need access to the Matrix and Admin Api. The authorization data will be configured in this chapter.
+# Type:        Object (SynapseServer)
+# Required:    True
+# Env-var:     'ONBOT_SYNAPSE_SERVER'
+# Description: Authorization/connection data for the Matrix CS and Synapse admin APIs.
 synapse_server:
+
   # ## server_name ###
-  # YAML-path:    synapse_server.server_name
-  # Type:         str
-  # Required:     True
-  # Env-var:      'ONBOT_SYNAPSE_SERVER__SERVER_NAME'
-  # Description:  Synapse's public facing domain https://element-hq.github.io/synapse/latest/usage/configuration/config_documentation.html#server_name
-  #               This is not necessarily the domain under which the Synapse server is reachable. See the docs and your configuration.
+  # YAML-path:   synapse_server.server_name
+  # Type:        str
+  # Required:    True
+  # Env-var:     'ONBOT_SYNAPSE_SERVER__SERVER_NAME'
+  # Description: Synapse's public facing domain
+  #              https://element-hq.github.io/synapse/latest/usage/configuration/config_documentation.html#server_name
+  #              This is not necessarily the domain under which the Synapse server is reachable.
   # Example:
-  # >server_name: company.org
-  server_name: null
+  #  >server_name: company.org
+  server_name: ''
 
   # ## server_url ###
-  # YAML-path:    synapse_server.server_url
-  # Type:         str
-  # Required:     True
-  # Env-var:      'ONBOT_SYNAPSE_SERVER__SERVER_URL'
-  # Description:  Url to reach the synapse server. This can (and should) be an internal url. This will prevent you from make your synapse admin api public.
-  #               But the bot will work with the public URL as well fi you want to.
+  # YAML-path:   synapse_server.server_url
+  # Type:        str
+  # Required:    True
+  # Env-var:     'ONBOT_SYNAPSE_SERVER__SERVER_URL'
+  # Description: URL to reach the Synapse server. This can (and should) be an internal URL, so the
+  #              Synapse admin API need not be public. The bot works with a public URL too.
   # Example:
-  # >server_url: https://internal.matrix
-  server_url: null
+  #  >server_url: https://internal.matrix
+  server_url: ''
 
   # ## bot_user_id ###
-  # YAML-path:    synapse_server.bot_user_id
-  # Type:         str
-  # Required:     True
-  # Env-var:      'ONBOT_SYNAPSE_SERVER__BOT_USER_ID'
-  # Description:  The full Matrix user ID for an existing matrix user account. The Bot will interact as this account.
+  # YAML-path:   synapse_server.bot_user_id
+  # Type:        str
+  # Required:    True
+  # Env-var:     'ONBOT_SYNAPSE_SERVER__BOT_USER_ID'
+  # Description: Full Matrix user ID of an existing account; the bot acts as this user.
   # Example:
-  # >bot_user_id: '@welcome-bot:company.org'
-  bot_user_id: null
-
-  # ## bot_device_id ###
-  # YAML-path:    synapse_server.bot_device_id
-  # Type:         str
-  # Required:     True
-  # Env-var:      'ONBOT_SYNAPSE_SERVER__BOT_DEVICE_ID'
-  # Description:  A device ID the Bot account can provide, to access the API. You will get an device_id via https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3login
-  #               Here is an curl example to get data.
-  #               ```bash
-  #               curl -XPOST -d '{"type":"m.login.password", "user":"my-bot-user", "password":"superSecrectPW"}' "https://matrix.company.org/_matrix/client/v3/login"
-  #               ```
-  # Example:
-  # >bot_device_id: ZSIBBRS
-  bot_device_id: null
+  #  >bot_user_id: '@welcome-bot:company.org'
+  bot_user_id: ''
 
   # ## bot_access_token ###
-  # YAML-path:    synapse_server.bot_access_token
-  # Type:         str
-  # Required:     True
-  # Env-var:      'ONBOT_SYNAPSE_SERVER__BOT_ACCESS_TOKEN'
-  # Description:  A Bearer token to authorize the Bot access to the Synapse APIs. You will get an Bearer token via https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3login
-  #               Here is an curl example to get data.
-  #               ```bash
-  #               curl -XPOST -d '{"type":"m.login.password", "user":"my-bot-user", "password":"superSecrectPW"}' "https://matrix.company.org/_matrix/client/v3/login"
-  #               ```
+  # YAML-path:   synapse_server.bot_access_token
+  # Type:        str
+  # Required:    False
+  # Default:     null
+  # Env-var:     'ONBOT_SYNAPSE_SERVER__BOT_ACCESS_TOKEN'
+  # Description: Access token authorising the bot against the Synapse APIs. Under MAS this is a
+  #              compatibility token issued via ``mas-cli manage issue-compatibility-token`` (AD-6).
+  #              Provide the bare token; do not prefix it with ``Bearer`` (the client adds that).
+  #              Leave unset (``null``) when using ``oauth2`` instead.
   # Example:
-  # >bot_access_token: Bearer q7289zhwoieuhrfq279ugdfq3_ONLY_A_EXMAPLE_TOKEN_sadaw4
-  bot_access_token: null
+  #  >bot_access_token: syt_ONLY_AN_EXAMPLE_TOKEN_sadaw4
+  bot_access_token:
+
+  # ## oauth2 ###
+  # YAML-path:   synapse_server.oauth2
+  # Type:        Object (MatrixOAuth2)
+  # Required:    False
+  # Default:     null
+  # Env-var:     'ONBOT_SYNAPSE_SERVER__OAUTH2'
+  # Description: Optional OAuth2 client-credentials auth against MAS (AD-6). When set, it is used
+  #              instead of ``bot_access_token`` and tokens refresh automatically. Provide exactly one
+  #              of ``bot_access_token`` or ``oauth2``.
+  oauth2:
 
   # ## bot_avatar_url ###
-  # YAML-path:    synapse_server.bot_avatar_url
-  # Type:         str
-  # Required:     False
-  # Default:      null/None
-  # Env-var:      'ONBOT_SYNAPSE_SERVER__BOT_AVATAR_URL'
-  # Description:  An http url to an picture. The bot will set it as its own avatar on start.
+  # YAML-path:   synapse_server.bot_avatar_url
+  # Type:        str
+  # Required:    False
+  # Default:     null
+  # Env-var:     'ONBOT_SYNAPSE_SERVER__BOT_AVATAR_URL'
+  # Description: HTTP URL to a picture; the bot sets it as its own avatar on start.
   # Example:
-  # >bot_avatar_url: https://sillyimages.com/face.png
+  #  >bot_avatar_url: https://sillyimages.com/face.png
   bot_avatar_url:
 
   # ## admin_api_path ###
-  # YAML-path:    synapse_server.admin_api_path
-  # Type:         str
-  # Required:     False
-  # Default:      "_synapse/admin/"
-  # Env-var:      'ONBOT_SYNAPSE_SERVER__ADMIN_API_PATH'
-  # Description:  If your Synapse server admin API is reachable in a subpath you can adapt this here. If you dont know that this is for; keep the default value.
+  # YAML-path:   synapse_server.admin_api_path
+  # Type:        str
+  # Required:    False
+  # Default:     "_synapse/admin/"
+  # Env-var:     'ONBOT_SYNAPSE_SERVER__ADMIN_API_PATH'
+  # Description: Sub-path the Synapse admin API is served under. Keep the default if unsure.
   # Example:
-  # >admin_api_path: _synapse/admin/
+  #  >admin_api_path: _synapse/admin/
   admin_api_path: _synapse/admin/
 
 # ## authentik_server ###
-# Type:      Object
-# Required:  True
-# Env-var:   'ONBOT_AUTHENTIK_SERVER'
+# Type:        Object (AuthentikServer)
+# Required:    True
+# Env-var:     'ONBOT_AUTHENTIK_SERVER'
+# Description: Connection data and API token for the upstream Authentik IdP (source of truth).
 authentik_server:
+
   # ## url ###
-  # YAML-path:    authentik_server.url
-  # Type:         str
-  # Required:     True
-  # Env-var:      'ONBOT_AUTHENTIK_SERVER__URL'
-  # Description:  The URL to reach your Authentik server.
+  # YAML-path:   authentik_server.url
+  # Type:        str
+  # Required:    True
+  # Env-var:     'ONBOT_AUTHENTIK_SERVER__URL'
+  # Description: URL to reach your Authentik server.
   # Example:
-  # >url: https://authentik.company.org/
-  url: null
+  #  >url: https://authentik.company.org/
+  url: ''
 
   # ## api_key ###
-  # YAML-path:    authentik_server.api_key
-  # Type:         str
-  # Required:     True
-  # Env-var:      'ONBOT_AUTHENTIK_SERVER__API_KEY'
-  # Description:  The Bearer token access your Authentik server.
-  #               You can generate a new token for your existing Authentik user at https://authentik.company.org/if/admin/#/core/tokens
+  # YAML-path:   authentik_server.api_key
+  # Type:        str
+  # Required:    True
+  # Env-var:     'ONBOT_AUTHENTIK_SERVER__API_KEY'
+  # Description: API token for your Authentik server. Generate one at
+  #              ``https://<authentik>/if/admin/#/core/tokens``. Provide the bare token; the client
+  #              adds the ``Bearer`` prefix.
   # Example:
-  # >api_key: Bearer yEl4tFqeIBQwoHAd9hajmkm2PBjSAirY_THIS_IS_JUST_AN_EXAMPLE_i57e
-  api_key: null
+  #  >api_key: yEl4tFqeIBQwoHAd9hajmkm2PBjSAirY_THIS_IS_JUST_AN_EXAMPLE_i57e
+  api_key: ''
+
+# ## mas_admin ###
+# Type:        Object (MasAdmin)
+# Required:    False
+# Default:     null
+# Env-var:     'ONBOT_MAS_ADMIN'
+# Description: Optional MAS admin API credentials. Required for the lifecycle module to actually
+#              revoke sessions / deactivate accounts under MAS — the Synapse admin API cannot
+#              (ADR-0005, BATTLE_PLAN §7 Q1). Leave unset on non-MAS deployments.
+mas_admin:
 
 # ## welcome_new_users_messages ###
-# Type:      List of str
-# Required:  False
-# Default:   '["Welcome to the company chat. I am the company bot. I will invite you to the groups you are assigned too. If you have any technical questions write a message to @admin-person:matrix.company.org.", "If you need some guidance on how to use this chat have a look at the official documentations. For the basic have a look at https://matrix.org/docs/chat_basics/matrix-for-im/ and for more details see https://element.io/user-guide", "\ud83d\uded1 \ud83d\udd10 The Chat software will ask you to setup a 'Security Key Backup'. <b>This is very important<b>. Save the file on a secure location. Otherwise you could lose access to older enrypted messages later. Please follow the request."]'
-# Env-var:   'ONBOT_WELCOME_NEW_USERS_MESSAGES'
+# Type:        List of str
+# Required:    False
+# Env-var:     'ONBOT_WELCOME_NEW_USERS_MESSAGES'
+# Description: Messages the bot sends, in order, in the 1:1 welcome DM to each newly onboarded
+#              user. Each message is sent once (content-hashed, idempotent). ``null`` or an empty
+#              list disables the welcome DM entirely.
 welcome_new_users_messages:
+
   # ## List[0] ###
-  # YAML-path:  welcome_new_users_messages.[0]
-  # Type:       str
-  # Required:   False
-  # Env-var:    'ONBOT_WELCOME_NEW_USERS_MESSAGES__<list-index>'
-  - Welcome to the company chat. I am the company bot. I will invite you to the groups you are assigned too. If you have any technical questions write a message to @admin-person:matrix.company.org.
+  # YAML-path: welcome_new_users_messages.[0]
+  # Type:      str
+  # Required:  False
+  # Env-var:   'ONBOT_WELCOME_NEW_USERS_MESSAGES__<list-index>'
+  - Welcome to the company chat. I am the company bot. I will invite you to the
+    groups you are assigned to. If you have any technical questions write a
+    message to @admin-person:matrix.company.org.
 
   # ## List[1] ###
-  # YAML-path:  welcome_new_users_messages.[1]
-  # Type:       str
-  # Required:   False
-  # Env-var:    'ONBOT_WELCOME_NEW_USERS_MESSAGES__<list-index>'
-  - If you need some guidance on how to use this chat have a look at the official documentations. For the basic have a look at https://matrix.org/docs/chat_basics/matrix-for-im/ and for more details see https://element.io/user-guide
+  # YAML-path: welcome_new_users_messages.[1]
+  # Type:      str
+  # Required:  False
+  # Env-var:   'ONBOT_WELCOME_NEW_USERS_MESSAGES__<list-index>'
+  - 'If you need guidance on how to use this chat have a look at the official documentation:
+    https://matrix.org/docs/chat_basics/matrix-for-im/ and https://element.io/user-guide'
 
   # ## List[2] ###
-  # YAML-path:  welcome_new_users_messages.[2]
-  # Type:       str
-  # Required:   False
-  # Env-var:    'ONBOT_WELCOME_NEW_USERS_MESSAGES__<list-index>'
-  - 🛑 🔐 The Chat software will ask you to setup a 'Security Key Backup'. <b>This is very important<b>. Save the file on a secure location. Otherwise you could lose access to older enrypted messages later. Please follow the request.
+  # YAML-path: welcome_new_users_messages.[2]
+  # Type:      str
+  # Required:  False
+  # Env-var:   'ONBOT_WELCOME_NEW_USERS_MESSAGES__<list-index>'
+  - 🛑 🔐 The chat software will ask you to set up a 'Security Key Backup'. This
+    is very important. Save the file in a secure location, otherwise you could
+    lose access to older encrypted messages later. Please follow the request.
+
+# ## place_onboarding_rooms_in_space ###
+# Type:        bool
+# Required:    False
+# Default:     false
+# Env-var:     'ONBOT_PLACE_ONBOARDING_ROOMS_IN_SPACE'
+# Description: Gather the 1:1 onboarding/welcome rooms under the managed parent space (G4.5).
+#              Off by default — whether direct rooms belong in a space is a matter of taste. Only
+#              applies when the parent space is enabled.
+place_onboarding_rooms_in_space: false
 
 # ## sync_authentik_users_with_matrix_rooms ###
-# Type:      Object
-# Required:  False
-# Default:   '{"enabled": true, "authentik_username_mapping_attribute": "username", "kick_matrix_room_members_not_in_mapped_authentik_group_anymore": true, "sync_only_users_in_authentik_pathes": null, "sync_only_users_with_authentik_attributes": null, "sync_only_users_of_groups_with_id": null, "deactivate_disabled_authentik_users_in_matrix": {"enabled": true, "deactivate_after_n_sec": 86400, "delete_after_n_sec": 31536000, "include_user_media_on_delete": false}}'
-# Env-var:   'ONBOT_SYNC_AUTHENTIK_USERS_WITH_MATRIX_ROOMS'
+# Type:        Object (SyncAuthentikUsersWithMatrix)
+# Required:    False
+# Env-var:     'ONBOT_SYNC_AUTHENTIK_USERS_WITH_MATRIX_ROOMS'
+# Description: User→room-membership projection (the core Authentik→Matrix sync).
 sync_authentik_users_with_matrix_rooms:
+
   # ## enabled ###
-  # YAML-path:  sync_authentik_users_with_matrix_rooms.enabled
-  # Type:       bool
-  # Required:   False
-  # Default:    true
-  # Env-var:    'ONBOT_SYNC_AUTHENTIK_USERS_WITH_MATRIX_ROOMS__ENABLED'
+  # YAML-path:   sync_authentik_users_with_matrix_rooms.enabled
+  # Type:        bool
+  # Required:    False
+  # Default:     true
+  # Env-var:     'ONBOT_SYNC_AUTHENTIK_USERS_WITH_MATRIX_ROOMS__ENABLED'
+  # Description: Master switch for projecting Authentik group membership into Matrix rooms.
   enabled: true
 
   # ## authentik_username_mapping_attribute ###
-  # YAML-path:  sync_authentik_users_with_matrix_rooms.authentik_username_mapping_attribute
-  # Type:       str
-  # Required:   False
-  # Default:    "username"
-  # Env-var:    'ONBOT_SYNC_AUTHENTIK_USERS_WITH_MATRIX_ROOMS__AUTHENTIK_USERNAME_MAPPING_ATTRIBUTE'
+  # YAML-path:   sync_authentik_users_with_matrix_rooms.authentik_username_mapping_attribute
+  # Type:        str
+  # Required:    False
+  # Default:     "username"
+  # Env-var:     'ONBOT_SYNC_AUTHENTIK_USERS_WITH_MATRIX_ROOMS__AUTHENTIK_USERNAME_MAPPING_ATTRIBUTE'
+  # Description: Source of the localpart of the Matrix ID (``@<localpart>:server``). A dotted path
+  #              into the Authentik user object (e.g. ``username`` or ``attributes.matrix_name``).
+  #              Under MAS this MUST agree with the localpart template MAS derives from the upstream
+  #              claim, or provisioned users will not match (AD-6).
   authentik_username_mapping_attribute: username
 
   # ## kick_matrix_room_members_not_in_mapped_authentik_group_anymore ###
-  # YAML-path:  sync_authentik_users_with_matrix_rooms.kick_matrix_room_members_not_in_mapped_authentik_group_anymore
-  # Type:       bool
-  # Required:   False
-  # Default:    true
-  # Env-var:    'ONBOT_SYNC_AUTHENTIK_USERS_WITH_MATRIX_ROOMS__KICK_MATRIX_ROOM_MEMBERS_NOT_IN_MAPPED_AUTHENTIK_GROUP_ANYMORE'
+  # YAML-path:   sync_authentik_users_with_matrix_rooms.kick_matrix_room_members_not_in_mapped_authentik_group_anymore
+  # Type:        bool
+  # Required:    False
+  # Default:     true
+  # Env-var:     'ONBOT_SYNC_AUTHENTIK_USERS_WITH_MATRIX_ROOMS__KICK_MATRIX_ROOM_MEMBERS_NOT_IN_MAPPED_AUTHENTIK_GROUP_ANYMORE'
+  # Description: When a user leaves an Authentik group, kick them from the corresponding Matrix
+  #              room so membership stays a faithful mirror. Disable to let the bot only ever *add*
+  #              members (never remove).
   kick_matrix_room_members_not_in_mapped_authentik_group_anymore: true
 
   # ## sync_only_users_in_authentik_pathes ###
-  # YAML-path:  sync_authentik_users_with_matrix_rooms.sync_only_users_in_authentik_pathes
-  # Type:       List of str
-  # Required:   False
-  # Default:    null/None
-  # Env-var:    'ONBOT_SYNC_AUTHENTIK_USERS_WITH_MATRIX_ROOMS__SYNC_ONLY_USERS_IN_AUTHENTIK_PATHES'
+  # YAML-path:   sync_authentik_users_with_matrix_rooms.sync_only_users_in_authentik_pathes
+  # Type:        List of str
+  # Required:    False
+  # Default:     null
+  # Env-var:     'ONBOT_SYNC_AUTHENTIK_USERS_WITH_MATRIX_ROOMS__SYNC_ONLY_USERS_IN_AUTHENTIK_PATHES'
+  # Description: Restrict syncing to users under these Authentik directory paths. ``null`` syncs
+  #              users regardless of path.
+  # Example:
+  #  >sync_only_users_in_authentik_pathes:
+  #  >- users
+  #  >- users/staff
   sync_only_users_in_authentik_pathes:
 
   # ## sync_only_users_with_authentik_attributes ###
-  # YAML-path:  sync_authentik_users_with_matrix_rooms.sync_only_users_with_authentik_attributes
-  # Type:       Dictionary
-  # Required:   False
-  # Default:    null/None
-  # Env-var:    'ONBOT_SYNC_AUTHENTIK_USERS_WITH_MATRIX_ROOMS__SYNC_ONLY_USERS_WITH_AUTHENTIK_ATTRIBUTES'
+  # YAML-path:   sync_authentik_users_with_matrix_rooms.sync_only_users_with_authentik_attributes
+  # Type:        Dictionary of (str)
+  # Required:    False
+  # Default:     null
+  # Env-var:     'ONBOT_SYNC_AUTHENTIK_USERS_WITH_MATRIX_ROOMS__SYNC_ONLY_USERS_WITH_AUTHENTIK_ATTRIBUTES'
+  # Description: Only sync users carrying all of these Authentik attributes (exact match).
+  #              ``null`` syncs every user.
+  # Example:
+  #  >sync_only_users_with_authentik_attributes:
+  #  >  is_chat_user: true
   sync_only_users_with_authentik_attributes:
 
   # ## sync_only_users_of_groups_with_id ###
-  # YAML-path:  sync_authentik_users_with_matrix_rooms.sync_only_users_of_groups_with_id
-  # Type:       List of str
-  # Required:   False
-  # Default:    null/None
-  # Env-var:    'ONBOT_SYNC_AUTHENTIK_USERS_WITH_MATRIX_ROOMS__SYNC_ONLY_USERS_OF_GROUPS_WITH_ID'
+  # YAML-path:   sync_authentik_users_with_matrix_rooms.sync_only_users_of_groups_with_id
+  # Type:        List of str
+  # Required:    False
+  # Default:     null
+  # Env-var:     'ONBOT_SYNC_AUTHENTIK_USERS_WITH_MATRIX_ROOMS__SYNC_ONLY_USERS_OF_GROUPS_WITH_ID'
+  # Description: Only sync users who belong to at least one of these Authentik groups (by pk).
+  #              ``null`` applies no group filter.
+  # Example:
+  #  >sync_only_users_of_groups_with_id:
+  #  >- 1120a6e1124f309bbe96c8be5fb09eab
   sync_only_users_of_groups_with_id:
 
   # ## deactivate_disabled_authentik_users_in_matrix ###
-  # YAML-path:  sync_authentik_users_with_matrix_rooms.deactivate_disabled_authentik_users_in_matrix
-  # Type:       Object
-  # Required:   False
-  # Default:    '{"enabled": true, "deactivate_after_n_sec": 86400, "delete_after_n_sec": 31536000, "include_user_media_on_delete": false}'
-  # Env-var:    'ONBOT_SYNC_AUTHENTIK_USERS_WITH_MATRIX_ROOMS__DEACTIVATE_DISABLED_AUTHENTIK_USERS_IN_MATRIX'
+  # YAML-path:   sync_authentik_users_with_matrix_rooms.deactivate_disabled_authentik_users_in_matrix
+  # Type:        Object (DeactivateDisabledAuthentikUsersInMatrix)
+  # Required:    False
+  # Env-var:     'ONBOT_SYNC_AUTHENTIK_USERS_WITH_MATRIX_ROOMS__DEACTIVATE_DISABLED_AUTHENTIK_USERS_IN_MATRIX'
+  # Description: Quarantined lifecycle settings: lock out Matrix accounts disabled upstream.
   deactivate_disabled_authentik_users_in_matrix:
+
     # ## enabled ###
-    # YAML-path:    sync_authentik_users_with_matrix_rooms.deactivate_disabled_authentik_users_in_matrix.enabled
-    # Type:         bool
-    # Required:     False
-    # Default:      true
-    # Env-var:      'ONBOT_SYNC_AUTHENTIK_USERS_WITH_MATRIX_ROOMS__DEACTIVATE_DISABLED_AUTHENTIK_USERS_IN_MATRIX__ENABLED'
-    # Description:  If enabled users with no matching Authentik account will be logged out of Synapse with the next server tick. As they would need a working Authenik account to re-login they are locked out of Synapse.
+    # YAML-path:   sync_authentik_users_with_matrix_rooms.deactivate_disabled_authentik_users_in_matrix.enabled
+    # Type:        bool
+    # Required:    False
+    # Default:     true
+    # Env-var:     'ONBOT_SYNC_AUTHENTIK_USERS_WITH_MATRIX_ROOMS__DEACTIVATE_DISABLED_AUTHENTIK_USERS_IN_MATRIX__ENABLED'
+    # Description: Lock out Matrix accounts whose Authentik account was disabled/deleted.
     enabled: true
 
+    # ## dry_run ###
+    # YAML-path:   sync_authentik_users_with_matrix_rooms.deactivate_disabled_authentik_users_in_matrix.dry_run
+    # Type:        bool
+    # Required:    False
+    # Default:     true
+    # Env-var:     'ONBOT_SYNC_AUTHENTIK_USERS_WITH_MATRIX_ROOMS__DEACTIVATE_DISABLED_AUTHENTIK_USERS_IN_MATRIX__DRY_RUN'
+    # Description: Quarantine switch (AD-5): while ``true`` the bot only records bookkeeping and logs
+    #              what it *would* do to the ``onbot.lifecycle.audit`` channel — no session is revoked
+    #              and no account is deactivated. Set ``false`` to actually perform destructive
+    #              lifecycle actions. Defaults to ``true`` so destructive offboarding is opt-in.
+    dry_run: true
+
     # ## deactivate_after_n_sec ###
-    # YAML-path:    sync_authentik_users_with_matrix_rooms.deactivate_disabled_authentik_users_in_matrix.deactivate_after_n_sec
-    # Type:         int
-    # Required:     False
-    # Default:      86400
-    # Env-var:      'ONBOT_SYNC_AUTHENTIK_USERS_WITH_MATRIX_ROOMS__DEACTIVATE_DISABLED_AUTHENTIK_USERS_IN_MATRIX__DEACTIVATE_AFTER_N_SEC'
-    # Description:  Deactivate account as in https://element-hq.github.io/synapse/latest/admin_api/user_admin_api.html#deactivate-account after a certain amount of days. A delay can help to mitigate minor mistakes e.g. when the Authentik user was disabled accidently
+    # YAML-path:   sync_authentik_users_with_matrix_rooms.deactivate_disabled_authentik_users_in_matrix.deactivate_after_n_sec
+    # Type:        int
+    # Required:    False
+    # Default:     86400
+    # Env-var:     'ONBOT_SYNC_AUTHENTIK_USERS_WITH_MATRIX_ROOMS__DEACTIVATE_DISABLED_AUTHENTIK_USERS_IN_MATRIX__DEACTIVATE_AFTER_N_SEC'
+    # Description: Cooldown before deactivation, to absorb accidental upstream disables.
     deactivate_after_n_sec: 86400
 
     # ## delete_after_n_sec ###
-    # YAML-path:    sync_authentik_users_with_matrix_rooms.deactivate_disabled_authentik_users_in_matrix.delete_after_n_sec
-    # Type:         Object
-    # Required:     False
-    # Default:      31536000
-    # Env-var:      'ONBOT_SYNC_AUTHENTIK_USERS_WITH_MATRIX_ROOMS__DEACTIVATE_DISABLED_AUTHENTIK_USERS_IN_MATRIX__DELETE_AFTER_N_SEC'
-    # Description:  Delete account as in https://element-hq.github.io/synapse/latest/admin_api/user_admin_api.html#deactivate-account (with `erase` flag) after a certain amount of days. A delay can help to mitigate minor mistakes e.g. when the Authentik user was disabled accidently
+    # YAML-path:   sync_authentik_users_with_matrix_rooms.deactivate_disabled_authentik_users_in_matrix.delete_after_n_sec
+    # Type:        int
+    # Required:    False
+    # Default:     31536000
+    # Env-var:     'ONBOT_SYNC_AUTHENTIK_USERS_WITH_MATRIX_ROOMS__DEACTIVATE_DISABLED_AUTHENTIK_USERS_IN_MATRIX__DELETE_AFTER_N_SEC'
+    # Description: Further cooldown before erase/delete. ``null`` disables deletion.
     delete_after_n_sec: 31536000
 
     # ## include_user_media_on_delete ###
-    # YAML-path:    sync_authentik_users_with_matrix_rooms.deactivate_disabled_authentik_users_in_matrix.include_user_media_on_delete
-    # Type:         bool
-    # Required:     False
-    # Default:      false
-    # Env-var:      'ONBOT_SYNC_AUTHENTIK_USERS_WITH_MATRIX_ROOMS__DEACTIVATE_DISABLED_AUTHENTIK_USERS_IN_MATRIX__INCLUDE_USER_MEDIA_ON_DELETE'
-    # Description:  Delete all uploaded media as in https://element-hq.github.io/synapse/latest/admin_api/user_admin_api.html#delete-media-uploaded-by-a-user This may help meet your local data protection rules but can also alter chat histories with other users.
+    # YAML-path:   sync_authentik_users_with_matrix_rooms.deactivate_disabled_authentik_users_in_matrix.include_user_media_on_delete
+    # Type:        bool
+    # Required:    False
+    # Default:     false
+    # Env-var:     'ONBOT_SYNC_AUTHENTIK_USERS_WITH_MATRIX_ROOMS__DEACTIVATE_DISABLED_AUTHENTIK_USERS_IN_MATRIX__INCLUDE_USER_MEDIA_ON_DELETE'
+    # Description: Also delete media uploaded by the user on account deletion (data protection).
     include_user_media_on_delete: false
 
 # ## create_matrix_rooms_in_a_matrix_space ###
-# Type:         Object
-# Required:     False
-# Default:      '{"enabled": true, "alias": "OnBotSpace", "create_matrix_space_if_not_exists": {"enabled": true, "name": "OnBotSpace", "topic": "Space for authentik group rooms", "avatar_url": null, "space_params": {"preset": "private_chat", "visibility": "private"}}}'
-# Env-var:      'ONBOT_CREATE_MATRIX_ROOMS_IN_A_MATRIX_SPACE'
-# Description:  If you want all authentik-group-rooms in a designated space, the following chapter will let you configure this.
+# Type:        Object (CreateMatrixRoomsInAMatrixSpace)
+# Required:    False
+# Env-var:     'ONBOT_CREATE_MATRIX_ROOMS_IN_A_MATRIX_SPACE'
+# Description: Configure the designated parent space for Authentik-group rooms.
 create_matrix_rooms_in_a_matrix_space:
+
   # ## enabled ###
-  # YAML-path:    create_matrix_rooms_in_a_matrix_space.enabled
-  # Type:         bool
-  # Required:     False
-  # Default:      true
-  # Env-var:      'ONBOT_CREATE_MATRIX_ROOMS_IN_A_MATRIX_SPACE__ENABLED'
-  # Description:  If set to true all authentik group rooms will be created in an extra space.
+  # YAML-path:   create_matrix_rooms_in_a_matrix_space.enabled
+  # Type:        bool
+  # Required:    False
+  # Default:     true
+  # Env-var:     'ONBOT_CREATE_MATRIX_ROOMS_IN_A_MATRIX_SPACE__ENABLED'
+  # Description: Gather all Authentik-group rooms under a dedicated parent space.
   enabled: true
 
   # ## alias ###
-  # YAML-path:    create_matrix_rooms_in_a_matrix_space.alias
-  # Type:         str
-  # Required:     False
-  # Default:      "OnBotSpace"
-  # Env-var:      'ONBOT_CREATE_MATRIX_ROOMS_IN_A_MATRIX_SPACE__ALIAS'
-  # Description:  The name part of a "canonical_alias". e.g. if the room canonical alias is (or should be if `create_matrix_space_if_not_exists.enable=true`) "#MyCompanySpace:matrix.company.org", enter "MyCompanySpace" here.
+  # YAML-path:   create_matrix_rooms_in_a_matrix_space.alias
+  # Type:        str
+  # Required:    False
+  # Default:     "OnBotSpace"
+  # Env-var:     'ONBOT_CREATE_MATRIX_ROOMS_IN_A_MATRIX_SPACE__ALIAS'
+  # Description: Localpart of the space canonical alias (e.g. "#<alias>:server").
   # Example No. 1:
-  # >alias: myspace
-  # >
+  #  >alias: myspace
   # Example No. 2:
-  # >alias: companyspace
+  #  >alias: companyspace
   alias: OnBotSpace
 
   # ## create_matrix_space_if_not_exists ###
-  # YAML-path:    create_matrix_rooms_in_a_matrix_space.create_matrix_space_if_not_exists
-  # Type:         Object
-  # Required:     False
-  # Default:      '{"enabled": true, "name": "OnBotSpace", "topic": "Space for authentik group rooms", "avatar_url": null, "space_params": {"preset": "private_chat", "visibility": "private"}}'
-  # Env-var:      'ONBOT_CREATE_MATRIX_ROOMS_IN_A_MATRIX_SPACE__CREATE_MATRIX_SPACE_IF_NOT_EXISTS'
-  # Description:  This chapter will define if and how the authentik-group-rooms are created in an designated Matrix space
+  # YAML-path:   create_matrix_rooms_in_a_matrix_space.create_matrix_space_if_not_exists
+  # Type:        Object (CreateMatrixSpaceIfNotExists)
+  # Required:    False
+  # Env-var:     'ONBOT_CREATE_MATRIX_ROOMS_IN_A_MATRIX_SPACE__CREATE_MATRIX_SPACE_IF_NOT_EXISTS'
+  # Description: Whether/how the parent space is created.
   create_matrix_space_if_not_exists:
+
     # ## enabled ###
-    # YAML-path:    create_matrix_rooms_in_a_matrix_space.create_matrix_space_if_not_exists.enabled
-    # Type:         bool
-    # Required:     False
-    # Default:      true
-    # Env-var:      'ONBOT_CREATE_MATRIX_ROOMS_IN_A_MATRIX_SPACE__CREATE_MATRIX_SPACE_IF_NOT_EXISTS__ENABLED'
-    # Description:  If set to true, a the space, for the on authenik group-rooms, will be created if it not exists.
+    # YAML-path:   create_matrix_rooms_in_a_matrix_space.create_matrix_space_if_not_exists.enabled
+    # Type:        bool
+    # Required:    False
+    # Default:     true
+    # Env-var:     'ONBOT_CREATE_MATRIX_ROOMS_IN_A_MATRIX_SPACE__CREATE_MATRIX_SPACE_IF_NOT_EXISTS__ENABLED'
+    # Description: Create the parent space if it does not exist.
     enabled: true
 
     # ## name ###
-    # YAML-path:    create_matrix_rooms_in_a_matrix_space.create_matrix_space_if_not_exists.name
-    # Type:         str
-    # Required:     False
-    # Default:      "OnBotSpace"
-    # Env-var:      'ONBOT_CREATE_MATRIX_ROOMS_IN_A_MATRIX_SPACE__CREATE_MATRIX_SPACE_IF_NOT_EXISTS__NAME'
-    # Description:  Display name of the space to create all rooms.
-    # Example No. 1:
-    # >name: My Company
-    # >
-    # Example No. 2:
-    # >name: AuthentikRooms
+    # YAML-path:   create_matrix_rooms_in_a_matrix_space.create_matrix_space_if_not_exists.name
+    # Type:        str
+    # Required:    False
+    # Default:     "OnBotSpace"
+    # Env-var:     'ONBOT_CREATE_MATRIX_ROOMS_IN_A_MATRIX_SPACE__CREATE_MATRIX_SPACE_IF_NOT_EXISTS__NAME'
+    # Description: Display name of the space.
     name: OnBotSpace
 
     # ## topic ###
-    # YAML-path:    create_matrix_rooms_in_a_matrix_space.create_matrix_space_if_not_exists.topic
-    # Type:         str
-    # Required:     False
-    # Default:      "Space for authentik group rooms"
-    # Env-var:      'ONBOT_CREATE_MATRIX_ROOMS_IN_A_MATRIX_SPACE__CREATE_MATRIX_SPACE_IF_NOT_EXISTS__TOPIC'
-    # Description:  Matrix Topic for the space. this will be a tagline for the space.
-    # Example No. 1:
-    # >topic: Gather here authentik users
-    # >
-    # Example No. 2:
-    # >topic: No skating, food or drinks allowed here.
+    # YAML-path:   create_matrix_rooms_in_a_matrix_space.create_matrix_space_if_not_exists.topic
+    # Type:        str
+    # Required:    False
+    # Default:     "Space for authentik group rooms"
+    # Env-var:     'ONBOT_CREATE_MATRIX_ROOMS_IN_A_MATRIX_SPACE__CREATE_MATRIX_SPACE_IF_NOT_EXISTS__TOPIC'
+    # Description: Matrix topic (tagline) for the space.
     topic: Space for authentik group rooms
 
     # ## avatar_url ###
-    # YAML-path:    create_matrix_rooms_in_a_matrix_space.create_matrix_space_if_not_exists.avatar_url
-    # Type:         str
-    # Required:     False
-    # Default:      null/None
-    # Env-var:      'ONBOT_CREATE_MATRIX_ROOMS_IN_A_MATRIX_SPACE__CREATE_MATRIX_SPACE_IF_NOT_EXISTS__AVATAR_URL'
-    # Description:  The avatar picture for the Bot Matrix space. Can be any unauthenticated http/s url that points to an picture.
-    # Example:
-    # >avatar_url: https://upload.wikimedia.org/wikipedia/en/e/e8/SnakePlissken.jpeg
+    # YAML-path:   create_matrix_rooms_in_a_matrix_space.create_matrix_space_if_not_exists.avatar_url
+    # Type:        str
+    # Required:    False
+    # Default:     null
+    # Env-var:     'ONBOT_CREATE_MATRIX_ROOMS_IN_A_MATRIX_SPACE__CREATE_MATRIX_SPACE_IF_NOT_EXISTS__AVATAR_URL'
+    # Description: HTTP(S) URL to a picture used as the space avatar.
     avatar_url:
 
     # ## space_params ###
-    # YAML-path:    create_matrix_rooms_in_a_matrix_space.create_matrix_space_if_not_exists.space_params
-    # Type:         Dictionary
-    # Required:     False
-    # Default:      '{"preset": "private_chat", "visibility": "private"}'
-    # Env-var:      'ONBOT_CREATE_MATRIX_ROOMS_IN_A_MATRIX_SPACE__CREATE_MATRIX_SPACE_IF_NOT_EXISTS__SPACE_PARAMS'
-    # Description:  Any extra parameters (as a dict/object) you want to assign to the space. Have a look at https://matrix-nio.readthedocs.io/en/latest/nio.html#nio.AsyncClient.room_create for all possible parameters.
+    # YAML-path:   create_matrix_rooms_in_a_matrix_space.create_matrix_space_if_not_exists.space_params
+    # Type:        Dictionary of (str)
+    # Required:    False
+    # Env-var:     'ONBOT_CREATE_MATRIX_ROOMS_IN_A_MATRIX_SPACE__CREATE_MATRIX_SPACE_IF_NOT_EXISTS__SPACE_PARAMS'
+    # Description: Extra parameters passed to the space-creation call.
     space_params:
+
       # ## preset ###
-      # YAML-path:  create_matrix_rooms_in_a_matrix_space.create_matrix_space_if_not_exists.space_params.['preset']
-      # Type:       Dictionary
-      # Required:   True
-      # Env-var:    'ONBOT_CREATE_MATRIX_ROOMS_IN_A_MATRIX_SPACE__CREATE_MATRIX_SPACE_IF_NOT_EXISTS__SPACE_PARAMS__<dict-key>'
+      # YAML-path: create_matrix_rooms_in_a_matrix_space.create_matrix_space_if_not_exists.space_params.['preset']
+      # Required:  True
+      # Env-var:   'ONBOT_CREATE_MATRIX_ROOMS_IN_A_MATRIX_SPACE__CREATE_MATRIX_SPACE_IF_NOT_EXISTS__SPACE_PARAMS__<dict-key>'
       preset: private_chat
 
       # ## visibility ###
-      # YAML-path:  create_matrix_rooms_in_a_matrix_space.create_matrix_space_if_not_exists.space_params.['visibility']
-      # Type:       Dictionary
-      # Required:   True
-      # Env-var:    'ONBOT_CREATE_MATRIX_ROOMS_IN_A_MATRIX_SPACE__CREATE_MATRIX_SPACE_IF_NOT_EXISTS__SPACE_PARAMS__<dict-key>'
+      # YAML-path: create_matrix_rooms_in_a_matrix_space.create_matrix_space_if_not_exists.space_params.['visibility']
+      # Required:  True
+      # Env-var:   'ONBOT_CREATE_MATRIX_ROOMS_IN_A_MATRIX_SPACE__CREATE_MATRIX_SPACE_IF_NOT_EXISTS__SPACE_PARAMS__<dict-key>'
       visibility: private
 
 # ## sync_matrix_rooms_based_on_authentik_groups ###
-# Type:      Object
-# Required:  False
-# Default:   '{"enabled": true, "only_for_children_of_groups_with_uid": [], "only_groups_with_attributes": [], "room_avatar_url_attribute": "chatroom_avatar_url", "only_for_groupnames_starting_with": [], "disable_rooms_when_mapped_authentik_group_disappears": false, "delete_disabled_rooms": false, "make_authentik_superusers_matrix_room_admin": true, "authentik_group_attr_for_matrix_power_level": "chat-powerlevel"}'
-# Env-var:   'ONBOT_SYNC_MATRIX_ROOMS_BASED_ON_AUTHENTIK_GROUPS'
+# Type:        Object (SyncMatrixRoomsBasedOnAuthentikGroups)
+# Required:    False
+# Env-var:     'ONBOT_SYNC_MATRIX_ROOMS_BASED_ON_AUTHENTIK_GROUPS'
+# Description: Group→room projection rules (which groups become rooms, power levels).
 sync_matrix_rooms_based_on_authentik_groups:
+
   # ## enabled ###
-  # YAML-path:  sync_matrix_rooms_based_on_authentik_groups.enabled
-  # Type:       bool
-  # Required:   False
-  # Default:    true
-  # Env-var:    'ONBOT_SYNC_MATRIX_ROOMS_BASED_ON_AUTHENTIK_GROUPS__ENABLED'
+  # YAML-path:   sync_matrix_rooms_based_on_authentik_groups.enabled
+  # Type:        bool
+  # Required:    False
+  # Default:     true
+  # Env-var:     'ONBOT_SYNC_MATRIX_ROOMS_BASED_ON_AUTHENTIK_GROUPS__ENABLED'
+  # Description: Master switch for creating/maintaining one Matrix room per Authentik group.
   enabled: true
 
   # ## only_for_children_of_groups_with_uid ###
-  # YAML-path:  sync_matrix_rooms_based_on_authentik_groups.only_for_children_of_groups_with_uid
-  # Type:       List of str
-  # Required:   False
-  # Env-var:    'ONBOT_SYNC_MATRIX_ROOMS_BASED_ON_AUTHENTIK_GROUPS__ONLY_FOR_CHILDREN_OF_GROUPS_WITH_UID'
-  only_for_children_of_groups_with_uid: []
+  # YAML-path:   sync_matrix_rooms_based_on_authentik_groups.only_for_children_of_groups_with_uid
+  # Type:        List of str
+  # Required:    False
+  # Default:     null
+  # Env-var:     'ONBOT_SYNC_MATRIX_ROOMS_BASED_ON_AUTHENTIK_GROUPS__ONLY_FOR_CHILDREN_OF_GROUPS_WITH_UID'
+  # Description: Only mirror Authentik groups that are children of one of these parent groups (by
+  #              uid/pk). ``null`` considers all groups.
+  # Example:
+  #  >only_for_children_of_groups_with_uid:
+  #  >- a1b2c3d4parentgroupuid
+  only_for_children_of_groups_with_uid:
 
   # ## only_groups_with_attributes ###
-  # YAML-path:    sync_matrix_rooms_based_on_authentik_groups.only_groups_with_attributes
-  # Type:         Dictionary
-  # Required:     False
-  # Env-var:      'ONBOT_SYNC_MATRIX_ROOMS_BASED_ON_AUTHENTIK_GROUPS__ONLY_GROUPS_WITH_ATTRIBUTES'
-  # Description:  Define an Authentik custom attribute (as a json or yaml key value pair) to match groups that should be synced.
-  #               If unset, all Authentik groups will be mirrored as a Synapse room.
-  #               https://goauthentik.io/docs/user-group/group#attributes
+  # YAML-path:   sync_matrix_rooms_based_on_authentik_groups.only_groups_with_attributes
+  # Type:        Dictionary of (str)
+  # Required:    False
+  # Default:     null
+  # Env-var:     'ONBOT_SYNC_MATRIX_ROOMS_BASED_ON_AUTHENTIK_GROUPS__ONLY_GROUPS_WITH_ATTRIBUTES'
+  # Description: Only mirror Authentik groups carrying these custom attributes. If unset, all
+  #              groups become rooms. https://goauthentik.io/docs/user-group/group#attributes
   # Example:
-  # >only_groups_with_attributes:
-  # >  is_chatroom: true
-  only_groups_with_attributes: []
+  #  >only_groups_with_attributes:
+  #  >  is_chatroom: true
+  only_groups_with_attributes:
 
   # ## room_avatar_url_attribute ###
-  # YAML-path:    sync_matrix_rooms_based_on_authentik_groups.room_avatar_url_attribute
-  # Type:         Dictionary
-  # Required:     False
-  # Default:      "chatroom_avatar_url"
-  # Env-var:      'ONBOT_SYNC_MATRIX_ROOMS_BASED_ON_AUTHENTIK_GROUPS__ROOM_AVATAR_URL_ATTRIBUTE'
-  # Description:  Define an Authentik custom room attribute that can contain an url to a media that will be configured as the rooms avatar
+  # YAML-path:   sync_matrix_rooms_based_on_authentik_groups.room_avatar_url_attribute
+  # Type:        str
+  # Required:    False
+  # Default:     "chatroom_avatar_url"
+  # Env-var:     'ONBOT_SYNC_MATRIX_ROOMS_BASED_ON_AUTHENTIK_GROUPS__ROOM_AVATAR_URL_ATTRIBUTE'
+  # Description: Authentik group attribute holding a URL used as the room avatar.
   # Example:
-  # >room_avatar_url_attribute: chatroom_avatar_url
+  #  >room_avatar_url_attribute: chatroom_avatar_url
   room_avatar_url_attribute: chatroom_avatar_url
 
   # ## only_for_groupnames_starting_with ###
-  # YAML-path:  sync_matrix_rooms_based_on_authentik_groups.only_for_groupnames_starting_with
-  # Type:       str
-  # Required:   False
-  # Env-var:    'ONBOT_SYNC_MATRIX_ROOMS_BASED_ON_AUTHENTIK_GROUPS__ONLY_FOR_GROUPNAMES_STARTING_WITH'
-  only_for_groupnames_starting_with: []
+  # YAML-path:   sync_matrix_rooms_based_on_authentik_groups.only_for_groupnames_starting_with
+  # Type:        str
+  # Required:    False
+  # Default:     null
+  # Env-var:     'ONBOT_SYNC_MATRIX_ROOMS_BASED_ON_AUTHENTIK_GROUPS__ONLY_FOR_GROUPNAMES_STARTING_WITH'
+  # Description: Only mirror Authentik groups whose name starts with this prefix — a lightweight way
+  #              to opt specific groups into chat without custom attributes. ``null`` disables the
+  #              filter.
+  # Example No. 1:
+  #  >only_for_groupnames_starting_with: chat-
+  # Example No. 2:
+  #  >only_for_groupnames_starting_with: matrix_
+  only_for_groupnames_starting_with:
 
   # ## disable_rooms_when_mapped_authentik_group_disappears ###
-  # YAML-path:    sync_matrix_rooms_based_on_authentik_groups.disable_rooms_when_mapped_authentik_group_disappears
-  # Type:         bool
-  # Required:     False
-  # Default:      false
-  # Env-var:      'ONBOT_SYNC_MATRIX_ROOMS_BASED_ON_AUTHENTIK_GROUPS__DISABLE_ROOMS_WHEN_MAPPED_AUTHENTIK_GROUP_DISAPPEARS'
-  # Description:  If a previously mapped authentik room disappers (e.g. it was deleted or lost its `only_groups_with_attributes` attribute)
-  #               onbot will kick out all users and block the room.
+  # YAML-path:   sync_matrix_rooms_based_on_authentik_groups.disable_rooms_when_mapped_authentik_group_disappears
+  # Type:        bool
+  # Required:    False
+  # Default:     false
+  # Env-var:     'ONBOT_SYNC_MATRIX_ROOMS_BASED_ON_AUTHENTIK_GROUPS__DISABLE_ROOMS_WHEN_MAPPED_AUTHENTIK_GROUP_DISAPPEARS'
+  # Description: If a mapped Authentik group disappears (deleted or lost its matching attribute),
+  #              kick all members and block the room.
   disable_rooms_when_mapped_authentik_group_disappears: false
 
   # ## delete_disabled_rooms ###
-  # YAML-path:  sync_matrix_rooms_based_on_authentik_groups.delete_disabled_rooms
-  # Type:       bool
-  # Required:   False
-  # Default:    false
-  # Env-var:    'ONBOT_SYNC_MATRIX_ROOMS_BASED_ON_AUTHENTIK_GROUPS__DELETE_DISABLED_ROOMS'
+  # YAML-path:   sync_matrix_rooms_based_on_authentik_groups.delete_disabled_rooms
+  # Type:        bool
+  # Required:    False
+  # Default:     false
+  # Env-var:     'ONBOT_SYNC_MATRIX_ROOMS_BASED_ON_AUTHENTIK_GROUPS__DELETE_DISABLED_ROOMS'
+  # Description: When a room is disabled (its Authentik group disappeared, see
+  #              ``disable_rooms_when_mapped_authentik_group_disappears``), also delete it via the
+  #              Synapse admin API rather than only blocking it. Irreversible — leave ``false`` unless
+  #              you are sure.
   delete_disabled_rooms: false
 
   # ## make_authentik_superusers_matrix_room_admin ###
-  # YAML-path:  sync_matrix_rooms_based_on_authentik_groups.make_authentik_superusers_matrix_room_admin
-  # Type:       bool
-  # Required:   False
-  # Default:    true
-  # Env-var:    'ONBOT_SYNC_MATRIX_ROOMS_BASED_ON_AUTHENTIK_GROUPS__MAKE_AUTHENTIK_SUPERUSERS_MATRIX_ROOM_ADMIN'
+  # YAML-path:   sync_matrix_rooms_based_on_authentik_groups.make_authentik_superusers_matrix_room_admin
+  # Type:        bool
+  # Required:    False
+  # Default:     true
+  # Env-var:     'ONBOT_SYNC_MATRIX_ROOMS_BASED_ON_AUTHENTIK_GROUPS__MAKE_AUTHENTIK_SUPERUSERS_MATRIX_ROOM_ADMIN'
+  # Description: Grant Authentik superusers the Matrix admin power level (100) in the rooms they are
+  #              members of. Takes precedence over ``authentik_group_attr_for_matrix_power_level``.
   make_authentik_superusers_matrix_room_admin: true
 
   # ## authentik_group_attr_for_matrix_power_level ###
-  # YAML-path:    sync_matrix_rooms_based_on_authentik_groups.authentik_group_attr_for_matrix_power_level
-  # Type:         str
-  # Required:     False
-  # Default:      "chat-powerlevel"
-  # Env-var:      'ONBOT_SYNC_MATRIX_ROOMS_BASED_ON_AUTHENTIK_GROUPS__AUTHENTIK_GROUP_ATTR_FOR_MATRIX_POWER_LEVEL'
-  # Description:  Define an Authentik group custom attribute path (elements seperated by '.') that contains an integer from 0-100.
-  #               Members of this group will get this integer applied as Matrix power level in the rooms they are member of(https://matrix.org/docs/communities/moderation/)
-  #               e.g. you could create an Authentik group named "Matrix-Moderators" with `{"attributes":{"chat-powerlevel":50}}`. All members of this group will get Matrix power level 50 in their onbot group rooms
-  #               If a user gets admin via `sync_matrix_rooms_based_on_authentik_groups.make_authentik_superusers_matrix_room_admin` `authentik_group_attr_for_matrix_power_level` will be ignored
-  # Example:
-  # >authentik_group_attr_for_matrix_power_level: synapse-options.chat-powerlevel
-  authentik_group_attr_for_matrix_power_level: chat-powerlevel
+  # YAML-path:   sync_matrix_rooms_based_on_authentik_groups.authentik_group_attr_for_matrix_power_level
+  # Type:        str
+  # Required:    False
+  # Default:     "chat-systemwide-powerlevel"
+  # Env-var:     'ONBOT_SYNC_MATRIX_ROOMS_BASED_ON_AUTHENTIK_GROUPS__AUTHENTIK_GROUP_ATTR_FOR_MATRIX_POWER_LEVEL'
+  # Description: Authentik group attribute (dotted path) holding an integer 0-100. Members of the
+  #              group get that Matrix power level in their onbot rooms. Superusers made admin (see
+  #              ``make_authentik_superusers_matrix_room_admin``) ignore this. On conflicting values
+  #              across multiple group memberships the highest wins.
+  # Example No. 1:
+  #  >authentik_group_attr_for_matrix_power_level: matrix-userpowerlevel
+  # Example No. 2:
+  #  >authentik_group_attr_for_matrix_power_level: synapse-options.chat-powerlevel
+  authentik_group_attr_for_matrix_power_level: chat-systemwide-powerlevel
 
 # ## matrix_room_default_settings ###
-# Type:      Object
-# Required:  False
-# Default:   '{"alias_prefix": null, "matrix_alias_from_authentik_attribute": "pk", "name_prefix": null, "matrix_name_from_authentik_attribute": "name", "topic_prefix": null, "matrix_topic_from_authentik_attribute": "attributes.chatroom_topic", "end2end_encryption_enabled": true, "default_room_create_params": {"preset": "private_chat", "visibility": "private"}, "matrix_room_create_params_from_authentik_attribute": "attribute.chatroom_params", "keep_updating_matrix_attributes_from_authentik": true}'
-# Env-var:   'ONBOT_MATRIX_ROOM_DEFAULT_SETTINGS'
+# Type:        Object (MatrixDynamicRoomSettings)
+# Required:    False
+# Env-var:     'ONBOT_MATRIX_ROOM_DEFAULT_SETTINGS'
+# Description: Default room identity template applied to every group room.
 matrix_room_default_settings:
+
   # ## alias_prefix ###
-  # YAML-path:  matrix_room_default_settings.alias_prefix
-  # Type:       str
-  # Required:   False
-  # Default:    null/None
-  # Env-var:    'ONBOT_MATRIX_ROOM_DEFAULT_SETTINGS__ALIAS_PREFIX'
+  # YAML-path:   matrix_room_default_settings.alias_prefix
+  # Type:        str
+  # Required:    False
+  # Default:     null
+  # Env-var:     'ONBOT_MATRIX_ROOM_DEFAULT_SETTINGS__ALIAS_PREFIX'
+  # Description: Prefix prepended to the room's canonical alias localpart. ``null`` for none.
+  # Example No. 1:
+  #  >alias_prefix: authentik-
+  # Example No. 2:
+  #  >alias_prefix: grp-
   alias_prefix:
 
   # ## matrix_alias_from_authentik_attribute ###
-  # YAML-path:  matrix_room_default_settings.matrix_alias_from_authentik_attribute
-  # Type:       str
-  # Required:   False
-  # Default:    "pk"
-  # Env-var:    'ONBOT_MATRIX_ROOM_DEFAULT_SETTINGS__MATRIX_ALIAS_FROM_AUTHENTIK_ATTRIBUTE'
+  # YAML-path:   matrix_room_default_settings.matrix_alias_from_authentik_attribute
+  # Type:        str
+  # Required:    False
+  # Default:     "pk"
+  # Env-var:     'ONBOT_MATRIX_ROOM_DEFAULT_SETTINGS__MATRIX_ALIAS_FROM_AUTHENTIK_ATTRIBUTE'
+  # Description: Authentik group attribute (dotted path) used as the room alias localpart. The
+  #              default ``pk`` is the most stable choice (it never changes when a group is renamed).
+  # Example No. 1:
+  #  >matrix_alias_from_authentik_attribute: pk
+  # Example No. 2:
+  #  >matrix_alias_from_authentik_attribute: attributes.chatroom_alias
   matrix_alias_from_authentik_attribute: pk
 
   # ## name_prefix ###
-  # YAML-path:  matrix_room_default_settings.name_prefix
-  # Type:       str
-  # Required:   False
-  # Default:    null/None
-  # Env-var:    'ONBOT_MATRIX_ROOM_DEFAULT_SETTINGS__NAME_PREFIX'
+  # YAML-path:   matrix_room_default_settings.name_prefix
+  # Type:        str
+  # Required:    False
+  # Default:     null
+  # Env-var:     'ONBOT_MATRIX_ROOM_DEFAULT_SETTINGS__NAME_PREFIX'
+  # Description: Prefix prepended to the room's display name. ``null`` for none.
+  # Example:
+  #  >name_prefix: '[Chat] '
   name_prefix:
 
   # ## matrix_name_from_authentik_attribute ###
-  # YAML-path:  matrix_room_default_settings.matrix_name_from_authentik_attribute
-  # Type:       str
-  # Required:   False
-  # Default:    "name"
-  # Env-var:    'ONBOT_MATRIX_ROOM_DEFAULT_SETTINGS__MATRIX_NAME_FROM_AUTHENTIK_ATTRIBUTE'
+  # YAML-path:   matrix_room_default_settings.matrix_name_from_authentik_attribute
+  # Type:        str
+  # Required:    False
+  # Default:     "name"
+  # Env-var:     'ONBOT_MATRIX_ROOM_DEFAULT_SETTINGS__MATRIX_NAME_FROM_AUTHENTIK_ATTRIBUTE'
+  # Description: Authentik group attribute (dotted path) used as the room display name.
+  # Example No. 1:
+  #  >matrix_name_from_authentik_attribute: name
+  # Example No. 2:
+  #  >matrix_name_from_authentik_attribute: attributes.chatroom_name
   matrix_name_from_authentik_attribute: name
 
   # ## topic_prefix ###
-  # YAML-path:  matrix_room_default_settings.topic_prefix
-  # Type:       str
-  # Required:   False
-  # Default:    null/None
-  # Env-var:    'ONBOT_MATRIX_ROOM_DEFAULT_SETTINGS__TOPIC_PREFIX'
+  # YAML-path:   matrix_room_default_settings.topic_prefix
+  # Type:        str
+  # Required:    False
+  # Default:     null
+  # Env-var:     'ONBOT_MATRIX_ROOM_DEFAULT_SETTINGS__TOPIC_PREFIX'
+  # Description: Prefix prepended to the room topic. ``null`` for none.
   topic_prefix:
 
   # ## matrix_topic_from_authentik_attribute ###
-  # YAML-path:  matrix_room_default_settings.matrix_topic_from_authentik_attribute
-  # Type:       str
-  # Required:   False
-  # Default:    "attributes.chatroom_topic"
-  # Env-var:    'ONBOT_MATRIX_ROOM_DEFAULT_SETTINGS__MATRIX_TOPIC_FROM_AUTHENTIK_ATTRIBUTE'
+  # YAML-path:   matrix_room_default_settings.matrix_topic_from_authentik_attribute
+  # Type:        str
+  # Required:    False
+  # Default:     "attributes.chatroom_topic"
+  # Env-var:     'ONBOT_MATRIX_ROOM_DEFAULT_SETTINGS__MATRIX_TOPIC_FROM_AUTHENTIK_ATTRIBUTE'
+  # Description: Authentik group attribute (dotted path) used as the room topic. ``null`` leaves the
+  #              topic unset.
+  # Example:
+  #  >matrix_topic_from_authentik_attribute: attributes.chatroom_topic
   matrix_topic_from_authentik_attribute: attributes.chatroom_topic
 
   # ## end2end_encryption_enabled ###
-  # YAML-path:    matrix_room_default_settings.end2end_encryption_enabled
-  # Type:         bool
-  # Required:     False
-  # Default:      true
-  # Env-var:      'ONBOT_MATRIX_ROOM_DEFAULT_SETTINGS__END2END_ENCRYPTION_ENABLED'
-  # Description:  If set to true this will enable end2end encryption in the Authentik group mapped Matrix rooms.
+  # YAML-path:   matrix_room_default_settings.end2end_encryption_enabled
+  # Type:        bool
+  # Required:    False
+  # Default:     true
+  # Env-var:     'ONBOT_MATRIX_ROOM_DEFAULT_SETTINGS__END2END_ENCRYPTION_ENABLED'
+  # Description: Enable end-to-end encryption in the group-mapped Matrix rooms. The bot itself stays
+  #              outside encryption (ADR-0009): it writes room *state* (membership, power levels) but
+  #              does not read/post message content in encrypted rooms — welcome DMs are plaintext.
   end2end_encryption_enabled: true
 
   # ## default_room_create_params ###
-  # YAML-path:  matrix_room_default_settings.default_room_create_params
-  # Type:       Dictionary
-  # Required:   False
-  # Default:    '{"preset": "private_chat", "visibility": "private"}'
-  # Env-var:    'ONBOT_MATRIX_ROOM_DEFAULT_SETTINGS__DEFAULT_ROOM_CREATE_PARAMS'
+  # YAML-path:   matrix_room_default_settings.default_room_create_params
+  # Type:        Dictionary of (str)
+  # Required:    False
+  # Env-var:     'ONBOT_MATRIX_ROOM_DEFAULT_SETTINGS__DEFAULT_ROOM_CREATE_PARAMS'
+  # Description: Parameters merged into the Matrix ``createRoom`` call for group rooms (preset,
+  #              visibility, federation, …). See the Client-Server API ``POST /createRoom``.
+  # Example:
+  #  >default_room_create_params:
+  #  >  preset: private_chat
+  #  >  visibility: private
   default_room_create_params:
+
     # ## preset ###
-    # YAML-path:  matrix_room_default_settings.default_room_create_params.['preset']
-    # Type:       Dictionary
-    # Required:   True
-    # Env-var:    'ONBOT_MATRIX_ROOM_DEFAULT_SETTINGS__DEFAULT_ROOM_CREATE_PARAMS__<dict-key>'
+    # YAML-path: matrix_room_default_settings.default_room_create_params.['preset']
+    # Required:  True
+    # Env-var:   'ONBOT_MATRIX_ROOM_DEFAULT_SETTINGS__DEFAULT_ROOM_CREATE_PARAMS__<dict-key>'
     preset: private_chat
 
     # ## visibility ###
-    # YAML-path:  matrix_room_default_settings.default_room_create_params.['visibility']
-    # Type:       Dictionary
-    # Required:   True
-    # Env-var:    'ONBOT_MATRIX_ROOM_DEFAULT_SETTINGS__DEFAULT_ROOM_CREATE_PARAMS__<dict-key>'
+    # YAML-path: matrix_room_default_settings.default_room_create_params.['visibility']
+    # Required:  True
+    # Env-var:   'ONBOT_MATRIX_ROOM_DEFAULT_SETTINGS__DEFAULT_ROOM_CREATE_PARAMS__<dict-key>'
     visibility: private
 
   # ## matrix_room_create_params_from_authentik_attribute ###
-  # YAML-path:  matrix_room_default_settings.matrix_room_create_params_from_authentik_attribute
-  # Type:       str
-  # Required:   False
-  # Default:    "attribute.chatroom_params"
-  # Env-var:    'ONBOT_MATRIX_ROOM_DEFAULT_SETTINGS__MATRIX_ROOM_CREATE_PARAMS_FROM_AUTHENTIK_ATTRIBUTE'
-  matrix_room_create_params_from_authentik_attribute: attribute.chatroom_params
+  # YAML-path:   matrix_room_default_settings.matrix_room_create_params_from_authentik_attribute
+  # Type:        str
+  # Required:    False
+  # Default:     "attributes.chatroom_params"
+  # Env-var:     'ONBOT_MATRIX_ROOM_DEFAULT_SETTINGS__MATRIX_ROOM_CREATE_PARAMS_FROM_AUTHENTIK_ATTRIBUTE'
+  # Description: Authentik group attribute (dotted path) holding a dict of extra ``createRoom``
+  #              params, merged over ``default_room_create_params`` for that group. ``null`` to
+  #              disable per-group overrides.
+  # Example:
+  #  >matrix_room_create_params_from_authentik_attribute: attributes.chatroom_params
+  matrix_room_create_params_from_authentik_attribute: attributes.chatroom_params
 
   # ## keep_updating_matrix_attributes_from_authentik ###
-  # YAML-path:    matrix_room_default_settings.keep_updating_matrix_attributes_from_authentik
-  # Type:         bool
-  # Required:     False
-  # Default:      true
-  # Env-var:      'ONBOT_MATRIX_ROOM_DEFAULT_SETTINGS__KEEP_UPDATING_MATRIX_ATTRIBUTES_FROM_AUTHENTIK'
-  # Description:  Should the bot update the Matrix room name/topic if they changed in authentik? If set to true the bot will overwrite any room topic/name that differs from the Authentik source group
+  # YAML-path:   matrix_room_default_settings.keep_updating_matrix_attributes_from_authentik
+  # Type:        bool
+  # Required:    False
+  # Default:     true
+  # Env-var:     'ONBOT_MATRIX_ROOM_DEFAULT_SETTINGS__KEEP_UPDATING_MATRIX_ATTRIBUTES_FROM_AUTHENTIK'
+  # Description: Keep room name/topic in sync with Authentik, overwriting drift.
   keep_updating_matrix_attributes_from_authentik: true
 
 # ## per_authentik_group_pk_matrix_room_settings ###
-# Type:         Dictionary of (str,Object)
-# Required:     False
-# Env-var:      'ONBOT_PER_AUTHENTIK_GROUP_PK_MATRIX_ROOM_SETTINGS'
-# Description:  Override default room settings and define custom room settings for a specific authentikgroup based matrix room group. Specify the authentik group by its primary key ('pk')
-# Example:
-# >per_authentik_group_pk_matrix_room_settings:
-# >  80439f0d-d936-4118-8017-52a95d6dd1bc:
-# >    alias_prefix: null
-# >    default_room_create_params:
-# >      preset: private_chat
-# >      visibility: private
-# >    end2end_encryption_enabled: true
-# >    keep_updating_matrix_attributes_from_authentik: true
-# >    matrix_alias_from_authentik_attribute: attribute.custom
-# >    matrix_name_from_authentik_attribute: name
-# >    matrix_room_create_params_from_authentik_attribute: attribute.chatroom_params
-# >    matrix_topic_from_authentik_attribute: attributes.chatroom_topic
-# >    name_prefix: null
-# >    topic_prefix: 'TOPIC PREFIX FOR SPECIFIC ROOM:'
+# Type:        Dictionary of (str, Object (MatrixDynamicRoomSettings))
+# Required:    False
+# Env-var:     'ONBOT_PER_AUTHENTIK_GROUP_PK_MATRIX_ROOM_SETTINGS'
+# Description: Per-group room-setting overrides, keyed by Authentik group primary key (pk).
 per_authentik_group_pk_matrix_room_settings: {}
 
 # ## matrix_user_ignore_list ###
-# Type:      List of str
-# Required:  False
-# Default:   '[]'
-# Env-var:   'ONBOT_MATRIX_USER_IGNORE_LIST'
+# Type:     List of str
+# Required: False
+# Env-var:  'ONBOT_MATRIX_USER_IGNORE_LIST'
 # Example:
-# >matrix_user_ignore_list: !!set
-# >  '@admin:company.org': null
-# >  '@root:company.org': null
+#  >matrix_user_ignore_list:
+#  >- '@admin:company.org'
+#  >- '@root:company.org'
 matrix_user_ignore_list: []
 
 # ## authentik_user_ignore_list ###
-# Type:      List of str
-# Required:  False
-# Default:   '[]'
-# Env-var:   'ONBOT_AUTHENTIK_USER_IGNORE_LIST'
+# Type:     List of str
+# Required: False
+# Env-var:  'ONBOT_AUTHENTIK_USER_IGNORE_LIST'
 # Example:
-# >authentik_user_ignore_list:
-# >- admin
-# >- internal_account_alex
+#  >authentik_user_ignore_list:
+#  >- admin
+#  >- internal_account_alex
 authentik_user_ignore_list: []
 
 # ## authentik_group_id_ignore_list ###
-# Type:      List of str
-# Required:  False
-# Default:   '[]'
-# Env-var:   'ONBOT_AUTHENTIK_GROUP_ID_IGNORE_LIST'
+# Type:     List of str
+# Required: False
+# Env-var:  'ONBOT_AUTHENTIK_GROUP_ID_IGNORE_LIST'
 # Example:
-# >authentik_group_id_ignore_list:
-# >- 1120a6e1124f309bbe96c8be5fb09eab
+#  >authentik_group_id_ignore_list:
+#  >- 1120a6e1124f309bbe96c8be5fb09eab
 authentik_group_id_ignore_list: []
-
-# ## deactivate_disabled_authentik_users_in_matrix ###
-# Type:      Object
-# Required:  False
-# Default:   '{"enabled": true, "deactivate_after_n_sec": 86400, "delete_after_n_sec": 31536000, "include_user_media_on_delete": false}'
-# Env-var:   'ONBOT_DEACTIVATE_DISABLED_AUTHENTIK_USERS_IN_MATRIX'
-deactivate_disabled_authentik_users_in_matrix:
-  # ## enabled ###
-  # YAML-path:    deactivate_disabled_authentik_users_in_matrix.enabled
-  # Type:         bool
-  # Required:     False
-  # Default:      true
-  # Env-var:      'ONBOT_DEACTIVATE_DISABLED_AUTHENTIK_USERS_IN_MATRIX__ENABLED'
-  # Description:  If enabled users with no matching Authentik account will be logged out of Synapse with the next server tick. As they would need a working Authenik account to re-login they are locked out of Synapse.
-  enabled: true
-
-  # ## deactivate_after_n_sec ###
-  # YAML-path:    deactivate_disabled_authentik_users_in_matrix.deactivate_after_n_sec
-  # Type:         int
-  # Required:     False
-  # Default:      86400
-  # Env-var:      'ONBOT_DEACTIVATE_DISABLED_AUTHENTIK_USERS_IN_MATRIX__DEACTIVATE_AFTER_N_SEC'
-  # Description:  Deactivate account as in https://element-hq.github.io/synapse/latest/admin_api/user_admin_api.html#deactivate-account after a certain amount of days. A delay can help to mitigate minor mistakes e.g. when the Authentik user was disabled accidently
-  deactivate_after_n_sec: 86400
-
-  # ## delete_after_n_sec ###
-  # YAML-path:    deactivate_disabled_authentik_users_in_matrix.delete_after_n_sec
-  # Type:         Object
-  # Required:     False
-  # Default:      31536000
-  # Env-var:      'ONBOT_DEACTIVATE_DISABLED_AUTHENTIK_USERS_IN_MATRIX__DELETE_AFTER_N_SEC'
-  # Description:  Delete account as in https://element-hq.github.io/synapse/latest/admin_api/user_admin_api.html#deactivate-account (with `erase` flag) after a certain amount of days. A delay can help to mitigate minor mistakes e.g. when the Authentik user was disabled accidently
-  delete_after_n_sec: 31536000
-
-  # ## include_user_media_on_delete ###
-  # YAML-path:    deactivate_disabled_authentik_users_in_matrix.include_user_media_on_delete
-  # Type:         bool
-  # Required:     False
-  # Default:      false
-  # Env-var:      'ONBOT_DEACTIVATE_DISABLED_AUTHENTIK_USERS_IN_MATRIX__INCLUDE_USER_MEDIA_ON_DELETE'
-  # Description:  Delete all uploaded media as in https://element-hq.github.io/synapse/latest/admin_api/user_admin_api.html#delete-media-uploaded-by-a-user This may help meet your local data protection rules but can also alter chat histories with other users.
-  include_user_media_on_delete: false

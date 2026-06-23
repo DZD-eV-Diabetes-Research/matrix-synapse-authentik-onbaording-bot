@@ -27,9 +27,3 @@ def test_generate_config_prints_valid_yaml(capsys: pytest.CaptureFixture[str]) -
     parsed = yaml.safe_load(out)
     assert parsed["synapse_server"]["server_name"] is None
     assert parsed["log_level"] == "INFO"
-
-
-def test_healthcheck_not_implemented_yet() -> None:
-    with pytest.raises(SystemExit) as exc:
-        main(["healthcheck"])
-    assert "not implemented" in str(exc.value)

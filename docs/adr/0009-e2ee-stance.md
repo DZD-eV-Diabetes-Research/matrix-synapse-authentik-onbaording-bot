@@ -17,8 +17,9 @@
 - **In encrypted group rooms the bot only writes state** — power levels, name/topic, avatar,
   space child/parent, and the custom `onbot.*` bookkeeping events. State events are **not**
   encrypted, so the bot never needs to encrypt or decrypt anything there.
-- **Drop the deprecated libolm path.** No `matrix-nio[e2e]`/libolm dependency. `storage_dir` /
-  `storage_encryption_key` config remain for future use but no Olm key store is created now.
+- **Drop the deprecated libolm path.** No `matrix-nio[e2e]`/libolm dependency, and no Olm key store
+  is created. The `storage_dir` / `storage_encryption_key` config fields that backed it were removed
+  in Phase 8 (they were unused); if encrypted-room support is ever revived, reintroduce them then.
 
 ## Rationale
 
