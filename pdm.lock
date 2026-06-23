@@ -2,10 +2,10 @@
 # It is not intended for manual editing.
 
 [metadata]
-groups = ["default", "dev"]
+groups = ["default", "dev", "docs"]
 strategy = ["inherit_metadata"]
 lock_version = "4.5.0"
-content_hash = "sha256:3920b441abc7c736c16796ce3e816c71663cc76b982ab3eacfdb86a1477184d5"
+content_hash = "sha256:8763a20045fbb593f4c74e68ed2d5e609f79b656d8a411277b215764a1ec904e"
 
 [[metadata.targets]]
 requires_python = ">=3.14"
@@ -15,7 +15,7 @@ name = "annotated-types"
 version = "0.7.0"
 requires_python = ">=3.8"
 summary = "Reusable constraint types to use with typing.Annotated"
-groups = ["default"]
+groups = ["default", "docs"]
 dependencies = [
     "typing-extensions>=4.0.0; python_version < \"3.9\"",
 ]
@@ -515,11 +515,28 @@ files = [
 ]
 
 [[package]]
+name = "psyplus"
+version = "1.0.0"
+requires_python = ">=3.12"
+summary = "Generate, read and document pydantic-settings config files in YAML"
+groups = ["docs"]
+dependencies = [
+    "pydantic-settings>=2.3",
+    "pydantic>=2.0",
+    "pyyaml>=6.0",
+    "ruamel-yaml>=0.17",
+]
+files = [
+    {file = "psyplus-1.0.0-py3-none-any.whl", hash = "sha256:f5f0894383f0086c2f8e584b86e2138ec2c8b098c1348edd071cd89a456408bb"},
+    {file = "psyplus-1.0.0.tar.gz", hash = "sha256:343640e32c16d58667fc0ce08ca417e17ea10b79d68cc1dbc1e31bb8653b4823"},
+]
+
+[[package]]
 name = "pydantic"
 version = "2.13.4"
 requires_python = ">=3.9"
 summary = "Data validation using Python type hints"
-groups = ["default"]
+groups = ["default", "docs"]
 dependencies = [
     "annotated-types>=0.6.0",
     "pydantic-core==2.46.4",
@@ -536,7 +553,7 @@ name = "pydantic-core"
 version = "2.46.4"
 requires_python = ">=3.9"
 summary = "Core functionality for Pydantic validation and serialization"
-groups = ["default"]
+groups = ["default", "docs"]
 dependencies = [
     "typing-extensions>=4.14.1",
 ]
@@ -579,7 +596,7 @@ name = "pydantic-settings"
 version = "2.14.1"
 requires_python = ">=3.10"
 summary = "Settings management using Pydantic"
-groups = ["default"]
+groups = ["default", "docs"]
 dependencies = [
     "pydantic>=2.7.0",
     "python-dotenv>=0.21.0",
@@ -673,7 +690,7 @@ name = "python-dotenv"
 version = "1.2.2"
 requires_python = ">=3.10"
 summary = "Read key-value pairs from a .env file and set them as environment variables"
-groups = ["default", "dev"]
+groups = ["default", "dev", "docs"]
 files = [
     {file = "python_dotenv-1.2.2-py3-none-any.whl", hash = "sha256:1d8214789a24de455a8b8bd8ae6fe3c6b69a5e3d64aa8a8e5d68e694bbcb285a"},
     {file = "python_dotenv-1.2.2.tar.gz", hash = "sha256:2c371a91fbd7ba082c2c1dc1f8bf89ca22564a087c2c287cd9b662adde799cf3"},
@@ -700,7 +717,7 @@ name = "pyyaml"
 version = "6.0.3"
 requires_python = ">=3.8"
 summary = "YAML parser and emitter for Python"
-groups = ["default", "dev"]
+groups = ["default", "dev", "docs"]
 files = [
     {file = "pyyaml-6.0.3-cp314-cp314-macosx_10_13_x86_64.whl", hash = "sha256:8d1fab6bb153a416f9aeb4b8763bc0f22a5586065f86f7664fc23339fc1c1fac"},
     {file = "pyyaml-6.0.3-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:34d5fcd24b8445fadc33f9cf348c1047101756fd760b4dacb5c3e99755703310"},
@@ -752,6 +769,17 @@ dependencies = [
 files = [
     {file = "respx-0.23.1-py2.py3-none-any.whl", hash = "sha256:b18004b029935384bccfa6d7d9d74b4ec9af73a081cc28600fffc0447f4b8c1a"},
     {file = "respx-0.23.1.tar.gz", hash = "sha256:242dcc6ce6b5b9bf621f5870c82a63997e8e82bc7c947f9ffe272b8f3dd5a780"},
+]
+
+[[package]]
+name = "ruamel-yaml"
+version = "0.19.1"
+requires_python = ">=3.9"
+summary = "ruamel.yaml is a YAML parser/emitter that supports roundtrip preservation of comments, seq/map flow style, and map key order"
+groups = ["docs"]
+files = [
+    {file = "ruamel_yaml-0.19.1-py3-none-any.whl", hash = "sha256:27592957fedf6e0b62f281e96effd28043345e0e66001f97683aa9a40c667c93"},
+    {file = "ruamel_yaml-0.19.1.tar.gz", hash = "sha256:53eb66cd27849eff968ebf8f0bf61f46cdac2da1d1f3576dd4ccee9b25c31993"},
 ]
 
 [[package]]
@@ -826,7 +854,7 @@ name = "typing-extensions"
 version = "4.15.0"
 requires_python = ">=3.9"
 summary = "Backported and Experimental Type Hints for Python 3.9+"
-groups = ["default", "dev"]
+groups = ["default", "dev", "docs"]
 files = [
     {file = "typing_extensions-4.15.0-py3-none-any.whl", hash = "sha256:f0fa19c6845758ab08074a0cfa8b7aecb71c999ca73d62883bc25cc018c4e548"},
     {file = "typing_extensions-4.15.0.tar.gz", hash = "sha256:0cea48d173cc12fa28ecabc3b837ea3cf6f38c6d1136f85cbaaf598984861466"},
@@ -837,7 +865,7 @@ name = "typing-inspection"
 version = "0.4.2"
 requires_python = ">=3.9"
 summary = "Runtime typing introspection tools"
-groups = ["default"]
+groups = ["default", "docs"]
 dependencies = [
     "typing-extensions>=4.12.0",
 ]

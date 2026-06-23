@@ -34,6 +34,9 @@ jobs:
       - name: Mypy
         run: pdm run mypy onbot
 
+      - name: Config docs in sync with the model
+        run: pdm run check-config-docs
+
       - name: Pytest (unit + contract — fast, coverage reported but not gated)
         run: pdm run pytest -m "not integration" --cov --cov-report=term-missing --cov-fail-under=0
 

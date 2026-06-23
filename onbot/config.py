@@ -10,6 +10,11 @@ Changes from legacy:
   non-optional ``list``; ``only_groups_with_attributes`` / ``only_for_groupnames_starting_with``
   carried list defaults on non-list fields).
 * No ``matrix-nio`` references — the Matrix client library is a Phase 6 decision (AD, BATTLE_PLAN §5).
+* Phase 8: dropped the vestigial ``storage_dir`` / ``storage_encryption_key`` fields — they backed
+  the libolm key store, which ADR-0009 removed (the bot operates outside encrypted rooms and keeps
+  no on-disk crypto state). They were unused everywhere in the codebase; the lifecycle ledger lives
+  in Matrix account data (ADR-0001, no DB). Every field carries a description + example so the
+  psyplus-generated config reference and YAML template are self-documenting (BATTLE_PLAN §5 Phase 8).
 
 Loading: :func:`load_config` reads the YAML at ``ONBOT_CONFIG_FILE_PATH`` (env overrides still apply
 via the ``ONBOT_`` prefix and ``__`` nesting delimiter); :func:`generate_example_config` dumps the
@@ -20,7 +25,7 @@ from __future__ import annotations
 
 import inspect
 import os
-from pathlib import Path, PurePath
+from pathlib import Path
 from typing import Annotated, Any, Literal
 
 import yaml
@@ -218,7 +223,12 @@ class DeactivateDisabledAuthentikUsersInMatrix(BaseModel):
 
 
 class SyncAuthentikUsersWithMatrix(BaseModel):
-    enabled: bool = True
+    """How Authentik users/groups are projected into Matrix room membership (the core sync)."""
+
+    enabled: Annotated[
+        bool,
+        Field(description="Master switch for projecting Authentik group membership into Matrix rooms."),
+    ] = True
     authentik_username_mapping_attribute: Annotated[
         str,
         Field(
@@ -230,13 +240,52 @@ class SyncAuthentikUsersWithMatrix(BaseModel):
             ),
         ),
     ] = "username"
-    kick_matrix_room_members_not_in_mapped_authentik_group_anymore: bool = True
-    sync_only_users_in_authentik_pathes: list[str] | None = None
-    sync_only_users_with_authentik_attributes: dict[str, Any] | None = None
-    sync_only_users_of_groups_with_id: list[str] | None = None
-    deactivate_disabled_authentik_users_in_matrix: DeactivateDisabledAuthentikUsersInMatrix = Field(
-        default_factory=DeactivateDisabledAuthentikUsersInMatrix
-    )
+    kick_matrix_room_members_not_in_mapped_authentik_group_anymore: Annotated[
+        bool,
+        Field(
+            description=inspect.cleandoc(
+                """When a user leaves an Authentik group, kick them from the corresponding Matrix
+                room so membership stays a faithful mirror. Disable to let the bot only ever *add*
+                members (never remove)."""
+            ),
+        ),
+    ] = True
+    sync_only_users_in_authentik_pathes: Annotated[
+        list[str] | None,
+        Field(
+            description=inspect.cleandoc(
+                """Restrict syncing to users under these Authentik directory paths. ``null`` syncs
+                users regardless of path."""
+            ),
+            examples=[["users", "users/staff"]],
+        ),
+    ] = None
+    sync_only_users_with_authentik_attributes: Annotated[
+        dict[str, Any] | None,
+        Field(
+            description=inspect.cleandoc(
+                """Only sync users carrying all of these Authentik attributes (exact match).
+                ``null`` syncs every user."""
+            ),
+            examples=[{"is_chat_user": True}],
+        ),
+    ] = None
+    sync_only_users_of_groups_with_id: Annotated[
+        list[str] | None,
+        Field(
+            description=inspect.cleandoc(
+                """Only sync users who belong to at least one of these Authentik groups (by pk).
+                ``null`` applies no group filter."""
+            ),
+            examples=[["1120a6e1124f309bbe96c8be5fb09eab"]],
+        ),
+    ] = None
+    deactivate_disabled_authentik_users_in_matrix: Annotated[
+        DeactivateDisabledAuthentikUsersInMatrix,
+        Field(
+            description="Quarantined lifecycle settings: lock out Matrix accounts disabled upstream.",
+        ),
+    ] = Field(default_factory=DeactivateDisabledAuthentikUsersInMatrix)
 
 
 class CreateMatrixSpaceIfNotExists(BaseModel):
@@ -276,8 +325,22 @@ class CreateMatrixRoomsInAMatrixSpace(BaseModel):
 
 
 class SyncMatrixRoomsBasedOnAuthentikGroups(BaseModel):
-    enabled: bool = True
-    only_for_children_of_groups_with_uid: list[str] | None = None
+    """Which Authentik groups become Matrix rooms, and how their power levels are derived."""
+
+    enabled: Annotated[
+        bool,
+        Field(description="Master switch for creating/maintaining one Matrix room per Authentik group."),
+    ] = True
+    only_for_children_of_groups_with_uid: Annotated[
+        list[str] | None,
+        Field(
+            description=inspect.cleandoc(
+                """Only mirror Authentik groups that are children of one of these parent groups (by
+                uid/pk). ``null`` considers all groups."""
+            ),
+            examples=[["a1b2c3d4parentgroupuid"]],
+        ),
+    ] = None
     only_groups_with_attributes: Annotated[
         dict[str, Any] | None,
         Field(
@@ -295,7 +358,17 @@ class SyncMatrixRoomsBasedOnAuthentikGroups(BaseModel):
             examples=["chatroom_avatar_url"],
         ),
     ] = "chatroom_avatar_url"
-    only_for_groupnames_starting_with: str | None = None
+    only_for_groupnames_starting_with: Annotated[
+        str | None,
+        Field(
+            description=inspect.cleandoc(
+                """Only mirror Authentik groups whose name starts with this prefix — a lightweight way
+                to opt specific groups into chat without custom attributes. ``null`` disables the
+                filter."""
+            ),
+            examples=["chat-", "matrix_"],
+        ),
+    ] = None
     disable_rooms_when_mapped_authentik_group_disappears: Annotated[
         bool,
         Field(
@@ -305,8 +378,26 @@ class SyncMatrixRoomsBasedOnAuthentikGroups(BaseModel):
             ),
         ),
     ] = False
-    delete_disabled_rooms: bool = False
-    make_authentik_superusers_matrix_room_admin: bool = True
+    delete_disabled_rooms: Annotated[
+        bool,
+        Field(
+            description=inspect.cleandoc(
+                """When a room is disabled (its Authentik group disappeared, see
+                ``disable_rooms_when_mapped_authentik_group_disappears``), also delete it via the
+                Synapse admin API rather than only blocking it. Irreversible — leave ``false`` unless
+                you are sure."""
+            ),
+        ),
+    ] = False
+    make_authentik_superusers_matrix_room_admin: Annotated[
+        bool,
+        Field(
+            description=inspect.cleandoc(
+                """Grant Authentik superusers the Matrix admin power level (100) in the rooms they are
+                members of. Takes precedence over ``authentik_group_attr_for_matrix_power_level``."""
+            ),
+        ),
+    ] = True
     authentik_group_attr_for_matrix_power_level: Annotated[
         str,
         Field(
@@ -322,20 +413,86 @@ class SyncMatrixRoomsBasedOnAuthentikGroups(BaseModel):
 
 
 class MatrixDynamicRoomSettings(BaseModel):
-    alias_prefix: str | None = None
-    matrix_alias_from_authentik_attribute: str = "pk"
-    name_prefix: str | None = None
-    matrix_name_from_authentik_attribute: str = "name"
-    topic_prefix: str | None = None
-    matrix_topic_from_authentik_attribute: str | None = "attributes.chatroom_topic"
+    """Template for how a Matrix room's identity (alias/name/topic/encryption/create params) is
+    derived from its Authentik group. Used as the default for all rooms and overridable per group
+    via ``per_authentik_group_pk_matrix_room_settings``."""
+
+    alias_prefix: Annotated[
+        str | None,
+        Field(
+            description="Prefix prepended to the room's canonical alias localpart. ``null`` for none.",
+            examples=["authentik-", "grp-"],
+        ),
+    ] = None
+    matrix_alias_from_authentik_attribute: Annotated[
+        str,
+        Field(
+            description=inspect.cleandoc(
+                """Authentik group attribute (dotted path) used as the room alias localpart. The
+                default ``pk`` is the most stable choice (it never changes when a group is renamed)."""
+            ),
+            examples=["pk", "attributes.chatroom_alias"],
+        ),
+    ] = "pk"
+    name_prefix: Annotated[
+        str | None,
+        Field(
+            description="Prefix prepended to the room's display name. ``null`` for none.",
+            examples=["[Chat] "],
+        ),
+    ] = None
+    matrix_name_from_authentik_attribute: Annotated[
+        str,
+        Field(
+            description="Authentik group attribute (dotted path) used as the room display name.",
+            examples=["name", "attributes.chatroom_name"],
+        ),
+    ] = "name"
+    topic_prefix: Annotated[
+        str | None,
+        Field(description="Prefix prepended to the room topic. ``null`` for none."),
+    ] = None
+    matrix_topic_from_authentik_attribute: Annotated[
+        str | None,
+        Field(
+            description=inspect.cleandoc(
+                """Authentik group attribute (dotted path) used as the room topic. ``null`` leaves the
+                topic unset."""
+            ),
+            examples=["attributes.chatroom_topic"],
+        ),
+    ] = "attributes.chatroom_topic"
     end2end_encryption_enabled: Annotated[
         bool,
-        Field(description="Enable end-to-end encryption in the group-mapped Matrix rooms."),
+        Field(
+            description=inspect.cleandoc(
+                """Enable end-to-end encryption in the group-mapped Matrix rooms. The bot itself stays
+                outside encryption (ADR-0009): it writes room *state* (membership, power levels) but
+                does not read/post message content in encrypted rooms — welcome DMs are plaintext."""
+            ),
+        ),
     ] = True
-    default_room_create_params: dict[str, Any] | None = Field(
-        default_factory=lambda: {"preset": "private_chat", "visibility": "private"}
-    )
-    matrix_room_create_params_from_authentik_attribute: str | None = "attributes.chatroom_params"
+    default_room_create_params: Annotated[
+        dict[str, Any] | None,
+        Field(
+            description=inspect.cleandoc(
+                """Parameters merged into the Matrix ``createRoom`` call for group rooms (preset,
+                visibility, federation, …). See the Client-Server API ``POST /createRoom``."""
+            ),
+            examples=[{"preset": "private_chat", "visibility": "private"}],
+        ),
+    ] = Field(default_factory=lambda: {"preset": "private_chat", "visibility": "private"})
+    matrix_room_create_params_from_authentik_attribute: Annotated[
+        str | None,
+        Field(
+            description=inspect.cleandoc(
+                """Authentik group attribute (dotted path) holding a dict of extra ``createRoom``
+                params, merged over ``default_room_create_params`` for that group. ``null`` to
+                disable per-group overrides."""
+            ),
+            examples=["attributes.chatroom_params"],
+        ),
+    ] = "attributes.chatroom_params"
     keep_updating_matrix_attributes_from_authentik: Annotated[
         bool,
         Field(
@@ -347,18 +504,23 @@ class MatrixDynamicRoomSettings(BaseModel):
 class OnbotConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="ONBOT_", env_nested_delimiter="__")
 
-    log_level: Literal["INFO", "DEBUG"] = "INFO"
-    storage_dir: str = Field(
-        description="Directory for persisted runtime state (e.g. encryption key store).",
-        default_factory=lambda: str(Path(PurePath(Path().home(), ".config/onbot/"))),
-    )
-    storage_encryption_key: Annotated[
-        str | None,
-        Field(description="Optional passphrase used to encrypt the persisted key store."),
-    ] = None
+    log_level: Annotated[
+        Literal["INFO", "DEBUG"],
+        Field(
+            description="Logging verbosity. ``DEBUG`` is noisy but useful while wiring up the bot.",
+            examples=["INFO", "DEBUG"],
+        ),
+    ] = "INFO"
     server_tick_rate_sec: Annotated[
         int,
-        Field(description="Reconcile on this interval (seconds), in addition to on-demand triggers."),
+        Field(
+            description=inspect.cleandoc(
+                """How often (seconds) the reconciler re-converges Authentik→Matrix state, in
+                addition to on-demand triggers. The reconcile is idempotent (AD-2), so this is a
+                safety net for drift, not the only path — onboarding still reacts to live events."""
+            ),
+            examples=[20, 300],
+        ),
     ] = 20
 
     synapse_server: Annotated[
@@ -368,7 +530,10 @@ class OnbotConfig(BaseSettings):
             description="Authorization/connection data for the Matrix CS and Synapse admin APIs.",
         ),
     ]
-    authentik_server: AuthentikServer
+    authentik_server: Annotated[
+        AuthentikServer,
+        Field(description="Connection data and API token for the upstream Authentik IdP (source of truth)."),
+    ]
 
     mas_admin: Annotated[
         MasAdmin | None,
@@ -381,7 +546,16 @@ class OnbotConfig(BaseSettings):
         ),
     ] = None
 
-    welcome_new_users_messages: list[str] | None = Field(
+    welcome_new_users_messages: Annotated[
+        list[str] | None,
+        Field(
+            description=inspect.cleandoc(
+                """Messages the bot sends, in order, in the 1:1 welcome DM to each newly onboarded
+                user. Each message is sent once (content-hashed, idempotent). ``null`` or an empty
+                list disables the welcome DM entirely."""
+            ),
+        ),
+    ] = Field(
         default_factory=lambda: [
             "Welcome to the company chat. I am the company bot. I will invite you to the groups you "
             "are assigned to. If you have any technical questions write a message to "
@@ -405,17 +579,22 @@ class OnbotConfig(BaseSettings):
         ),
     ] = False
 
-    sync_authentik_users_with_matrix_rooms: SyncAuthentikUsersWithMatrix = Field(
-        default_factory=SyncAuthentikUsersWithMatrix
-    )
-    create_matrix_rooms_in_a_matrix_space: CreateMatrixRoomsInAMatrixSpace = Field(
-        default_factory=CreateMatrixRoomsInAMatrixSpace,
-        description="Configure the designated parent space for Authentik-group rooms.",
-    )
-    sync_matrix_rooms_based_on_authentik_groups: SyncMatrixRoomsBasedOnAuthentikGroups = Field(
-        default_factory=SyncMatrixRoomsBasedOnAuthentikGroups
-    )
-    matrix_room_default_settings: MatrixDynamicRoomSettings = Field(default_factory=MatrixDynamicRoomSettings)
+    sync_authentik_users_with_matrix_rooms: Annotated[
+        SyncAuthentikUsersWithMatrix,
+        Field(description="User→room-membership projection (the core Authentik→Matrix sync)."),
+    ] = Field(default_factory=SyncAuthentikUsersWithMatrix)
+    create_matrix_rooms_in_a_matrix_space: Annotated[
+        CreateMatrixRoomsInAMatrixSpace,
+        Field(description="Configure the designated parent space for Authentik-group rooms."),
+    ] = Field(default_factory=CreateMatrixRoomsInAMatrixSpace)
+    sync_matrix_rooms_based_on_authentik_groups: Annotated[
+        SyncMatrixRoomsBasedOnAuthentikGroups,
+        Field(description="Group→room projection rules (which groups become rooms, power levels)."),
+    ] = Field(default_factory=SyncMatrixRoomsBasedOnAuthentikGroups)
+    matrix_room_default_settings: Annotated[
+        MatrixDynamicRoomSettings,
+        Field(description="Default room identity template applied to every group room."),
+    ] = Field(default_factory=MatrixDynamicRoomSettings)
     per_authentik_group_pk_matrix_room_settings: Annotated[
         dict[str, MatrixDynamicRoomSettings],
         Field(
