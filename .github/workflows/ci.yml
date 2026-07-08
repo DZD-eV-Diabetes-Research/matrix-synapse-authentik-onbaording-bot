@@ -13,8 +13,15 @@ jobs:
   quality:
     name: lint · type · test
     runs-on: ubuntu-latest
+    permissions:
+      contents: write  # so the auto-format step can push the fix commit back
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Check out the PR's source branch (not the detached merge ref) so an
+          # auto-format commit can be pushed back to it. Empty on push events,
+          # where checkout falls back to the pushed ref — also correct.
+          ref: ${{ github.head_ref }}
 
       - name: Set up PDM (Python 3.14)
         uses: pdm-project/setup-pdm@v4
@@ -28,8 +35,15 @@ jobs:
       - name: Ruff lint
         run: pdm run ruff check .
 
-      - name: Ruff format check
-        run: pdm run ruff format --check .
+      # Formatting is mechanical, so we auto-apply it instead of failing the build.
+      # If ruff changed anything, the next step commits it back to the branch.
+      - name: Ruff format
+        run: pdm run ruff format .
+
+      - name: Commit formatting fixes (if any)
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "style: auto-format with ruff"
 
       - name: Mypy
         run: pdm run mypy onbot
