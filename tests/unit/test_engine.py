@@ -156,7 +156,12 @@ async def test_space_avatar_skipped_when_unset() -> None:
 
 class AvatarAuthentik(FakeAuthentik):
     async def list_groups(self, **_: Any) -> list[dict[str, Any]]:
-        return [{**_GROUP_G1, "attributes": {**_GROUP_G1["attributes"], "chatroom_avatar_url": "https://cdn/t.png"}}]
+        return [
+            {
+                **_GROUP_G1,
+                "attributes": {**_GROUP_G1["attributes"], "chatroom_avatar_url": "https://cdn/t.png"},
+            }
+        ]
 
 
 async def test_group_room_avatar_set_and_deduplicated() -> None:
