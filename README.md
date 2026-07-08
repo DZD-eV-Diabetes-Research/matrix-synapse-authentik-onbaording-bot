@@ -1,110 +1,70 @@
 # Onbot
 
-A bot that keeps a **Matrix (Synapse)** homeserver continuously in sync with an
-**[Authentik](https://goauthentik.io/)** identity provider and onboards every new user into the
-right rooms with a friendly welcome. Authentik is the source of truth; Matrix mirrors it
-(group → room, group membership → room membership, power levels), and new users get guided in with a
-1:1 welcome DM.
+Onbot keeps a **Matrix (Synapse)** homeserver in sync with an
+**[Authentik](https://goauthentik.io/)** identity provider and gives every new user a friendly
+welcome into the right rooms.
 
-Onbot targets **Matrix 2.0**: it assumes a [**Matrix Authentication Service
-(MAS)**](https://element-hq.github.io/matrix-authentication-service/) deployment with Authentik as
-an *upstream identity provider*, uses authenticated media, and drives the Client-Server and admin
-APIs over a single async HTTP client (no `matrix-nio`).
+Authentik is the source of truth. Onbot mirrors it into Matrix: each Authentik group becomes a room,
+group membership becomes room membership, and roles become power levels. When a new user shows up,
+they get a guided 1:1 welcome message.
 
-See [`GOALS.md`](GOALS.md) for intent, [`BATTLE_PLAN.md`](BATTLE_PLAN.md) for the build plan, and
-[`docs/adr/`](docs/adr/) for the architecture decisions.
+Onbot is built for **Matrix 2.0**. It assumes a
+[**Matrix Authentication Service (MAS)**](https://element-hq.github.io/matrix-authentication-service/)
+deployment with Authentik as the upstream identity provider.
 
-> ⚠️ **Release blocker (maintainer):** the Phase 1 security items are **not done** — leaked
-> credentials in git history still need rotating and the history scrubbing
-> ([`BATTLE_PLAN.md`](BATTLE_PLAN.md) §5 Phase 1). **Do not publish an image or tag a release until
-> those are complete.** The packaging below is ready; the security hand-off is the gate.
+## What Onbot does and does not do
 
----
+Onbot **does not create accounts**. MAS provisions a Matrix account the first time a user logs in
+through Authentik. Onbot's job is projection: turn Authentik groups into rooms, group membership
+into room membership, attributes into power levels, and drive the offboarding lifecycle when a user
+is disabled.
 
-## How it works — the MAS auth topology
+## Quick start with Docker
 
-The auth chain is **Matrix client → MAS → Authentik** (ADR-[0006](docs/adr/0006-auth-topology-mas-authentik.md)):
+The published image is [`dzdde/onbot`](https://hub.docker.com/r/dzdde/onbot) on Docker Hub. It runs
+as a non-root user and needs one thing from you: a config file.
 
-```
-                   logs in via                      upstream IdP
-   Matrix client ───────────────▶  MAS  ◀───────────────────────  Authentik
-        ▲                           │  (provisions Matrix accounts   (source of truth:
-        │                           │   on first login)               users & groups)
-        │ welcome DM,               │
-        │ room membership      ┌────┴─────┐
-        └──────────────────────│  Onbot   │── reads users/groups ──▶ Authentik API
-                               └────┬─────┘
-                                    └── Synapse Admin API + CS API ──▶ Synapse  ◀─ MAS
-```
+1. Create a `config.yml` (see [Minimal config](#minimal-config) below).
 
-Consequences that shape how you configure Onbot:
-
-- **Onbot does not create accounts.** MAS auto-provisions a Matrix account the first time a user
-  logs in through Authentik. Onbot's job is **projection**: turn Authentik groups into rooms, group
-  membership into room membership, and group/role attributes into power levels — plus the
-  quarantined offboarding lifecycle.
-- **The MXID localpart contract is critical.** Onbot computes a user's MXID
-  (`@<localpart>:server_name`) from an Authentik attribute, and it **must match the localpart
-  template MAS uses** when it provisions accounts from the same Authentik claim. Set
-  [`sync_authentik_users_with_matrix_rooms.authentik_username_mapping_attribute`](docs/CONFIG_REFERENCE.md)
-  to agree with MAS — get it wrong and Onbot's computed MXIDs won't match the real accounts, so
-  nobody gets added to rooms. (Verified by the integration suite's localpart-contract test.)
-- **Lifecycle enforcement requires MAS.** When Authentik disables a user, MAS blocks *new* logins
-  but **existing Matrix sessions keep working**, and the *Synapse* admin API cannot revoke a
-  MAS-issued session — only MAS can (ADR-[0005](docs/adr/0005-quarantine-lifecycle.md), §7 Q1, proven
-  empirically). So to actually offboard a disabled user you must configure the
-  [`mas_admin`](docs/CONFIG_REFERENCE.md) block. Without it, offboarding is a **no-op against live
-  sessions** (it silently fails to revoke).
-
----
-
-## Configuration
-
-Configuration is a single YAML file validated by a [pydantic-settings](https://docs.pydantic.dev/latest/concepts/pydantic_settings/)
-model ([`onbot/config.py`](onbot/config.py)). Every setting can also be supplied (or overridden) via
-an environment variable: prefix `ONBOT_`, nest with `__`. E.g.
-`ONBOT_SYNAPSE_SERVER__BOT_ACCESS_TOKEN=syt_…`.
-
-- **Full reference:** [`docs/CONFIG_REFERENCE.md`](docs/CONFIG_REFERENCE.md) — every field, its type,
-  default, description and `ONBOT_*` env-var name.
-- **Annotated template:** [`config.example.yml`](config.example.yml) — a commented, fillable YAML
-  template. Copy it to `config.yml` and fill in the required values.
-
-Both are **generated from the model** (with [psyplus](https://pypi.org/project/psyplus/)) and kept in
-sync by CI — regenerate after editing `onbot/config.py`:
+2. Run it:
 
 ```bash
-pdm run gen-config-docs      # rewrite docs/CONFIG_REFERENCE.md + config.example.yml
-pdm run check-config-docs    # fail if they drift from the model (runs in CI)
+docker run --rm \
+  -v "$PWD/config.yml:/config/config.yml:ro" \
+  dzdde/onbot:latest
 ```
 
-> 🔐 **Never commit a real config.** `config*.yml` is gitignored (only `config.example.yml` is
-> tracked) and the Docker image carries no secrets — provide config at runtime.
+The image defaults to reading `/config/config.yml` and running the long-lived `onbot run` service.
+It also ships a built-in `HEALTHCHECK`.
 
-### Bot credentials (pick one)
+### docker-compose
 
-Onbot authenticates to Synapse as a bot user. Under MAS, choose one of:
+```yaml
+services:
+  onbot:
+    image: dzdde/onbot:latest
+    restart: unless-stopped
+    volumes:
+      - ./config.yml:/config/config.yml:ro
+```
 
-| Option | Field | When |
-|---|---|---|
-| **Compatibility token** | `synapse_server.bot_access_token` | Near-term. Issue with `mas-cli manage issue-compatibility-token`. Provide the bare token. |
-| **OAuth2 client-credentials** | `synapse_server.oauth2` | Forward-looking. The bot is a confidential MAS client and refreshes tokens automatically. |
+More deployment detail (env-only config, CLI commands, healthcheck) lives in
+[docs/deployment.md](docs/deployment.md).
 
-Provide **exactly one**. The same identity drives both the Synapse Admin API and the Client-Server
-API.
+## Minimal config
 
-### Minimal `config.yml`
+Configuration is a single YAML file. Copy this, fill in the values, save it as `config.yml`:
 
 ```yaml
 synapse_server:
   server_name: company.org                  # your Matrix domain (the part after the ':')
-  server_url: https://internal.matrix       # how the bot reaches Synapse (internal URL is fine)
+  server_url: https://internal.matrix       # how the bot reaches Synapse (an internal URL is fine)
   bot_user_id: "@welcome-bot:company.org"
-  bot_access_token: syt_REPLACE_ME          # or use an `oauth2:` block instead
+  bot_access_token: syt_REPLACE_ME          # or an `oauth2:` block instead
 
 authentik_server:
   url: https://authentik.company.org/
-  api_key: REPLACE_ME                        # Authentik API token
+  api_key: REPLACE_ME                        # an Authentik API token
 
 # Required to enforce offboarding under MAS (omit on non-MAS deployments):
 mas_admin:
@@ -116,108 +76,39 @@ sync_authentik_users_with_matrix_rooms:
   authentik_username_mapping_attribute: username   # MUST agree with MAS's localpart template
 ```
 
-See [`config.example.yml`](config.example.yml) for everything else (room mapping rules, power
-levels, welcome messages, the dry-run lifecycle defaults, ignore lists, …).
+Two settings above are easy to get wrong and worth calling out:
 
----
+- **`authentik_username_mapping_attribute` must match the localpart template MAS uses.** Onbot
+  computes each user's MXID from this Authentik attribute. If it disagrees with MAS, the computed
+  MXIDs will not match the real accounts and nobody gets added to rooms.
+- **`mas_admin` is required to actually offboard disabled users.** The Synapse admin API cannot
+  revoke a MAS-issued session, only MAS can. Without this block, offboarding silently does nothing
+  to live sessions.
 
-## Run with Docker
+Every setting can also be supplied via an environment variable (prefix `ONBOT_`, nest with `__`),
+for example `ONBOT_SYNAPSE_SERVER__BOT_ACCESS_TOKEN=syt_…`.
 
-The published image runs as a non-root user and ships only runtime dependencies (no crypto stack —
-the bot operates outside encrypted rooms, ADR-[0009](docs/adr/0009-e2ee-stance.md)).
+> Never commit a real config. `config*.yml` is gitignored (only `config.example.yml` is tracked) and
+> the image carries no secrets. Provide config at runtime.
 
-```bash
-docker run --rm \
-  -v "$PWD/config.yml:/config/config.yml:ro" \
-  dzdde/onbot:latest
-```
+For the full picture (bot credential options, the MAS auth topology, and every field), see the docs
+below.
 
-The image defaults to `ONBOT_CONFIG_FILE_PATH=/config/config.yml` and the `run` command. It has a
-built-in `HEALTHCHECK` that calls `onbot healthcheck` (see below).
+## Documentation
 
-### docker-compose
-
-```yaml
-services:
-  onbot:
-    image: dzdde/onbot:latest
-    restart: unless-stopped
-    volumes:
-      - ./config.yml:/config/config.yml:ro
-    # Or skip the file and supply everything via env (no secrets on disk):
-    # environment:
-    #   ONBOT_SYNAPSE_SERVER__SERVER_NAME: company.org
-    #   ONBOT_SYNAPSE_SERVER__BOT_ACCESS_TOKEN: ${ONBOT_BOT_TOKEN}
-```
-
-### CLI commands
-
-```
-onbot run               # long-running service: reconcile loop + event-driven onboarding (default)
-onbot reconcile-once    # one idempotent reconcile pass, then exit
-onbot generate-config   # print a minimal config template (use config.example.yml for the rich one)
-onbot healthcheck       # probe Synapse/Authentik/MAS with the real credentials; exit 0 healthy, 1 not
-```
-
-`onbot healthcheck` is what the container's `HEALTHCHECK` runs: it issues one authenticated request
-to the Matrix CS API (`/whoami`), the Synapse admin API, the Authentik API, and — when `mas_admin`
-is configured — the MAS admin API, and exits non-zero if any is unreachable or rejects the
-credentials.
-
----
-
-## Develop
-
-Requires **Python 3.14** and **[PDM](https://pdm-project.org/)**.
-
-```bash
-pdm install                 # create the venv and install deps (incl. dev + docs)
-pdm run pre-commit install  # enable lint + secret-scan hooks
-```
-
-### Run & test
-
-```bash
-pdm run onbot --help
-pdm run onbot reconcile-once
-
-pdm run pytest -m "not integration"     # fast unit + contract suite
-pdm run pytest                          # full suite incl. live Synapse+MAS+Authentik (needs Docker)
-pdm run ruff check .                     # lint
-pdm run ruff format --check .            # formatting
-pdm run mypy onbot                       # type check
-```
-
-The `run_*.sh` helper scripts at the repo root wrap the same PDM commands.
-
-### Build the image locally
-
-```bash
-docker build -t onbot:dev .
-docker run --rm onbot:dev --help
-```
-
----
-
-## Troubleshooting
-
-| Symptom | Likely cause |
-|---|---|
-| Users never get added to rooms | The MXID localpart contract is broken — `authentik_username_mapping_attribute` doesn't match MAS's localpart template, so computed MXIDs don't exist. |
-| Disabled users keep their Matrix access | `mas_admin` is not configured (the Synapse admin API can't revoke a MAS session), or lifecycle `dry_run` is still `true` (the default). |
-| Nothing destructive ever happens | Expected by default — the lifecycle is quarantined (`dry_run: true`); it only logs to the `onbot.lifecycle.audit` channel until you opt in. |
-| Welcome DM send fails with a 500 | The bot device isn't registered yet — Onbot registers it on startup (`ensure_device_registered`); check startup logs. |
-| `healthcheck` reports a dependency FAIL | Read the per-dependency log line; it distinguishes unreachable from auth-rejected. The `matrix-cs` line also flags a token/`bot_user_id` mismatch. |
-| Sliding sync unavailable | The homeserver doesn't advertise MSC4186; Onbot falls back to the reconciler signal path automatically. |
-
----
-
-## Releasing
-
-Versioned images are published to GHCR by the [release workflow](.github/workflows/release.yml) when
-a `v*` tag is pushed. See [`CHANGELOG.md`](CHANGELOG.md) and the workflow's header comment for the
-tag/version flow. **(Blocked on the Phase 1 security hand-off — see the note at the top.)**
+- [docs/configuration.md](docs/configuration.md) walks through every config block, the bot
+  credential choices, and how to generate the reference.
+- [docs/CONFIG_REFERENCE.md](docs/CONFIG_REFERENCE.md) lists every field, its type, default,
+  description, and `ONBOT_*` env-var name (generated from the model).
+- [docs/deployment.md](docs/deployment.md) covers running with Docker and compose, env-only config,
+  the CLI commands, and the healthcheck.
+- [docs/architecture.md](docs/architecture.md) explains the Matrix client to MAS to Authentik auth
+  topology and links the architecture decision records.
+- [docs/development.md](docs/development.md) is the setup, build, and release guide for contributors.
+- [docs/testing.md](docs/testing.md) describes the unit, contract, and integration suites.
+- [docs/troubleshooting.md](docs/troubleshooting.md) is a symptom to cause table for common issues.
+- [docs/project/GOALS.md](docs/project/GOALS.md) captures project intent and [docs/project/BATTLE_PLAN.md](docs/project/BATTLE_PLAN.md) the build plan.
 
 ## License
 
-MIT — see [`LICENSE`](LICENSE).
+MIT, see [LICENSE](LICENSE).
