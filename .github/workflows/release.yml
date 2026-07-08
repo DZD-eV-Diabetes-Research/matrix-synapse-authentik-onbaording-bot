@@ -1,23 +1,35 @@
 name: Release
 
-# Build and publish the Docker image to GHCR on a semver tag.
+# Build & publish artifacts when a GitHub Release is published.
+#
+# Two channels, driven by the release's "This is a pre-release" checkbox
+# (github.event.release.prerelease), mirroring the DZDMedLog pipeline:
+#
+#   • Pre-release  → GHCR image tagged `beta` + the version (e.g. 1.2.0-beta.1)
+#                    → PyPI upload of the (PEP 440 pre-release) version
+#   • Full release → GHCR image tagged `latest` + version, major.minor, major
+#                    → PyPI upload of the stable version
+#
+# On PyPI the beta/latest distinction is intrinsic to the version string: a
+# PEP 440 pre-release (1.2.0b1, 1.2.0rc1, …) is not installed by `pip install`
+# unless `--pre` is passed, so it behaves like the `beta` container tag.
 #
 # Version / tag flow (see CHANGELOG.md):
-#   1. Update CHANGELOG.md: move "Unreleased" entries under a new `## [X.Y.Z] - DATE` heading.
-#   2. Bump `version` in pyproject.toml and `__version__` in onbot/__init__.py to X.Y.Z.
-#   3. Tag and push:  git tag vX.Y.Z && git push origin vX.Y.Z
-#   4. This workflow builds and pushes ghcr.io/<owner>/<repo> with tags derived from the git tag
-#      (X.Y.Z, X.Y, X, and `latest` for non-prerelease tags) plus OCI labels + build provenance.
+#   1. Update CHANGELOG.md: move "Unreleased" entries under `## [X.Y.Z] - DATE`.
+#   2. Bump `version` in pyproject.toml and `__version__` in onbot/__init__.py.
+#      For a pre-release use a PEP 440 pre-release version (e.g. 1.2.0b1).
+#   3. Push tag vX.Y.Z and create a GitHub Release from it — tick "pre-release"
+#      for a beta, leave it unticked for a stable release.
 #
-# Kept separate from ci.yml (quality + integration) on purpose — releasing is its own concern.
+# Secrets: GHCR uses the built-in GITHUB_TOKEN; PyPI uses the org-wide
+# PYPI_API_TOKEN. Kept separate from ci.yml (quality + integration) on purpose.
 #
-# ⚠️ The Phase 1 security hand-off (rotate leaked credentials + scrub git history, BATTLE_PLAN §5)
-#    must be complete before the first real tag is pushed. See README.md.
+# ⚠️ The Phase 1 security hand-off (rotate leaked credentials + scrub git history,
+#    BATTLE_PLAN §5) must be complete before the first real release. See README.md.
 
 on:
-  push:
-    tags:
-      - "v*"
+  release:
+    types: [published]
 
 env:
   REGISTRY: ghcr.io
@@ -46,13 +58,15 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # Pre-releases get `beta` + the full version only; full releases get the
+          # full version plus the rolling major.minor / major tags and `latest`.
           tags: |
             type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-          # `latest` only for proper (non-prerelease) releases.
+            type=semver,pattern={{major}}.{{minor}},enable=${{ !github.event.release.prerelease }}
+            type=semver,pattern={{major}},enable=${{ !github.event.release.prerelease }}
+            type=raw,value=beta,enable=${{ github.event.release.prerelease }}
           flavor: |
-            latest=auto
+            latest=${{ !github.event.release.prerelease }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -69,3 +83,29 @@ jobs:
           sbom: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  publish-pypi:
+    name: build & publish (PyPI)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write  # for PyPI trusted publishing / provenance
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up PDM (Python 3.14)
+        uses: pdm-project/setup-pdm@v4
+        with:
+          python-version: "3.14"
+          cache: true
+
+      - name: Build sdist + wheel
+        run: pdm build
+
+      # A GitHub pre-release publishes whatever is in pyproject.toml; make it a
+      # PEP 440 pre-release version so pip treats it as beta (opt-in via --pre).
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: ./dist
+          password: ${{ secrets.PYPI_API_TOKEN }}
