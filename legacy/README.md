@@ -1,7 +1,7 @@
 # `legacy/` — pre-revival code (reference only)
 
 This is the **original, pre-Matrix-2.0 bot** as it stood before the revival described in
-[`../BATTLE_PLAN.md`](../BATTLE_PLAN.md). It is kept **only as a porting reference** while the
+[`../docs/project/BATTLE_PLAN.md`](../docs/project/BATTLE_PLAN.md). It is kept **only as a porting reference** while the
 valuable business logic is migrated into the new `onbot/` package (Phases 3–5).
 
 **Do not import, run, or extend this code.** It is intentionally excluded from the build,
