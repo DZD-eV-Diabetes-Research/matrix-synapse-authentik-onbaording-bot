@@ -14,12 +14,16 @@ name: Release
 # PEP 440 pre-release (1.2.0b1, 1.2.0rc1, …) is not installed by `pip install`
 # unless `--pre` is passed, so it behaves like the `beta` container tag.
 #
+# The package version is derived from the git tag (pdm-backend SCM, see pyproject.toml) — there is
+# NO version to hand-edit. The tag is the single source of truth: PyPI builds it from the checked-out
+# tag; the Docker image gets it passed in via PDM_BUILD_SCM_VERSION (its build context has no .git).
+#
 # Version / tag flow (see CHANGELOG.md):
 #   1. Update CHANGELOG.md: move "Unreleased" entries under `## [X.Y.Z] - DATE`.
-#   2. Bump `version` in pyproject.toml and `__version__` in onbot/__init__.py.
-#      For a pre-release use a PEP 440 pre-release version (e.g. 1.2.0b1).
-#   3. Push tag vX.Y.Z and create a GitHub Release from it — tick "pre-release"
-#      for a beta, leave it unticked for a stable release.
+#   2. Push a PEP 440 tag (a pre-release like 1.2.0b1 for betas, e.g. 1.2.0 for a full release)
+#      and create a GitHub Release from it — tick "pre-release" for a beta, leave it unticked
+#      for a stable release. The tick drives the container beta/latest tag; the tag string drives
+#      the published version everywhere.
 #
 # Secrets: DockerHub uses the org-wide DOCKERHUB_DZD_USERNAME / DOCKERHUB_DZD_PASSWORD;
 # PyPI uses the org-wide PYPI_API_TOKEN. Kept separate from ci.yml (quality +
@@ -77,6 +81,9 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # Feed the release version into pdm-backend inside the image (no .git in the build context).
+          build-args: |
+            PDM_BUILD_SCM_VERSION=${{ steps.meta.outputs.version }}
           provenance: true
           sbom: true
           cache-from: type=gha
@@ -90,6 +97,8 @@ jobs:
       id-token: write  # for PyPI trusted publishing / provenance
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # need the full tag history so pdm-backend can derive the version from SCM
 
       - name: Set up PDM (Python 3.14)
         uses: pdm-project/setup-pdm@v4
@@ -100,10 +109,12 @@ jobs:
       - name: Build sdist + wheel
         run: pdm build
 
-      # A GitHub pre-release publishes whatever is in pyproject.toml; make it a
-      # PEP 440 pre-release version so pip treats it as beta (opt-in via --pre).
+      # Version comes from the git tag (dynamic SCM). A pre-release tag (1.2.0b1) is uploaded as a
+      # PEP 440 pre-release, so pip treats it as beta (opt-in via --pre). skip-existing keeps a re-run
+      # from hard-failing if a file for this version is already on PyPI.
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: ./dist
           password: ${{ secrets.PYPI_API_TOKEN }}
+          skip-existing: true

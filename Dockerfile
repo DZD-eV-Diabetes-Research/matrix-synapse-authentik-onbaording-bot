@@ -36,7 +36,11 @@ RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
-# Install the onbot package itself (no deps — they are already pinned above).
+# Install the onbot package itself (no deps — they are already pinned above). The build context has
+# no .git, so pdm-backend can't derive the version from SCM; the release workflow passes it here via
+# --build-arg PDM_BUILD_SCM_VERSION=<tag>. Without it the package falls back to fallback_version.
+ARG PDM_BUILD_SCM_VERSION
+ENV PDM_BUILD_SCM_VERSION=${PDM_BUILD_SCM_VERSION}
 COPY onbot ./onbot
 RUN pip install --no-cache-dir --no-deps .
 

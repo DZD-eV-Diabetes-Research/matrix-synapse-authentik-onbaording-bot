@@ -55,6 +55,14 @@ docker run --rm onbot:dev --help
 
 ## Releasing
 
-Versioned images are published by the [release workflow](../.github/workflows/release.yml) when a
-`v*` tag is pushed. See [CHANGELOG.md](../CHANGELOG.md) and the workflow header for the tag and
-version flow.
+The [release workflow](../.github/workflows/release.yml) runs when a **GitHub Release** is published
+and pushes both the DockerHub image (`dzdde/onbot`) and the PyPI package. The **git tag is the single
+source of truth for the version** — pdm-backend derives it from the tag (SCM), so there is no version
+to hand-edit in `pyproject.toml` or `onbot/__init__.py`.
+
+- Tick **"pre-release"** on the GitHub Release → image tagged `beta` + version; PyPI upload is a
+  PEP 440 pre-release (installable only with `pip install --pre`).
+- Leave it unticked → image tagged `latest` (+ `major.minor` / `major`); PyPI stable upload.
+
+Use a PEP 440 tag (e.g. `0.2.0b1` for a beta, `0.2.0` for a full release). See
+[CHANGELOG.md](../CHANGELOG.md) and the workflow header for the full flow.
