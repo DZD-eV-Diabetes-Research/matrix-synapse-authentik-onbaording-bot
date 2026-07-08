@@ -300,7 +300,10 @@ class CreateMatrixSpaceIfNotExists(BaseModel):
     )
     avatar_url: str | None = Field(
         default=None,
-        description="HTTP(S) URL to a picture used as the space avatar.",
+        description=(
+            "HTTP(S) URL to a picture used as the space avatar (icon). Applied on every reconcile "
+            "and re-uploaded only when the URL changes, so it also updates an existing space."
+        ),
     )
     space_params: dict[str, Any] = Field(
         default_factory=lambda: {"preset": "private_chat", "visibility": "private"},
@@ -354,7 +357,11 @@ class SyncMatrixRoomsBasedOnAuthentikGroups(BaseModel):
     room_avatar_url_attribute: Annotated[
         str | None,
         Field(
-            description="Authentik group attribute holding a URL used as the room avatar.",
+            description=inspect.cleandoc(
+                """Key inside an Authentik group's custom ``attributes`` holding an HTTP(S) URL used as
+                that group's room avatar (icon). Applied on every reconcile and re-uploaded only when
+                the URL changes. ``null`` disables per-room avatars."""
+            ),
             examples=["chatroom_avatar_url"],
         ),
     ] = "chatroom_avatar_url"

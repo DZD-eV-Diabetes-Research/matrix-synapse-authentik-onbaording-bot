@@ -73,12 +73,30 @@ class RecordingEffectors(DryRunEffectors):
     def __init__(self) -> None:
         self.kicks: list[tuple[str, str]] = []
         self.power_levels: list[tuple[str, dict[str, Any]]] = []
+        self.uploads: list[str] = []
+        self.avatars: list[tuple[str, str]] = []
+        self.state_store: dict[tuple[str, str], dict[str, Any]] = {}
 
     async def kick_user(self, room_id: str, user_id: str, reason: str | None = None) -> None:
         self.kicks.append((room_id, user_id))
 
     async def set_room_power_levels(self, room_id: str, power_levels: dict[str, Any]) -> None:
         self.power_levels.append((room_id, power_levels))
+
+    async def upload_avatar(self, url: str) -> str:
+        self.uploads.append(url)
+        return f"mxc://company.org/{len(self.uploads)}"
+
+    async def set_room_avatar(self, room_id: str, mxc_uri: str) -> None:
+        self.avatars.append((room_id, mxc_uri))
+
+    async def get_room_state(
+        self, room_id: str, event_type: str, state_key: str = ""
+    ) -> dict[str, Any] | None:
+        return self.state_store.get((room_id, event_type))
+
+    async def put_room_state(self, room_id: str, event_type: str, content: dict[str, Any]) -> None:
+        self.state_store[(room_id, event_type)] = content
 
 
 def _engine(events: EventBus | None = None) -> tuple[ReconcilerEngine, FakeAdmin, RecordingEffectors]:
@@ -103,6 +121,59 @@ async def test_reconcile_once_converges() -> None:
 
     # power levels: alice gets 50 in the g1 room
     assert effectors.power_levels == [("!room1:company.org", {"users": {"@alice:company.org": 50}})]
+
+
+async def test_space_avatar_set_and_deduplicated() -> None:
+    config = OnbotConfig.model_validate(
+        {
+            **_BASE,
+            "create_matrix_rooms_in_a_matrix_space": {
+                "create_matrix_space_if_not_exists": {"avatar_url": "https://cdn/icon.png"}
+            },
+        }
+    )
+    admin = FakeAdmin()
+    effectors = RecordingEffectors()
+    engine = ReconcilerEngine(config, FakeAuthentik(), admin, effectors)  # type: ignore[arg-type]
+
+    # First pass: no stored avatar -> upload + set + record the source URL in onbot state.
+    await engine.reconcile_once()
+    assert effectors.uploads == ["https://cdn/icon.png"]
+    assert effectors.avatars == [("!space:company.org", "mxc://company.org/1")]
+
+    # Second pass: URL unchanged -> no re-upload, no re-set.
+    await engine.reconcile_once()
+    assert effectors.uploads == ["https://cdn/icon.png"]
+    assert len(effectors.avatars) == 1
+
+
+async def test_space_avatar_skipped_when_unset() -> None:
+    engine, _, effectors = _engine()  # default config has no avatar_url
+    await engine.reconcile_once()
+    assert effectors.uploads == []
+    assert effectors.avatars == []
+
+
+class AvatarAuthentik(FakeAuthentik):
+    async def list_groups(self, **_: Any) -> list[dict[str, Any]]:
+        return [{**_GROUP_G1, "attributes": {**_GROUP_G1["attributes"], "chatroom_avatar_url": "https://cdn/t.png"}}]
+
+
+async def test_group_room_avatar_set_and_deduplicated() -> None:
+    config = OnbotConfig.model_validate(_BASE)  # default room_avatar_url_attribute == "chatroom_avatar_url"
+    admin = FakeAdmin()
+    effectors = RecordingEffectors()
+    engine = ReconcilerEngine(config, AvatarAuthentik(), admin, effectors)  # type: ignore[arg-type]
+
+    # First pass: the existing g1 room gets its avatar from the group attribute.
+    await engine.reconcile_once()
+    assert effectors.uploads == ["https://cdn/t.png"]
+    assert effectors.avatars == [("!room1:company.org", "mxc://company.org/1")]
+
+    # Second pass: URL unchanged -> no re-upload, no re-set.
+    await engine.reconcile_once()
+    assert effectors.uploads == ["https://cdn/t.png"]
+    assert len(effectors.avatars) == 1
 
 
 async def test_reconcile_emits_user_synced_events() -> None:

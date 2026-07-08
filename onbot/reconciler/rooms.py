@@ -96,6 +96,13 @@ def compute_room_attributes(
             except json.JSONDecodeError, TypeError:
                 log.warning("Group %s has invalid room-create-params JSON: %r", group["pk"], raw)
 
+    # Room avatar (icon): the configured attribute is a key inside the group's custom ``attributes``
+    # (legacy semantics), holding an HTTP(S) URL. Uploaded + applied by the engine, deduped per URL.
+    avatar_source_url: str | None = None
+    avatar_attr = config.sync_matrix_rooms_based_on_authentik_groups.room_avatar_url_attribute
+    if avatar_attr:
+        avatar_source_url = (group.get("attributes") or {}).get(avatar_attr) or None
+
     return RoomCreateAttributes(
         alias=alias,
         canonical_alias=build_canonical(alias, server_name, "#"),
@@ -103,6 +110,7 @@ def compute_room_attributes(
         topic=topic,
         room_params=room_params,
         encrypted=settings.end2end_encryption_enabled,
+        avatar_source_url=avatar_source_url,
     )
 
 

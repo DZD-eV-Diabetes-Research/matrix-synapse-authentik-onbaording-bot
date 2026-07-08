@@ -37,6 +37,16 @@ class MatrixEffectors(Protocol):
 
     async def set_room_topic(self, room_id: str, topic: str) -> None: ...
 
+    async def set_room_avatar(self, room_id: str, mxc_uri: str) -> None: ...
+
+    async def upload_avatar(self, url: str) -> str:
+        """Fetch ``url`` and upload it to the media repo, returning its ``mxc://`` URI."""
+        ...
+
+    async def get_room_state(
+        self, room_id: str, event_type: str, state_key: str = ""
+    ) -> dict[str, Any] | None: ...
+
     async def put_room_state(self, room_id: str, event_type: str, content: dict[str, Any]) -> None: ...
 
 
@@ -73,6 +83,18 @@ class DryRunEffectors:
 
     async def set_room_topic(self, room_id: str, topic: str) -> None:
         log.info("[dry-run] would set topic of %s -> %r", room_id, topic)
+
+    async def set_room_avatar(self, room_id: str, mxc_uri: str) -> None:
+        log.info("[dry-run] would set avatar of %s -> %s", room_id, mxc_uri)
+
+    async def upload_avatar(self, url: str) -> str:
+        log.info("[dry-run] would upload avatar from %s", url)
+        return f"mxc://dry-run/{uuid.uuid4().hex[:12]}"
+
+    async def get_room_state(
+        self, room_id: str, event_type: str, state_key: str = ""
+    ) -> dict[str, Any] | None:
+        return None
 
     async def put_room_state(self, room_id: str, event_type: str, content: dict[str, Any]) -> None:
         log.info("[dry-run] would set state %s on %s", event_type, room_id)

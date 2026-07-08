@@ -724,7 +724,7 @@ Matrix topic (tagline) for the space.
 
 #### `create_matrix_rooms_in_a_matrix_space.create_matrix_space_if_not_exists.avatar_url`
 
-HTTP(S) URL to a picture used as the space avatar.
+HTTP(S) URL to a picture used as the space avatar (icon). Applied on every reconcile and re-uploaded only when the URL changes, so it also updates an existing space.
 
 | Property | Value |
 |---|---|
@@ -816,7 +816,9 @@ only_groups_with_attributes:
 
 ### `sync_matrix_rooms_based_on_authentik_groups.room_avatar_url_attribute`
 
-Authentik group attribute holding a URL used as the room avatar.
+Key inside an Authentik group's custom ``attributes`` holding an HTTP(S) URL used as
+that group's room avatar (icon). Applied on every reconcile and re-uploaded only when
+the URL changes. ``null`` disables per-room avatars.
 
 | Property | Value |
 |---|---|

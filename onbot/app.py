@@ -132,8 +132,9 @@ async def build_app(config: OnbotConfig) -> AsyncIterator[App]:
         ),
         effectors=lifecycle_effectors,
     )
+    effectors = CSApiEffectors(matrix)
     engine = ReconcilerEngine(
-        config, authentik, admin, effectors=CSApiEffectors(matrix), events=events, lifecycle=lifecycle
+        config, authentik, admin, effectors=effectors, events=events, lifecycle=lifecycle
     )
     welcome = WelcomeService(matrix, config)
     listener = OnboardingListener(matrix, welcome, config, events)
@@ -141,6 +142,7 @@ async def build_app(config: OnbotConfig) -> AsyncIterator[App]:
     try:
         yield App(engine=engine, listener=listener)
     finally:
+        await effectors.aclose()
         await authentik.aclose()
         await admin.aclose()
         await matrix.aclose()
