@@ -129,7 +129,7 @@ the bot operates outside encrypted rooms, ADR-[0009](docs/adr/0009-e2ee-stance.m
 ```bash
 docker run --rm \
   -v "$PWD/config.yml:/config/config.yml:ro" \
-  ghcr.io/dzd-ev-diabetes-research/matrix-synapse-authentik-onbaording-bot:latest
+  dzdde/onbot:latest
 ```
 
 The image defaults to `ONBOT_CONFIG_FILE_PATH=/config/config.yml` and the `run` command. It has a
@@ -140,7 +140,7 @@ built-in `HEALTHCHECK` that calls `onbot healthcheck` (see below).
 ```yaml
 services:
   onbot:
-    image: ghcr.io/dzd-ev-diabetes-research/matrix-synapse-authentik-onbaording-bot:latest
+    image: dzdde/onbot:latest
     restart: unless-stopped
     volumes:
       - ./config.yml:/config/config.yml:ro

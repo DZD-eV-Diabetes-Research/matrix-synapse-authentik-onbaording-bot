@@ -21,7 +21,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   [psyplus](https://pypi.org/project/psyplus/) via `pdm run gen-config-docs`, with a drift guard
   (`pdm run check-config-docs`) wired into CI.
 - **Release pipeline:** `.github/workflows/release.yml` runs on published GitHub Releases and forks on
-  the pre-release flag: a pre-release publishes the GHCR image as `beta` + version and uploads the
+  the pre-release flag: a pre-release publishes the DockerHub image (`dzdde/onbot`) as `beta` + version and uploads the
   (PEP 440 pre-release) version to PyPI; a full release publishes `latest` + version/major.minor/major
   and the stable version to PyPI (OCI labels, build provenance + SBOM; PyPI via `PYPI_API_TOKEN`).
   This `CHANGELOG.md`.

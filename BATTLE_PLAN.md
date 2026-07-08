@@ -335,7 +335,7 @@ deterministic wins hostage. **Both are now done (7a 2026-06-23, 7b 2026-06-23).*
 
 ### Phase 8 — Packaging, docs & release
 - [ ] Rewrite `Dockerfile`: multi-stage, pinned digest, non-root, `.dockerignore`, `pdm install`, healthcheck.
-- [ ] CI publish image (GHCR) on tag; semver; CHANGELOG.
+- [ ] CI publish image (DockerHub `dzdde/onbot`) + PyPI on release; beta pre-releases / latest full releases; CHANGELOG.
 - [ ] Rewrite `README.md`: MAS-era setup (Authentik-as-upstream topology, MXID/localpart contract), config
       reference (auto-gen from pydantic), Docker/compose deploy, troubleshooting.
 - [ ] Overhaul all config meta data in `onbot/config.py`: Add meaningfull desc. Add meaningfull examples. Check typing hints.
