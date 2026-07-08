@@ -4,4 +4,9 @@ Clean-slate rebuild targeting modern Matrix (MAS / next-gen auth, authenticated 
 sliding sync). See ``BATTLE_PLAN.md`` for the architecture and ``GOALS.md`` for intent.
 """
 
-__version__ = "0.1.0.dev0"
+from importlib.metadata import PackageNotFoundError, version
+
+try:
+    __version__ = version("onbot")
+except PackageNotFoundError:  # running from a source tree that was never installed
+    __version__ = "0.0.0+unknown"

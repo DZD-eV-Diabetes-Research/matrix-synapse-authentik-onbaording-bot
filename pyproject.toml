@@ -1,6 +1,8 @@
 [project]
 name = "onbot"
-version = "0.1.0.dev0"
+# Version is derived from the git tag by pdm-backend (see [tool.pdm.version]). Tag a release
+# (e.g. 0.1.0b3) and the built artifact carries that version — never hand-edit a version here.
+dynamic = ["version"]
 description = "Keep a Matrix (Synapse) homeserver in sync with Authentik and onboard new users."
 readme = "README.md"
 license = { text = "MIT" }
@@ -35,6 +37,13 @@ build-backend = "pdm.backend"
 
 [tool.pdm]
 distribution = true
+
+# Derive the package version from the git tag (setuptools-scm style). In CI the Docker build has no
+# .git in its context, so the release workflow passes the version via the PDM_BUILD_SCM_VERSION env
+# var instead; fallback_version keeps a git-less local build (e.g. `pip install .`) from failing.
+[tool.pdm.version]
+source = "scm"
+fallback_version = "0.0.0"
 
 [tool.pdm.scripts]
 # Regenerate the committed config reference + YAML template from onbot/config.py (psyplus).
