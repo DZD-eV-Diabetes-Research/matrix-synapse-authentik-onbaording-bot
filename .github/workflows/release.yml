@@ -5,9 +5,9 @@ name: Release
 # Two channels, driven by the release's "This is a pre-release" checkbox
 # (github.event.release.prerelease), mirroring the DZDMedLog pipeline:
 #
-#   • Pre-release  → GHCR image tagged `beta` + the version (e.g. 1.2.0-beta.1)
+#   • Pre-release  → DockerHub image tagged `beta` + the version (e.g. 1.2.0-beta.1)
 #                    → PyPI upload of the (PEP 440 pre-release) version
-#   • Full release → GHCR image tagged `latest` + version, major.minor, major
+#   • Full release → DockerHub image tagged `latest` + version, major.minor, major
 #                    → PyPI upload of the stable version
 #
 # On PyPI the beta/latest distinction is intrinsic to the version string: a
@@ -21,8 +21,9 @@ name: Release
 #   3. Push tag vX.Y.Z and create a GitHub Release from it — tick "pre-release"
 #      for a beta, leave it unticked for a stable release.
 #
-# Secrets: GHCR uses the built-in GITHUB_TOKEN; PyPI uses the org-wide
-# PYPI_API_TOKEN. Kept separate from ci.yml (quality + integration) on purpose.
+# Secrets: DockerHub uses the org-wide DOCKERHUB_DZD_USERNAME / DOCKERHUB_DZD_PASSWORD;
+# PyPI uses the org-wide PYPI_API_TOKEN. Kept separate from ci.yml (quality +
+# integration) on purpose.
 #
 # ⚠️ The Phase 1 security hand-off (rotate leaked credentials + scrub git history,
 #    BATTLE_PLAN §5) must be complete before the first real release. See README.md.
@@ -32,32 +33,29 @@ on:
     types: [published]
 
 env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  IMAGE_NAME: dzdde/onbot
 
 jobs:
   publish-image:
-    name: build & push image (GHCR)
+    name: build & push image (DockerHub)
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
       id-token: write  # for build provenance attestation
     steps:
       - uses: actions/checkout@v4
 
-      - name: Log in to GHCR
+      - name: Log in to DockerHub
         uses: docker/login-action@v3
         with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: ${{ secrets.DOCKERHUB_DZD_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_DZD_PASSWORD }}
 
       - name: Derive image tags & labels
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ${{ env.IMAGE_NAME }}
           # Pre-releases get `beta` + the full version only; full releases get the
           # full version plus the rolling major.minor / major tags and `latest`.
           tags: |
