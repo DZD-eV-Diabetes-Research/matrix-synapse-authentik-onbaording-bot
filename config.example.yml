@@ -407,7 +407,7 @@ create_matrix_rooms_in_a_matrix_space:
     # Required:    False
     # Default:     null
     # Env-var:     'ONBOT_CREATE_MATRIX_ROOMS_IN_A_MATRIX_SPACE__CREATE_MATRIX_SPACE_IF_NOT_EXISTS__AVATAR_URL'
-    # Description: HTTP(S) URL to a picture used as the space avatar.
+    # Description: HTTP(S) URL to a picture used as the space avatar (icon). Applied on every reconcile and re-uploaded only when the URL changes, so it also updates an existing space.
     avatar_url:
 
     # ## space_params ###
@@ -478,7 +478,9 @@ sync_matrix_rooms_based_on_authentik_groups:
   # Required:    False
   # Default:     "chatroom_avatar_url"
   # Env-var:     'ONBOT_SYNC_MATRIX_ROOMS_BASED_ON_AUTHENTIK_GROUPS__ROOM_AVATAR_URL_ATTRIBUTE'
-  # Description: Authentik group attribute holding a URL used as the room avatar.
+  # Description: Key inside an Authentik group's custom ``attributes`` holding an HTTP(S) URL used as
+  #              that group's room avatar (icon). Applied on every reconcile and re-uploaded only when
+  #              the URL changes. ``null`` disables per-room avatars.
   # Example:
   #  >room_avatar_url_attribute: chatroom_avatar_url
   room_avatar_url_attribute: chatroom_avatar_url

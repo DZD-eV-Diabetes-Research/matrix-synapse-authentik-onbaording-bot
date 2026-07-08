@@ -50,6 +50,24 @@ def test_topic_and_room_params_from_attributes() -> None:
     assert attrs.room_params["preset"] == "private_chat"
 
 
+def test_room_avatar_url_from_group_attribute() -> None:
+    cfg = _config()  # default room_avatar_url_attribute == "chatroom_avatar_url"
+    group = {"pk": "g1", "name": "Team", "attributes": {"chatroom_avatar_url": "https://cdn/team.png"}}
+    assert compute_room_attributes(group, cfg, "company.org").avatar_source_url == "https://cdn/team.png"
+
+
+def test_room_avatar_url_absent_is_none() -> None:
+    cfg = _config()
+    group = {"pk": "g1", "name": "Team", "attributes": {}}
+    assert compute_room_attributes(group, cfg, "company.org").avatar_source_url is None
+
+
+def test_room_avatar_disabled_when_attribute_unset() -> None:
+    cfg = _config(sync_matrix_rooms_based_on_authentik_groups={"room_avatar_url_attribute": None})
+    group = {"pk": "g1", "name": "Team", "attributes": {"chatroom_avatar_url": "https://cdn/team.png"}}
+    assert compute_room_attributes(group, cfg, "company.org").avatar_source_url is None
+
+
 def test_name_prefix_applied_once() -> None:
     cfg = _config(matrix_room_default_settings={"name_prefix": "DZD-"})
     group = {"pk": "g1", "name": "Team", "attributes": {}}

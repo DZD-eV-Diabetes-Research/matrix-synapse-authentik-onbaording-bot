@@ -38,11 +38,13 @@ from onbot.reconciler.power_levels import (
 )
 from onbot.reconciler.rooms import build_group_room_maps
 from onbot.reconciler.state import (
+    AnyRoomState,
     GroupRoomState,
     OnbotRoomType,
     SpaceRoomState,
     dump_room_state,
     event_type_name,
+    parse_room_state,
 )
 
 log = get_logger(__name__)
@@ -122,6 +124,7 @@ class ReconcilerEngine:
 
         await self._converge_rooms(group_maps, space)
         if space is not None:
+            await self._converge_space_avatar(space)
             await self._converge_space_membership(space, users)
         await self._converge_room_membership_and_levels(group_maps, users)
         await self._converge_lifecycle(matrix_users, {u.mxid for u in users})
@@ -201,6 +204,43 @@ class ReconcilerEngine:
         )
         return MatrixRoom(room_id=room_id, canonical_alias=target_alias, is_space=True)
 
+    async def _converge_avatar(
+        self, room_id: str, room_type: OnbotRoomType, desired: str | None, fresh_state: AnyRoomState
+    ) -> None:
+        """Set/update a room or space icon (``m.room.avatar``) from a source URL (G6.8).
+
+        Re-uploads only when the configured URL differs from the one recorded in the room's onbot
+        state event (``avatar_source_url``), so a stable URL costs one state read per tick and no
+        upload. Applies to already-existing rooms too, not just freshly created ones. Best-effort:
+        a fetch/upload failure is logged and retried next tick. Clearing the source URL stops future
+        updates but leaves the current icon in place (removing avatars is out of scope). ``fresh_state``
+        seeds the state event (its ``group_id``/``authentik_server``) when the room has none yet.
+        """
+        event_type = event_type_name(self.server_name, room_type)
+        raw = await self.effectors.get_room_state(room_id, event_type)
+        state = parse_room_state(room_type, raw) if raw else fresh_state
+        if desired == state.avatar_source_url:
+            return
+        if desired:
+            try:
+                mxc = await self.effectors.upload_avatar(desired)
+                await self.effectors.set_room_avatar(room_id, mxc)
+            except Exception:
+                log.exception("failed to set avatar of %s from %s", room_id, desired)
+                return
+            log.info("set avatar of %s from %s", room_id, desired)
+        state.avatar_source_url = desired
+        await self.effectors.put_room_state(room_id, event_type, dump_room_state(state))
+
+    async def _converge_space_avatar(self, space: MatrixRoom) -> None:
+        space_cfg = self.config.create_matrix_rooms_in_a_matrix_space.create_matrix_space_if_not_exists
+        await self._converge_avatar(
+            space.room_id,
+            OnbotRoomType.space,
+            space_cfg.avatar_url,
+            SpaceRoomState(authentik_server=self.config.authentik_server.url),
+        )
+
     async def _converge_rooms(self, group_maps: list[GroupRoomMap], space: MatrixRoom | None) -> None:
         parent_space_id = space.room_id if space else None
         for gm in group_maps:
@@ -221,6 +261,13 @@ class ReconcilerEngine:
                 # G2.3: a previously blocked room whose group reappeared gets unblocked.
                 log.info("unblocking room %s (group reappeared)", gm.room.room_id)
                 await self.admin.room_set_blocked(gm.room.room_id, blocked=False)
+
+            await self._converge_avatar(
+                gm.room.room_id,
+                OnbotRoomType.group_room,
+                gm.desired.avatar_source_url,
+                GroupRoomState(group_id=gm.group_pk, authentik_server=self.config.authentik_server.url),
+            )
 
     async def _converge_space_membership(self, space: MatrixRoom, users: list[MappedUser]) -> None:
         members = await self.admin.list_room_members(space.room_id)

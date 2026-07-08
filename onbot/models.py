@@ -21,6 +21,7 @@ class RoomCreateAttributes:
     topic: str | None = None
     room_params: dict[str, Any] = field(default_factory=dict)
     encrypted: bool = True
+    avatar_source_url: str | None = None
 
 
 @dataclass(slots=True)

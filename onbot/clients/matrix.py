@@ -25,8 +25,11 @@ from __future__ import annotations
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
+
+if TYPE_CHECKING:
+    from onbot.media import MediaUploader
 
 from onbot.auth.token_provider import TokenProvider
 from onbot.clients.base import ApiError, BaseApiClient
@@ -422,8 +425,19 @@ class CSApiEffectors:
     Replaces ``DryRunEffectors`` when the bot runs for real (Phase 3 deferral resolved).
     """
 
-    def __init__(self, client: ApiClientMatrix) -> None:
+    def __init__(self, client: ApiClientMatrix, *, media: MediaUploader | None = None) -> None:
         self.client = client
+        self._owns_media = media is None
+        if media is None:
+            # Local import avoids a module-level cycle (onbot.media imports ApiClientMatrix).
+            from onbot.media import MediaUploader
+
+            media = MediaUploader(client)
+        self._media = media
+
+    async def aclose(self) -> None:
+        if self._owns_media:
+            await self._media.aclose()
 
     async def create_group_room(self, attrs: RoomCreateAttributes, parent_space_id: str | None) -> str:
         return await self.client.create_room(
@@ -452,6 +466,17 @@ class CSApiEffectors:
 
     async def set_room_topic(self, room_id: str, topic: str) -> None:
         await self.client.set_room_topic(room_id, topic)
+
+    async def set_room_avatar(self, room_id: str, mxc_uri: str) -> None:
+        await self.client.set_room_avatar(room_id, mxc_uri)
+
+    async def upload_avatar(self, url: str) -> str:
+        return await self._media.upload_from_url(url)
+
+    async def get_room_state(
+        self, room_id: str, event_type: str, state_key: str = ""
+    ) -> dict[str, Any] | None:
+        return await self.client.get_room_state_event(room_id, event_type, state_key)
 
     async def put_room_state(self, room_id: str, event_type: str, content: dict[str, Any]) -> None:
         await self.client.put_room_state_event(room_id, event_type, content)
