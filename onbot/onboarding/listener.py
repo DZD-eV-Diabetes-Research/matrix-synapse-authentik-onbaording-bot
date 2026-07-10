@@ -13,6 +13,18 @@ Both funnel through :meth:`_maybe_welcome`, which filters out the bot and ignore
 the idempotent :class:`~onbot.onboarding.welcome.WelcomeService`. That idempotency is what lets the
 listener ignore the sync stream's replay-on-restart entirely: re-welcoming an already-welcomed user
 sends nothing.
+
+Sending nothing is not the same as costing nothing, though. The reconciler emits ``user_synced`` for
+*every* mapped user on *every* pass, and proving a user is already welcomed costs three CS-API reads
+(their DM room from account data, its onbot state event, its power levels). At a few hundred users
+and a short tick that is the bot's entire Matrix traffic, spent to conclude nothing. So the listener
+remembers who it has welcomed in :attr:`OnboardingListener._welcomed` and short-circuits before
+touching Matrix at all.
+
+The memory is per-process and deliberately not persisted: after a restart the first pass re-checks
+each user once and repopulates it. That is also what keeps ``welcome_new_users_messages`` editable —
+a changed message is picked up on the restart that loads it, and :mod:`onbot.onboarding.welcome`
+then re-sends only the message that actually changed.
 """
 
 from __future__ import annotations
@@ -52,6 +64,9 @@ class OnboardingListener:
         self.config = config
         self.events = events
         self.bot_id = config.synapse_server.bot_user_id
+        # Users this process has already welcomed. Bounded by the directory size; see the module
+        # docstring for why it is not persisted.
+        self._welcomed: set[str] = set()
 
     def start(self) -> None:
         """Subscribe to the reconciler's user-provisioned signal (call once, before running)."""
@@ -68,7 +83,13 @@ class OnboardingListener:
     async def _maybe_welcome(self, mxid: str) -> None:
         if mxid == self.bot_id or mxid in self.config.matrix_user_ignore_list:
             return
+        if mxid in self._welcomed:
+            return
         try:
             await self.welcome.welcome_user(mxid)
         except Exception:
+            # Not remembered, so the next tick retries: a homeserver that was briefly unreachable
+            # must not cost the user their welcome.
             log.exception("welcome flow failed for %s", mxid)
+            return
+        self._welcomed.add(mxid)

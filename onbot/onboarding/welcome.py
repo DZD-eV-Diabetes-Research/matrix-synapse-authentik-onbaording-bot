@@ -14,11 +14,19 @@ reconciler signal *and* a join event):
 * **One force-join ever** — recorded as ``force_joined_at`` in that same state event, so a user who
   leaves the notice board is not re-joined on the next reconcile tick.
 
+Those layers only hold if the bookkeeping is visible *before* the trigger it guards against fires.
+Force-joining the user lands a ``join`` membership event on the bot's own sync stream, which re-enters
+this flow for the same user while the first call is still sending messages — so the state event is
+written as soon as the room exists and again after each message, never once at the end. The two calls
+are also serialised by :attr:`WelcomeService._locks`, since neither Matrix account data nor room state
+offers a compare-and-set.
+
 No database: all bookkeeping lives in Matrix account data + room state (AD-1).
 """
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from datetime import UTC, datetime
 
@@ -74,39 +82,52 @@ class WelcomeService:
         self._place_in_space = config.place_onboarding_rooms_in_space and space_cfg.enabled
         self._space_alias = f"#{space_cfg.alias}:{self.server_name}"
         self._space_id: str | None = None
+        # One lock per user, so the reconciler signal and the sync stream cannot welcome the same
+        # person at once. Bounded by the number of users the bot has ever seen.
+        self._locks: dict[str, asyncio.Lock] = {}
 
     async def welcome_user(self, mxid: str) -> None:
         """Ensure ``mxid`` has a DM with all configured welcome messages delivered (idempotent)."""
         messages = self.config.welcome_new_users_messages or []
         if not messages:
             return
+        async with self._locks.setdefault(mxid, asyncio.Lock()):
+            await self._welcome_user(mxid, messages)
 
+    async def _welcome_user(self, mxid: str, messages: list[str]) -> None:
         room_id, created = await self._ensure_direct_room(mxid)
         if created:
             state = DirectRoomState(user_id=mxid, authentik_server=self.config.authentik_server.url)
             if await self._force_join(room_id, mxid):
                 state.force_joined_at = int(datetime.now(UTC).timestamp())
+            await self._persist(room_id, state)
         else:
             state = await self._load_direct_state(room_id, mxid)
             await self._heal_power_levels(room_id)
 
-        changed = created
+        sent = 0
         for message in messages:
             key = _message_key(message)
             if key in state.welcome_messages_sent:
                 continue
             await self.client.send_text_message(room_id, message)
             state.welcome_messages_sent[key] = datetime.now(UTC).isoformat()
-            changed = True
+            # Record each message the moment it lands: a crash (or a restart) between two sends must
+            # not replay the ones already delivered.
+            await self._persist(room_id, state)
+            sent += 1
 
-        if changed:
-            await self.client.put_room_state_event(room_id, self._direct_event_type, dump_room_state(state))
+        if sent:
             log.info(
-                "welcomed %s in %s (%d messages tracked)",
+                "welcomed %s in %s (%d new, %d tracked)",
                 mxid,
                 room_id,
+                sent,
                 len(state.welcome_messages_sent),
             )
+
+    async def _persist(self, room_id: str, state: DirectRoomState) -> None:
+        await self.client.put_room_state_event(room_id, self._direct_event_type, dump_room_state(state))
 
     async def _ensure_direct_room(self, mxid: str) -> tuple[str, bool]:
         """Return ``(room_id, created)`` — reusing the bot's existing DM with ``mxid`` if any."""

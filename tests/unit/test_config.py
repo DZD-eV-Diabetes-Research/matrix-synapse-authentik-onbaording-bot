@@ -126,5 +126,5 @@ def test_generate_example_config_ignores_ambient_config(
     data = yaml.safe_load(generate_example_config())
 
     assert data["log_level"] == "INFO"
-    assert data["server_tick_rate_sec"] == 20
+    assert data["server_tick_rate_sec"] == 300
     assert data["synapse_server"]["server_name"] is None

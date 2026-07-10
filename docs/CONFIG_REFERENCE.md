@@ -29,16 +29,21 @@ the bot up. The `--log-level` command-line flag overrides this.
 
 *Reconcile interval (seconds)*
 
-How often, in seconds, the bot re-converges Authentik state onto Matrix. Each
-reconcile is idempotent, so this is a safety net that repairs drift rather than the
-only path — onboarding still reacts to live events between ticks. Lower it to react
-to Authentik changes sooner, at the cost of more API calls against both servers.
+How often, in seconds, the bot re-converges Authentik state onto Matrix. A
+reconcile reads the whole Matrix side — every managed room's members, power levels
+and state — so it is the expensive operation, and this is the interval that costs
+Synapse traffic.
+
+It does not set how quickly new users are onboarded. A reconcile also runs on demand
+whenever `authentik_poll_rate_sec` notices Authentik has changed, so this is a safety
+net that repairs drift somebody caused *inside* Matrix (a manually kicked member, an
+edited power level). Minutes, not seconds, is the right order of magnitude.
 
 | Property | Value |
 |---|---|
 | Type | int |
 | Required | No |
-| Default | `20` |
+| Default | `300` |
 | Environment variable | `ONBOT_SERVER_TICK_RATE_SEC` |
 
 **Examples:**
@@ -46,13 +51,54 @@ to Authentik changes sooner, at the cost of more API calls against both servers.
 *Example 1:*
 
 ```yaml
-server_tick_rate_sec: 20
+server_tick_rate_sec: 300
 ```
 
 *Example 2:*
 
 ```yaml
-server_tick_rate_sec: 300
+server_tick_rate_sec: 900
+```
+
+---
+
+## `authentik_poll_rate_sec`
+
+*Authentik poll interval (seconds)*
+
+How often, in seconds, the bot asks Authentik whether anything changed — a new
+user, a group membership, a renamed room group. When something did, it runs a
+reconcile immediately; when nothing did, it does nothing at all.
+
+This is what sets onboarding latency, and it is cheap: two Authentik requests per
+poll and zero against Synapse. Set it to `0` to disable the poll entirely, in which
+case new users wait for the next `server_tick_rate_sec` reconcile.
+
+| Property | Value |
+|---|---|
+| Type | int |
+| Required | No |
+| Default | `15` |
+| Environment variable | `ONBOT_AUTHENTIK_POLL_RATE_SEC` |
+
+**Examples:**
+
+*Example 1:*
+
+```yaml
+authentik_poll_rate_sec: 15
+```
+
+*Example 2:*
+
+```yaml
+authentik_poll_rate_sec: 60
+```
+
+*Example 3:*
+
+```yaml
+authentik_poll_rate_sec: 0
 ```
 
 ---

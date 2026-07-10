@@ -67,6 +67,11 @@ def resolve_admin_mxids(config: OnbotConfig, group_members: Iterable[dict[str, A
     return frozenset(mxids)
 
 
+def _directory_freshness_sec(config: OnbotConfig) -> int:
+    """How stale the bot's view of Authentik may get, in seconds."""
+    return config.authentik_poll_rate_sec or config.server_tick_rate_sec
+
+
 class AdminResolver:
     """The current admin set, refreshed from Authentik at most once per TTL."""
 
@@ -81,10 +86,13 @@ class AdminResolver:
         self.authentik = authentik
         self.config = config
         self.cfg = config.admin_room
-        # The reconcile interval, reused rather than given its own knob: it is already the answer to
-        # "how stale may this bot's view of Authentik be?", and an operator who tightens revocation
-        # latency for group rooms means it for the admin group too.
-        self.ttl_sec = ttl_sec if ttl_sec is not None else float(config.server_tick_rate_sec)
+        # The Authentik poll interval, reused rather than given its own knob: it is already the
+        # answer to "how stale may this bot's view of Authentik be?", and an operator who tightens
+        # that means it for the admin group too. Deliberately *not* the reconcile interval — that one
+        # is now a slow Matrix-side drift repair (minutes), and binding revocation of the bot's most
+        # dangerous capability to it would let a removed admin keep issuing commands for minutes.
+        # Falls back to the reconcile interval only when the poll is switched off entirely.
+        self.ttl_sec = ttl_sec if ttl_sec is not None else float(_directory_freshness_sec(config))
         self._clock = clock
         # The floor: available before the first fetch, and after a failed one.
         self._admins = frozenset(self.cfg.admin_user_ids)

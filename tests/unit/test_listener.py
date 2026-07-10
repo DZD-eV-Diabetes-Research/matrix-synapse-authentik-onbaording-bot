@@ -110,3 +110,41 @@ async def test_handle_sync_welcomes_users_who_joined_in_the_slice() -> None:
     )
 
     assert welcome.welcomed == ["@real:matrix.test"]
+
+
+async def test_an_already_welcomed_user_is_not_welcomed_again() -> None:
+    """The reconciler re-emits user_synced every pass. Proving a user is already welcomed costs
+    three CS-API reads, so the listener must not even ask the WelcomeService."""
+    welcome = _RecordingWelcome()
+    events = EventBus()
+    listener = OnboardingListener(None, welcome, _config(), events)  # type: ignore[arg-type]
+    listener.start()
+
+    for _ in range(3):
+        await events.emit(Signal.user_synced, mxid="@real:matrix.test")
+
+    assert welcome.welcomed == ["@real:matrix.test"]
+
+
+async def test_a_failed_welcome_is_retried_on_the_next_tick() -> None:
+    """A briefly unreachable homeserver must not cost the user their welcome."""
+
+    class _FlakyWelcome:
+        def __init__(self) -> None:
+            self.attempts = 0
+
+        async def welcome_user(self, mxid: str) -> None:
+            self.attempts += 1
+            if self.attempts == 1:
+                raise RuntimeError("synapse is down")
+
+    welcome = _FlakyWelcome()
+    events = EventBus()
+    listener = OnboardingListener(None, welcome, _config(), events)  # type: ignore[arg-type]
+    listener.start()
+
+    await events.emit(Signal.user_synced, mxid="@real:matrix.test")
+    await events.emit(Signal.user_synced, mxid="@real:matrix.test")
+    await events.emit(Signal.user_synced, mxid="@real:matrix.test")
+
+    assert welcome.attempts == 2  # retried after the failure, then remembered
