@@ -116,6 +116,20 @@ class ApiClientSynapseAdmin(BaseApiClient):
         # https://element-hq.github.io/synapse/latest/admin_api/user_admin_api.html#change-whether-a-user-is-a-server-administrator-or-not
         await self.put_json(f"v1/users/{user_id}/admin", json_body={"admin": admin})
 
+    async def override_ratelimit(
+        self, user_id: str, *, messages_per_second: int = 0, burst_count: int = 0
+    ) -> None:
+        """Replace a user's message send-rate limits. Both values ``0`` means "no limit at all".
+
+        The bot fans a broadcast out across every managed direct room, which Synapse's per-user send
+        limiter reads as one user flooding hundreds of rooms.
+        https://element-hq.github.io/synapse/latest/admin_api/user_admin_api.html#override-ratelimiting-for-users
+        """
+        await self.post_json(
+            f"v1/users/{user_id}/override_ratelimit",
+            json_body={"messages_per_second": messages_per_second, "burst_count": burst_count},
+        )
+
     async def room_is_blocked(self, room_id: str) -> bool:
         # https://element-hq.github.io/synapse/latest/admin_api/rooms.html#get-block-status
         result = await self.get_json(f"v1/rooms/{room_id}/block")
