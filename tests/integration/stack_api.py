@@ -142,21 +142,16 @@ def _new_executor_url(flow_slug: str, query: str) -> str:
     return f"{AUTHENTIK_URL}/api/v3/flows/executor/{flow_slug}/?query={quote(query, safe='')}"
 
 
-def mas_login(username: str, password: str) -> LoginResult:
-    """Drive a real authorization-code login (client -> MAS -> Authentik) and return the session.
-
-    Raises :class:`LoginError` if the flow fails to complete (e.g. the Authentik account is
-    disabled), which the §7 Q1 experiment relies on to observe whether upstream disable blocks login.
-    """
+def _authorize_url(device: str) -> tuple[str, str]:
+    """Build a MAS authorization-code URL for ``device``; return it with its PKCE verifier."""
     verifier = _b64url(secrets.token_bytes(32))
     challenge = _b64url(hashlib.sha256(verifier.encode()).digest())
     state, nonce = secrets.token_hex(8), secrets.token_hex(8)
-    device = "onbotITEST" + secrets.token_hex(6)
     scope = (
         "openid urn:matrix:org.matrix.msc2967.client:api:* "
         f"urn:matrix:org.matrix.msc2967.client:device:{device}"
     )
-    authorize = (
+    url = (
         MAS_URL
         + "/authorize?"
         + urlencode(
@@ -172,6 +167,33 @@ def mas_login(username: str, password: str) -> LoginResult:
             }
         )
     )
+    return url, verifier
+
+
+def login_chain_ready() -> bool:
+    """Whether the MAS -> Authentik redirect chain reaches the Authentik flow interface.
+
+    Authentik serves OIDC discovery for the `mas` application before it has finished wiring the
+    provider's authorization flow, and until then `/application/o/authorize/` answers 404. Probing
+    discovery therefore says "ready" while a real login still fails; probing the chain does not.
+    """
+    authorize, _ = _authorize_url("onbotREADY" + secrets.token_hex(6))
+    try:
+        with httpx.Client(follow_redirects=False, timeout=10.0) as c:
+            _follow_to_flow(c, authorize)
+    except LoginError, httpx.HTTPError:
+        return False
+    return True
+
+
+def mas_login(username: str, password: str) -> LoginResult:
+    """Drive a real authorization-code login (client -> MAS -> Authentik) and return the session.
+
+    Raises :class:`LoginError` if the flow fails to complete (e.g. the Authentik account is
+    disabled), which the §7 Q1 experiment relies on to observe whether upstream disable blocks login.
+    """
+    device = "onbotITEST" + secrets.token_hex(6)
+    authorize, verifier = _authorize_url(device)
     hdr = {"Accept": "application/json"}
     with httpx.Client(follow_redirects=False, timeout=30.0) as c:
         flow_slug, flow_query = _follow_to_flow(c, authorize)
@@ -209,7 +231,7 @@ def _follow_to_flow(c: httpx.Client, start: str) -> tuple[str, str]:
     for _ in range(20):
         r = c.get(url)
         if r.status_code not in (301, 302, 303, 307, 308):
-            raise LoginError(f"expected redirect before flow, got {r.status_code}: {r.text[:200]}")
+            raise LoginError(f"expected redirect before flow, got {r.status_code} at {url}: {r.text[:200]}")
         loc = _rewrite(urljoin(str(r.request.url), r.headers["location"]))
         parsed = urlparse(loc)
         if parsed.path.startswith("/if/flow/"):

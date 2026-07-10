@@ -9,10 +9,16 @@ This script renders two artifacts from it with `psyplus <https://pypi.org/projec
 * ``config.example.yml`` — a fully commented, fillable YAML template.
 
 Both are committed so they show up in code review and on GitHub. To avoid drift they are *generated*,
-never hand-edited:
+never hand-edited — change the ``Field(...)`` metadata in ``onbot/config.py`` and re-render:
 
-    pdm run gen-config-docs      # regenerate both files
-    pdm run check-config-docs    # CI/pre-commit: fail if the committed files are stale
+    ./gen_config_docs.sh          # regenerate both files (root wrapper around this script)
+    ./gen_config_docs.sh --check  # verify they are current; exit 1 on drift
+
+    pdm run gen-config-docs       # the same, straight through pdm
+    pdm run check-config-docs     # CI/pre-commit: fail if the committed files are stale
+
+psyplus renders each field's ``title``, ``description`` and ``examples``; type, default,
+required-ness and the ``ONBOT_*`` env-var name are derived from the model automatically.
 
 ``psyplus`` is a docs-only dependency (the ``docs`` group) and is deliberately **not** a runtime
 dependency — the production image does not carry it. The runtime ``onbot generate-config`` command
@@ -35,11 +41,11 @@ YAML_PATH = REPO_ROOT / "config.example.yml"
 
 _GENERATED_BANNER = (
     "<!-- GENERATED FILE — do not edit by hand.\n"
-    "     Regenerate with `pdm run gen-config-docs` after changing onbot/config.py. -->\n\n"
+    "     Regenerate with `./gen_config_docs.sh` after changing onbot/config.py. -->\n\n"
 )
 _YAML_BANNER = (
     "# Onbot configuration template — GENERATED from onbot/config.py.\n"
-    "# Regenerate with `pdm run gen-config-docs`; do not edit by hand.\n"
+    "# Regenerate with `./gen_config_docs.sh`; do not edit by hand.\n"
     "# Copy this to config.yml and fill in the required (Required: True) values. Every setting can\n"
     "# also be supplied via its ONBOT_* environment variable (shown per field below).\n"
 )

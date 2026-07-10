@@ -58,6 +58,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if get_config_file_path() is None:
         log.warning("no config file found; relying on ONBOT_* environment variables")
     config = load_config()
+    # The config file's log_level is only knowable now; the CLI flag keeps precedence over it.
+    if args.log_level is None:
+        configure_logging(config.log_level)
 
     if args.command == "healthcheck":
         from onbot.healthcheck import run_healthcheck

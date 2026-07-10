@@ -44,6 +44,7 @@ class FakeAdmin:
     def __init__(self) -> None:
         self.added: list[tuple[str, str]] = []
         self.blocked_changes: list[tuple[str, bool]] = []
+        self.deleted: list[str] = []
 
     async def list_users(self) -> list[dict[str, Any]]:
         return [{"name": f"@{u}:company.org"} for u in ("alice", "bob", "carol")]
@@ -67,6 +68,10 @@ class FakeAdmin:
 
     async def add_user_to_room(self, room_id: str, user_id: str) -> None:
         self.added.append((room_id, user_id))
+
+    async def delete_room(self, room_id: str, **_: Any) -> dict[str, Any]:
+        self.deleted.append(room_id)
+        return {}
 
 
 class RecordingEffectors(DryRunEffectors):
@@ -179,6 +184,92 @@ async def test_group_room_avatar_set_and_deduplicated() -> None:
     await engine.reconcile_once()
     assert effectors.uploads == ["https://cdn/t.png"]
     assert len(effectors.avatars) == 1
+
+
+# --- obsolete room teardown (disable_rooms_when_mapped_authentik_group_disappears) ---
+
+_GROUP_ROOM_EVENT = "org.company.onbot.group_room"
+_ORPHAN = "!orphan:company.org"
+
+
+class OrphanAdmin(FakeAdmin):
+    """Serves an extra room besides the live g1 room, for the obsolete-room paths."""
+
+    async def list_non_space_rooms(self) -> list[dict[str, Any]]:
+        return [
+            *await super().list_non_space_rooms(),
+            {"room_id": _ORPHAN, "canonical_alias": "#gone:company.org", "name": "Gone"},
+        ]
+
+
+def _orphan_engine(
+    *, disable: bool = True, delete: bool = False, orphan_state: dict[str, Any] | None = None
+) -> tuple[ReconcilerEngine, OrphanAdmin, RecordingEffectors]:
+    config = OnbotConfig.model_validate(_BASE)
+    room_cfg = config.sync_matrix_rooms_based_on_authentik_groups
+    room_cfg.disable_rooms_when_mapped_authentik_group_disappears = disable
+    room_cfg.delete_disabled_rooms = delete
+
+    admin = OrphanAdmin()
+    effectors = RecordingEffectors()
+    if orphan_state is not None:
+        effectors.state_store[(_ORPHAN, _GROUP_ROOM_EVENT)] = orphan_state
+    engine = ReconcilerEngine(config, FakeAuthentik(), admin, effectors)  # type: ignore[arg-type]
+    return engine, admin, effectors
+
+
+def _state(group_id: str) -> dict[str, Any]:
+    return {"schema_version": 1, "room_type": "group_room", "group_id": group_id}
+
+
+async def test_obsolete_room_is_blocked_and_cleared() -> None:
+    # The orphan room records group "g-gone", which Authentik no longer returns.
+    engine, admin, effectors = _orphan_engine(orphan_state=_state("g-gone"))
+    await engine.reconcile_once()
+
+    assert (_ORPHAN, True) in admin.blocked_changes
+    # every member except the bot is kicked out of the obsolete room
+    kicked = {mxid for room, mxid in effectors.kicks if room == _ORPHAN}
+    assert kicked == {"@alice:company.org", "@stale:company.org"}
+    assert admin.deleted == []  # delete_disabled_rooms is off
+
+
+async def test_obsolete_room_deleted_when_delete_disabled_rooms_enabled() -> None:
+    engine, admin, _ = _orphan_engine(delete=True, orphan_state=_state("g-gone"))
+    await engine.reconcile_once()
+
+    assert (_ORPHAN, True) in admin.blocked_changes
+    assert admin.deleted == [_ORPHAN]
+
+
+async def test_obsolete_room_untouched_when_disable_flag_off() -> None:
+    engine, admin, effectors = _orphan_engine(disable=False, orphan_state=_state("g-gone"))
+    await engine.reconcile_once()
+
+    assert admin.blocked_changes == []
+    assert admin.deleted == []
+    assert all(room != _ORPHAN for room, _ in effectors.kicks)
+
+
+async def test_room_without_onbot_state_is_never_touched() -> None:
+    # No group_room state event on the orphan -> not a room we manage.
+    engine, admin, effectors = _orphan_engine(delete=True, orphan_state=None)
+    await engine.reconcile_once()
+
+    assert admin.blocked_changes == []
+    assert admin.deleted == []
+    assert all(room != _ORPHAN for room, _ in effectors.kicks)
+
+
+async def test_room_of_live_group_survives_an_alias_change() -> None:
+    # The orphan's alias no longer matches what the group projects to, so it is unmapped this pass —
+    # but its recorded group_id is still live, so it must not be torn down.
+    engine, admin, effectors = _orphan_engine(delete=True, orphan_state=_state("g1"))
+    await engine.reconcile_once()
+
+    assert admin.blocked_changes == []
+    assert admin.deleted == []
+    assert all(room != _ORPHAN for room, _ in effectors.kicks)
 
 
 async def test_reconcile_emits_user_synced_events() -> None:

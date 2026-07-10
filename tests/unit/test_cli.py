@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -29,13 +31,33 @@ def test_healthcheck_dispatches_and_propagates_exit_code(monkeypatch: pytest.Mon
         captured["config"] = config
         return 3
 
-    sentinel = object()
+    sentinel = SimpleNamespace(log_level="INFO")  # main() reads log_level off the loaded config
     monkeypatch.setattr(cli, "load_config", lambda: sentinel)
     monkeypatch.setattr(cli, "get_config_file_path", lambda: "config.yml")
     monkeypatch.setattr("onbot.healthcheck.run_healthcheck", fake_run_healthcheck)
 
     assert cli.main(["healthcheck"]) == 3
     assert captured["config"] is sentinel
+
+
+def _run_healthcheck_with(monkeypatch: pytest.MonkeyPatch, config_level: str, argv: list[str]) -> int:
+    async def fake_run_healthcheck(config: object) -> int:
+        return 0
+
+    monkeypatch.setattr(cli, "load_config", lambda: SimpleNamespace(log_level=config_level))
+    monkeypatch.setattr(cli, "get_config_file_path", lambda: "config.yml")
+    monkeypatch.setattr("onbot.healthcheck.run_healthcheck", fake_run_healthcheck)
+    cli.main(argv)
+    return logging.getLogger().level
+
+
+def test_config_log_level_is_applied(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Regression: the config file's log_level used to be parsed and then never read.
+    assert _run_healthcheck_with(monkeypatch, "DEBUG", ["healthcheck"]) == logging.DEBUG
+
+
+def test_cli_log_level_overrides_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert _run_healthcheck_with(monkeypatch, "DEBUG", ["--log-level", "INFO", "healthcheck"]) == logging.INFO
 
 
 def test_unknown_command_is_rejected() -> None:
