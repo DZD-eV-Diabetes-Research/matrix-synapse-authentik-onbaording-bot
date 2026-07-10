@@ -7,6 +7,7 @@ from typing import Any
 from onbot.admin.admins import AdminResolver
 from onbot.clients.base import ApiError
 from onbot.config import AdminRoom, AuthentikServer, OnbotConfig, SynapseServer
+from onbot.events import Event, Signal
 from onbot.rooms.admin import PINNED_EVENTS_TYPE, AdminRoomProvisioner, admin_room_power_levels
 
 BOT = "@bot:matrix.test"
@@ -181,6 +182,38 @@ async def test_members_of_the_authentik_admin_group_are_invited_too() -> None:
     await _provisioner(client, config, _FakeAuthentik("alice")).ensure()
 
     assert client.invited == [ADMIN, "@alice:matrix.test"]
+
+
+async def test_an_admin_added_to_the_group_after_startup_is_invited_on_the_next_reconcile() -> None:
+    # The room is invite-only and `invite` sits at power level 100, which only the bot holds — so
+    # nobody can let a new group member in by hand. Were the invite pass startup-only, they could
+    # command the bot (the router re-resolves per command) with no way into the room to do it.
+    client = _FakeClient(existing_room=ROOM)
+    config = _config(authentik_group_pks_granting_bot_admin=[GROUP])
+    authentik = _FakeAuthentik()  # the Authentik admin group is empty when the bot starts
+    resolver = AdminResolver(authentik, config, ttl_sec=0)  # type: ignore[arg-type]
+    provisioner = AdminRoomProvisioner(client, config, resolver)  # type: ignore[arg-type]
+
+    await provisioner.ensure()
+    assert client.invited == [ADMIN]
+
+    authentik.usernames = ("alice",)  # ...and alice is added to it while the bot runs
+    client.memberships[ADMIN] = "invite"
+
+    await provisioner.on_reconcile(Event(signal=Signal.reconcile_completed, payload={}))
+
+    # alice gets in on the next tick; the admin already invited is not invited (or notified) twice
+    assert client.invited == [ADMIN, "@alice:matrix.test"]
+
+
+async def test_the_invite_pass_is_a_no_op_before_the_room_is_bound() -> None:
+    # A provisioner whose ensure() never ran must not try to invite anybody into a room it has not
+    # resolved.
+    client = _FakeClient(existing_room=ROOM)
+
+    await _provisioner(client).ensure_admins_invited()
+
+    assert client.invited == []
 
 
 async def test_a_failed_invitation_does_not_abort_provisioning() -> None:

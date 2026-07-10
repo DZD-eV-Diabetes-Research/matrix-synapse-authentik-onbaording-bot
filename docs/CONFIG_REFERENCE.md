@@ -741,7 +741,8 @@ call, so these administrators keep their commands when Authentik is unreachable.
 Everyone not in the union of the two lists is refused, even if they are somehow in the
 room and even if they hold a high power level there, because a command like
 `!announce` reaches every user on the server. The bot invites these users to the room
-when it creates it.
+when it creates it, and re-checks on every reconcile, so somebody added here or to the
+group later is invited without a restart.
 
 | Property | Value |
 |---|---|

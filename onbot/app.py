@@ -26,7 +26,7 @@ from onbot.clients.matrix import ApiClientMatrix, CSApiEffectors
 from onbot.clients.synapse_admin import ApiClientSynapseAdmin
 from onbot.config import OnbotConfig, SynapseServer
 from onbot.discovery import DiscoveryPoller
-from onbot.events import EventBus
+from onbot.events import EventBus, Signal
 from onbot.lifecycle.accounts import (
     AccountLifecycleManager,
     AdminApiLifecycleEffectors,
@@ -98,6 +98,7 @@ async def _build_control_room(
     broadcast: BroadcastService,
     engine: ReconcilerEngine,
     admins: AdminResolver,
+    events: EventBus,
 ) -> ControlRoomHandler | None:
     """Provision the admin control room and bind its command router (ADR-0010), or ``None``.
 
@@ -107,13 +108,17 @@ async def _build_control_room(
     """
     if not config.admin_room.enabled:
         return None
+    provisioner = AdminRoomProvisioner(matrix, config, admins)
     try:
-        room_id = await AdminRoomProvisioner(matrix, config, admins).ensure()
+        room_id = await provisioner.ensure()
     except Exception:
         log.exception("could not provision the admin control room; continuing without it")
         return None
     if room_id is None:
         return None
+    # Re-invite on every reconcile, so somebody added to the Authentik admin group gets into the
+    # room on the same tick that grants them the right to command the bot.
+    events.subscribe(Signal.reconcile_completed, provisioner.on_reconcile)
     handler = ControlRoomHandler(matrix, config, broadcast, admins, engine=engine)
     await handler.start(room_id)
     return handler
@@ -204,7 +209,7 @@ async def build_app(config: OnbotConfig) -> AsyncIterator[App]:
     # stay slow (see onbot/discovery.py).
     discovery = DiscoveryPoller(authentik, config, engine.trigger)
     admins = AdminResolver(authentik, config)
-    control_room = await _build_control_room(matrix, config, broadcast, engine, admins)
+    control_room = await _build_control_room(matrix, config, broadcast, engine, admins, events)
     if control_room is not None:
         pump.register(control_room)
     try:

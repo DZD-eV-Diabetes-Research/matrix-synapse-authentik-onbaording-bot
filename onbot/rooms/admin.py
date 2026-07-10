@@ -30,6 +30,7 @@ from onbot.admin.commands import help_text
 from onbot.clients.base import ApiError
 from onbot.clients.matrix import ApiClientMatrix
 from onbot.config import OnbotConfig
+from onbot.events import Event
 from onbot.logging import get_logger
 from onbot.reconciler.state import (
     AdminRoomState,
@@ -75,20 +76,53 @@ class AdminRoomProvisioner:
         self.bot_id = config.synapse_server.bot_user_id
         self.server_name = config.synapse_server.server_name
         self.alias = f"#{self.cfg.alias}:{self.server_name}"
+        # Bound by ensure(); until then the invite pass has no room to invite anybody into.
+        self.room_id: str | None = None
         self._state_event_type = event_type_name(self.server_name, OnbotRoomType.admin_room)
 
     async def ensure(self) -> str | None:
         """Return the control room's id, creating it if needed. ``None`` when the feature is off."""
         if not self.cfg.enabled:
             return None
-        admins = sorted(await self.admins.admins())
         room_id = await self.client.resolve_room_alias(self.alias)
         if room_id is None:
             room_id = await self._create()
-        await self._ensure_admins_invited(room_id, admins)
+        self.room_id = room_id
+        await self.ensure_admins_invited()
         await self._ensure_topic(room_id)
         await self._ensure_pinned_help(room_id)
         return room_id
+
+    async def ensure_admins_invited(self) -> None:
+        """Resolve the current admin set and invite whoever is not already in the room.
+
+        Runs at startup and again on every reconcile (:data:`~onbot.events.Signal.reconcile_completed`),
+        because the two halves of being an admin must not drift apart: a user added to the Authentik
+        group may *command* the bot as soon as the resolver's TTL lapses, and would otherwise have no
+        way into the room to do it. The room is invite-only and ``invite`` sits at power level 100,
+        which only the bot holds — so nobody can let them in by hand, and a restart would be the only
+        remedy.
+
+        Cheap enough for the tick: one membership lookup per admin, and anyone already joined or
+        invited is skipped, so nobody is re-invited or re-notified.
+        """
+        if self.room_id is None:
+            return
+        for mxid in sorted(await self.admins.admins()):
+            try:
+                membership = await self.client.get_membership(self.room_id, mxid)
+                if membership in ("join", "invite"):
+                    continue
+                await self.client.invite_user(self.room_id, mxid)
+                log.info("invited %s to the admin control room", mxid)
+            except ApiError:
+                # An admin sourced from an Authentik group may not have logged in yet, so may have no
+                # Matrix account to invite. Warn and carry on: the next tick retries.
+                log.warning("could not invite %s to the admin control room", mxid, exc_info=True)
+
+    async def on_reconcile(self, _event: Event) -> None:
+        """Bus handler: re-run the invite pass once the reconciler has finished a tick."""
+        await self.ensure_admins_invited()
 
     async def _create(self) -> str:
         # Created empty and populated below, one invite at a time. An admin sourced from an Authentik
@@ -114,25 +148,6 @@ class AdminRoomProvisioner:
         )
         log.info("created admin control room %s (%s)", self.alias, room_id)
         return room_id
-
-    async def _ensure_admins_invited(self, room_id: str, admins: list[str]) -> None:
-        """Invite allowlisted admins who are neither joined nor already invited.
-
-        Re-checked on every start so an admin added to the config or to the Authentik group later
-        still gets in, without re-inviting (and re-notifying) everybody who is already there. Startup
-        only, on purpose: somebody added to the group meanwhile can already *command* the bot (the
-        router re-resolves per command) and can be invited by hand or by a restart. That is not worth
-        turning the provisioner into a loop for.
-        """
-        for mxid in admins:
-            try:
-                membership = await self.client.get_membership(room_id, mxid)
-                if membership in ("join", "invite"):
-                    continue
-                await self.client.invite_user(room_id, mxid)
-                log.info("invited %s to the admin control room", mxid)
-            except ApiError:
-                log.warning("could not invite %s to the admin control room", mxid, exc_info=True)
 
     async def _ensure_topic(self, room_id: str) -> None:
         current = await self.client.get_room_state_event(room_id, "m.room.topic") or {}
