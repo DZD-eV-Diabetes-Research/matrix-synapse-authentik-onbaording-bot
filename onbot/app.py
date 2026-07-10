@@ -25,6 +25,7 @@ from onbot.clients.mas_admin import ApiClientMasAdmin
 from onbot.clients.matrix import ApiClientMatrix, CSApiEffectors
 from onbot.clients.synapse_admin import ApiClientSynapseAdmin
 from onbot.config import OnbotConfig, SynapseServer
+from onbot.discovery import DiscoveryPoller
 from onbot.events import EventBus
 from onbot.lifecycle.accounts import (
     AccountLifecycleManager,
@@ -126,6 +127,7 @@ class App:
     listener: OnboardingListener
     broadcast: BroadcastService
     pump: SyncPump
+    discovery: DiscoveryPoller
 
 
 @asynccontextmanager
@@ -198,12 +200,15 @@ async def build_app(config: OnbotConfig) -> AsyncIterator[App]:
     # One sync connection, fanned out to every consumer of the event stream (see onbot/sync.py).
     pump = SyncPump(matrix)
     pump.register(listener)
+    # Watches Authentik cheaply and wakes the engine on a real change, so the engine's own tick can
+    # stay slow (see onbot/discovery.py).
+    discovery = DiscoveryPoller(authentik, config, engine.trigger)
     admins = AdminResolver(authentik, config)
     control_room = await _build_control_room(matrix, config, broadcast, engine, admins)
     if control_room is not None:
         pump.register(control_room)
     try:
-        yield App(engine=engine, listener=listener, broadcast=broadcast, pump=pump)
+        yield App(engine=engine, listener=listener, broadcast=broadcast, pump=pump, discovery=discovery)
     finally:
         await effectors.aclose()
         await media.aclose()
@@ -215,16 +220,17 @@ async def build_app(config: OnbotConfig) -> AsyncIterator[App]:
 
 
 async def run_service(config: OnbotConfig) -> None:
-    """Run the reconcile loop and the sync pump concurrently until stopped."""
+    """Run the reconcile loop, the Authentik poll and the sync pump concurrently until stopped."""
     async with build_app(config) as app:
-        # The engine owns the signal handlers; when it stops, stop the sync stream too.
+        # The engine owns the signal handlers; when it stops, stop the other two loops too.
         async def _reconcile() -> None:
             try:
                 await app.engine.run()
             finally:
                 app.pump.request_stop()
+                app.discovery.request_stop()
 
-        await asyncio.gather(_reconcile(), app.pump.run())
+        await asyncio.gather(_reconcile(), app.pump.run(), app.discovery.run())
 
 
 async def run_reconcile_once(config: OnbotConfig) -> None:

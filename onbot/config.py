@@ -885,14 +885,35 @@ class OnbotConfig(BaseSettings):
         Field(
             title="Reconcile interval (seconds)",
             description=inspect.cleandoc(
-                """How often, in seconds, the bot re-converges Authentik state onto Matrix. Each
-                reconcile is idempotent, so this is a safety net that repairs drift rather than the
-                only path — onboarding still reacts to live events between ticks. Lower it to react
-                to Authentik changes sooner, at the cost of more API calls against both servers."""
+                """How often, in seconds, the bot re-converges Authentik state onto Matrix. A
+                reconcile reads the whole Matrix side — every managed room's members, power levels
+                and state — so it is the expensive operation, and this is the interval that costs
+                Synapse traffic.
+
+                It does not set how quickly new users are onboarded. A reconcile also runs on demand
+                whenever `authentik_poll_rate_sec` notices Authentik has changed, so this is a safety
+                net that repairs drift somebody caused *inside* Matrix (a manually kicked member, an
+                edited power level). Minutes, not seconds, is the right order of magnitude."""
             ),
-            examples=[20, 300],
+            examples=[300, 900],
         ),
-    ] = 20
+    ] = 300
+    authentik_poll_rate_sec: Annotated[
+        int,
+        Field(
+            title="Authentik poll interval (seconds)",
+            description=inspect.cleandoc(
+                """How often, in seconds, the bot asks Authentik whether anything changed — a new
+                user, a group membership, a renamed room group. When something did, it runs a
+                reconcile immediately; when nothing did, it does nothing at all.
+
+                This is what sets onboarding latency, and it is cheap: two Authentik requests per
+                poll and zero against Synapse. Set it to `0` to disable the poll entirely, in which
+                case new users wait for the next `server_tick_rate_sec` reconcile."""
+            ),
+            examples=[15, 60, 0],
+        ),
+    ] = 15
 
     synapse_server: Annotated[
         SynapseServer,

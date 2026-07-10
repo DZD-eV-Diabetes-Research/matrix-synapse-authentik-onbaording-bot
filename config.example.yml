@@ -18,17 +18,42 @@ log_level: INFO
 # ## server_tick_rate_sec - Reconcile interval (seconds) ###
 # Type:        int
 # Required:    False
-# Default:     20
+# Default:     300
 # Env-var:     'ONBOT_SERVER_TICK_RATE_SEC'
-# Description: How often, in seconds, the bot re-converges Authentik state onto Matrix. Each
-#              reconcile is idempotent, so this is a safety net that repairs drift rather than the
-#              only path — onboarding still reacts to live events between ticks. Lower it to react
-#              to Authentik changes sooner, at the cost of more API calls against both servers.
+# Description: How often, in seconds, the bot re-converges Authentik state onto Matrix. A
+#              reconcile reads the whole Matrix side — every managed room's members, power levels
+#              and state — so it is the expensive operation, and this is the interval that costs
+#              Synapse traffic.
+#
+#              It does not set how quickly new users are onboarded. A reconcile also runs on demand
+#              whenever `authentik_poll_rate_sec` notices Authentik has changed, so this is a safety
+#              net that repairs drift somebody caused *inside* Matrix (a manually kicked member, an
+#              edited power level). Minutes, not seconds, is the right order of magnitude.
 # Example No. 1:
-#  >server_tick_rate_sec: 20
-# Example No. 2:
 #  >server_tick_rate_sec: 300
-server_tick_rate_sec: 20
+# Example No. 2:
+#  >server_tick_rate_sec: 900
+server_tick_rate_sec: 300
+
+# ## authentik_poll_rate_sec - Authentik poll interval (seconds) ###
+# Type:        int
+# Required:    False
+# Default:     15
+# Env-var:     'ONBOT_AUTHENTIK_POLL_RATE_SEC'
+# Description: How often, in seconds, the bot asks Authentik whether anything changed — a new
+#              user, a group membership, a renamed room group. When something did, it runs a
+#              reconcile immediately; when nothing did, it does nothing at all.
+#
+#              This is what sets onboarding latency, and it is cheap: two Authentik requests per
+#              poll and zero against Synapse. Set it to `0` to disable the poll entirely, in which
+#              case new users wait for the next `server_tick_rate_sec` reconcile.
+# Example No. 1:
+#  >authentik_poll_rate_sec: 15
+# Example No. 2:
+#  >authentik_poll_rate_sec: 60
+# Example No. 3:
+#  >authentik_poll_rate_sec: 0
+authentik_poll_rate_sec: 15
 
 # ## synapse_server - Synapse server ###
 # Type:        Object (SynapseServer)
