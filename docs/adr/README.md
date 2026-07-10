@@ -15,3 +15,4 @@ numbered file; superseded ones are marked, not deleted.
 | [0007](0007-async-one-http-base-client.md) | Async everything, one HTTP base client | Accepted |
 | [0008](0008-matrix-client-library.md) | Matrix client library — drive the CS API over httpx | Accepted |
 | [0009](0009-e2ee-stance.md) | E2EE stance — bot operates outside encrypted rooms | Accepted |
+| [0010](0010-admin-control-room.md) | Admin control room — a bounded exception to "reconcile, don't react" | Accepted |

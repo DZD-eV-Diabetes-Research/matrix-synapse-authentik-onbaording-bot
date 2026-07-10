@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import signal
+import time
 from typing import Any
 
 from pydantic import ValidationError
@@ -73,6 +74,9 @@ class ReconcilerEngine:
         self.events = events or EventBus()
         self.lifecycle = lifecycle
         self.server_name = config.synapse_server.server_name
+        # Unix timestamp of the last pass that ran to completion; reported by the admin room's
+        # `!status` command. ``None`` until the first pass finishes.
+        self.last_reconcile_at: float | None = None
         self._stop = asyncio.Event()
         self._trigger = asyncio.Event()
 
@@ -132,6 +136,7 @@ class ReconcilerEngine:
             await self._converge_space_membership(space, users)
         await self._converge_room_membership_and_levels(group_maps, users)
         await self._converge_lifecycle(matrix_users, {u.mxid for u in users})
+        self.last_reconcile_at = time.time()
         log.info("reconcile: done (%d users, %d group rooms)", len(users), len(group_maps))
 
     async def _gather_mapped_users(self, matrix_users: list[dict[str, Any]]) -> list[MappedUser]:

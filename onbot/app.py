@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
 from onbot.admin.broadcast import BroadcastService
+from onbot.admin.control_room import ControlRoomHandler
 from onbot.auth.token_provider import (
     OAuth2ClientCredentialsTokenProvider,
     StaticTokenProvider,
@@ -36,6 +37,7 @@ from onbot.media import MediaUploader
 from onbot.onboarding.listener import OnboardingListener
 from onbot.onboarding.welcome import WelcomeService
 from onbot.reconciler.engine import ReconcilerEngine
+from onbot.rooms.admin import AdminRoomProvisioner
 from onbot.sync import SyncPump
 
 log = get_logger(__name__)
@@ -86,6 +88,32 @@ async def _apply_bot_avatar(matrix: ApiClientMatrix, config: OnbotConfig, media:
         log.info("set bot avatar from %s", url)
     except Exception:
         log.exception("failed to set bot avatar from %s", url)
+
+
+async def _build_control_room(
+    matrix: ApiClientMatrix,
+    config: OnbotConfig,
+    broadcast: BroadcastService,
+    engine: ReconcilerEngine,
+) -> ControlRoomHandler | None:
+    """Provision the admin control room and bind its command router (ADR-0010), or ``None``.
+
+    Best-effort: a homeserver that refuses to create the room must not take the reconciler down with
+    it. The bot then runs without an admin surface, which is exactly how it runs when the feature is
+    switched off.
+    """
+    if not config.admin_room.enabled:
+        return None
+    try:
+        room_id = await AdminRoomProvisioner(matrix, config).ensure()
+    except Exception:
+        log.exception("could not provision the admin control room; continuing without it")
+        return None
+    if room_id is None:
+        return None
+    handler = ControlRoomHandler(matrix, config, broadcast, engine=engine)
+    await handler.start(room_id)
+    return handler
 
 
 @dataclass(slots=True)
@@ -168,6 +196,9 @@ async def build_app(config: OnbotConfig) -> AsyncIterator[App]:
     # One sync connection, fanned out to every consumer of the event stream (see onbot/sync.py).
     pump = SyncPump(matrix)
     pump.register(listener)
+    control_room = await _build_control_room(matrix, config, broadcast, engine)
+    if control_room is not None:
+        pump.register(control_room)
     try:
         yield App(engine=engine, listener=listener, broadcast=broadcast, pump=pump)
     finally:

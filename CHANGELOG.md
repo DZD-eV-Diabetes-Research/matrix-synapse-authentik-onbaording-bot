@@ -11,6 +11,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **`onbot broadcast "<message>"`:** sends one `m.notice` into every user's onboarding room, fanned
+  out from the bot's `m.direct` account data with bounded concurrency. Exits non-zero if any room
+  could not be reached, naming them. The bot's Synapse send rate limit is lifted at startup
+  (best-effort) so a large fan-out is not throttled.
+- **Admin control room (G4.6, [ADR-0010](docs/adr/0010-admin-control-room.md)):** an opt-in Matrix
+  room (`admin_room.enabled`) where allowlisted administrators command the bot with `!announce`,
+  `!status` and `!help`. Unencrypted and unfederated by construction; authorisation is an explicit
+  MXID allowlist (`admin_room.admin_user_ids`) checked on every command, never the sender's room
+  power level. Messages without the `!` prefix are ignored, so admins can talk in the room. The
+  command handler carries replay protection — an origin-timestamp floor plus a persisted ring buffer
+  of handled event ids — so a bot restart cannot re-announce to every user.
+
 - **Packaging (Phase 8):** multi-stage `Dockerfile` (digest-pinned base, non-root user, runtime-only
   deps, no crypto stack) with a `HEALTHCHECK` that runs `onbot healthcheck`; `.dockerignore`.
 - **`onbot healthcheck` command:** probes the Matrix CS API, the Synapse admin API, the Authentik
@@ -27,6 +39,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   This `CHANGELOG.md`.
 
 ### Changed
+- **The sliding-sync loop moved out of the onboarding listener** into `onbot/sync.py` as `SyncPump`,
+  which owns the stream position and fans each slice out to registered handlers. Onboarding and the
+  admin control room now share one sync connection instead of opening two. No behaviour change.
 - **Config metadata overhaul (`onbot/config.py`):** every field now carries a meaningful description
   and example so the generated reference/template are self-documenting; container fields annotated;
   typing tightened.

@@ -287,11 +287,12 @@ desired-vs-actual result, behind dry-run. All three share `clients/` + `auth/`.
       reconciler-signal path instead of looping on errors (resolves the Phase 4 sliding-sync deferral).
 - [x] **Phase 4 deferral G4.5:** opt-in `place_onboarding_rooms_in_space` places freshly created
       onboarding DMs in the managed space (alias-resolved + `link_room_to_space`).
-- ⏭️ **Deferred — G4.6 admin control/broadcast room:** intentionally **not** built here. It is a
-      product-design open question (GOALS G4.6 itself hedges "not sure about this idea… maybe a better
-      mechanism"), not an auth/Matrix-2.0 concern, and delivering broadcasts *into encrypted rooms*
-      would collide with the no-crypto stance (ADR-0009). Needs a maintainer decision on the mechanism
-      before implementation; tracked for a later phase.
+- [x] **G4.6 admin control/broadcast room (ADR-0010):** resolved. The mechanism question GOALS hedged
+      on is settled two ways: `onbot broadcast` (CLI, no new machinery) and an opt-in `#onbot-admin`
+      control room, sharing one `BroadcastService`. The ADR-0009 collision does not arise — broadcasts
+      land in the per-user onboarding rooms, which are unencrypted notice boards, and the control room
+      is created unencrypted so the bot can read it. Authorisation is an explicit MXID allowlist, not
+      the sender's room power level.
 
 ### Phase 7 — Test suite (grows during 3–5)
 

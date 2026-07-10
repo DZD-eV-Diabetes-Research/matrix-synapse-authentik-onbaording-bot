@@ -283,6 +283,18 @@ class ApiClientMatrix(BaseApiClient):
             body["reason"] = reason
         await self.post_json(f"v3/rooms/{room_id}/kick", json_body=body)
 
+    async def invite_user(self, room_id: str, user_id: str) -> None:
+        # https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3roomsroomidinvite
+        await self.post_json(f"v3/rooms/{room_id}/invite", json_body={"user_id": user_id})
+
+    async def get_membership(self, room_id: str, user_id: str) -> str | None:
+        """A user's membership in a room (``join``/``invite``/``leave``/…), or ``None`` if never set."""
+        content = await self.get_room_state_event(room_id, "m.room.member", user_id)
+        if content is None:
+            return None
+        membership: str | None = content.get("membership")
+        return membership
+
     # --- room state ----------------------------------------------------------
 
     async def get_room_state_event(

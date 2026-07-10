@@ -55,5 +55,6 @@ The ADRs in [docs/adr/](adr/) capture the reasoning behind these choices:
 - [0007](adr/0007-async-one-http-base-client.md) one async HTTP base client
 - [0008](adr/0008-matrix-client-library.md) the Matrix client library choice
 - [0009](adr/0009-e2ee-stance.md) the end-to-end encryption stance
+- [0010](adr/0010-admin-control-room.md) the admin control room as a bounded exception
 
 For intent see [GOALS.md](../GOALS.md); for the build plan see [BATTLE_PLAN.md](../BATTLE_PLAN.md).

@@ -22,6 +22,7 @@ class OnbotRoomType(StrEnum):
     space = "space"
     group_room = "group_room"
     direct_room = "direct_room"
+    admin_room = "admin_room"
 
 
 def event_type_name(server_name: str, room_type: OnbotRoomType | str) -> str:
@@ -63,12 +64,25 @@ class DirectRoomState(_OnbotRoomState):
     force_joined_at: int | None = None
 
 
-AnyRoomState = SpaceRoomState | GroupRoomState | DirectRoomState
+class AdminRoomState(_OnbotRoomState):
+    """Marks the operator control room as bot-managed, and remembers what it pinned there.
+
+    ``help_text_hash`` makes the pinned help idempotent: the bot re-posts and re-pins only when the
+    text actually changed, instead of leaving another copy behind on every restart.
+    """
+
+    room_type: Literal[OnbotRoomType.admin_room] = OnbotRoomType.admin_room
+    help_text_hash: str | None = None
+    help_event_id: str | None = None
+
+
+AnyRoomState = SpaceRoomState | GroupRoomState | DirectRoomState | AdminRoomState
 
 _STATE_MODEL_BY_TYPE: dict[OnbotRoomType, type[AnyRoomState]] = {
     OnbotRoomType.space: SpaceRoomState,
     OnbotRoomType.group_room: GroupRoomState,
     OnbotRoomType.direct_room: DirectRoomState,
+    OnbotRoomType.admin_room: AdminRoomState,
 }
 
 
