@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from onbot.admin.admins import AdminResolver
 from onbot.admin.broadcast import BroadcastResult
 from onbot.admin.control_room import ControlRoomHandler
 from onbot.clients.matrix import RoomSync, SyncResult
@@ -13,11 +14,12 @@ BOT = "@bot:matrix.test"
 ADMIN = "@admin:matrix.test"
 STRANGER = "@stranger:matrix.test"
 ROOM = "!control:matrix.test"
+GROUP = "group-pk-1"
 
 NOW_MS = 1_000_000
 
 
-def _config(admins: list[str] | None = None) -> OnbotConfig:
+def _config(admins: list[str] | None = None, *, group_pks: list[str] | None = None) -> OnbotConfig:
     return OnbotConfig(
         synapse_server=SynapseServer(
             server_name="matrix.test",
@@ -26,8 +28,25 @@ def _config(admins: list[str] | None = None) -> OnbotConfig:
             bot_access_token="tok",
         ),
         authentik_server=AuthentikServer(url="https://authentik.test", api_key="k"),
-        admin_room=AdminRoom(enabled=True, admin_user_ids=admins if admins is not None else [ADMIN]),
+        admin_room=AdminRoom(
+            enabled=True,
+            admin_user_ids=admins if admins is not None else [ADMIN],
+            authentik_group_pks_granting_bot_admin=group_pks or [],
+        ),
     )
+
+
+class _FakeAuthentik:
+    """Authentik's answer for the admin group, mutable between refreshes."""
+
+    def __init__(self, *usernames: str) -> None:
+        self.usernames = list(usernames)
+        self.fail = False
+
+    async def list_users(self, **kwargs: Any) -> list[dict[str, Any]]:
+        if self.fail:
+            raise RuntimeError("authentik is down")
+        return [{"pk": name, "username": name} for name in self.usernames]
 
 
 class _FakeClient:
@@ -66,11 +85,14 @@ def _handler(
     admins: list[str] | None = None,
     engine: object | None = None,
     remembered_events: int = 200,
+    resolver: AdminResolver | None = None,
 ) -> ControlRoomHandler:
+    config = _config(admins)
     handler = ControlRoomHandler(
         client,  # type: ignore[arg-type]
-        _config(admins),
+        config,
         broadcast,  # type: ignore[arg-type]
+        resolver or AdminResolver(_FakeAuthentik(), config),  # type: ignore[arg-type]
         engine=engine,  # type: ignore[arg-type]
         started_at_ms=NOW_MS,
         remembered_events=remembered_events,
@@ -139,6 +161,64 @@ async def test_an_empty_allowlist_refuses_everyone() -> None:
     await _run(_handler(client, broadcast, admins=[]), _message("!announce hello"))
 
     assert broadcast.calls == []
+
+
+def _dynamic_handler(
+    client: _FakeClient, broadcast: _FakeBroadcast, authentik: _FakeAuthentik, clock: list[float]
+) -> ControlRoomHandler:
+    """A handler whose admins come from an Authentik group, over a clock the test winds forward."""
+    config = _config(admins=[], group_pks=[GROUP])
+    resolver = AdminResolver(
+        authentik,  # type: ignore[arg-type]
+        config,
+        ttl_sec=60,
+        clock=lambda: clock[0],
+    )
+    handler = ControlRoomHandler(
+        client,  # type: ignore[arg-type]
+        config,
+        broadcast,  # type: ignore[arg-type]
+        resolver,
+        started_at_ms=NOW_MS,
+    )
+    handler.room_id = ROOM
+    return handler
+
+
+async def test_a_group_member_gains_and_then_loses_command_access_without_a_restart() -> None:
+    # The whole point of sourcing admins from Authentik: revocation that does not need a deploy. The
+    # handler is never reconstructed here — the same object must refuse what it just allowed.
+    client, broadcast, clock = _FakeClient(), _FakeBroadcast(), [1000.0]
+    authentik = _FakeAuthentik("alice")
+    handler = _dynamic_handler(client, broadcast, authentik, clock)
+    alice = "@alice:matrix.test"
+
+    await _run(handler, _message("!announce while a member", sender=alice, event_id="$a"))
+    assert broadcast.calls == ["while a member"]
+
+    authentik.usernames.clear()  # alice is removed from the Authentik admin group
+    clock[0] += 60  # ...and one TTL passes
+
+    await _run(handler, _message("!announce after removal", sender=alice, event_id="$b"))
+
+    assert broadcast.calls == ["while a member"]
+    assert "not on the bot's admin allowlist" in client.sends[-1][1]
+
+
+async def test_authentik_going_down_neither_opens_nor_closes_the_gate() -> None:
+    client, broadcast, clock = _FakeClient(), _FakeBroadcast(), [1000.0]
+    authentik = _FakeAuthentik("alice")
+    handler = _dynamic_handler(client, broadcast, authentik, clock)
+    alice = "@alice:matrix.test"
+
+    await _run(handler, _message("!announce first", sender=alice, event_id="$a"))
+    authentik.fail = True
+    clock[0] += 600
+
+    await _run(handler, _message("!announce second", sender=alice, event_id="$b"))
+    await _run(handler, _message("!announce nope", sender=STRANGER, event_id="$c"))
+
+    assert broadcast.calls == ["first", "second"]  # alice keeps hers; the stranger gains nothing
 
 
 # --- replay protection -----------------------------------------------------

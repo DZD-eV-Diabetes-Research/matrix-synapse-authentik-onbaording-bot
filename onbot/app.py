@@ -12,6 +12,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
+from onbot.admin.admins import AdminResolver
 from onbot.admin.broadcast import BroadcastService
 from onbot.admin.control_room import ControlRoomHandler
 from onbot.auth.token_provider import (
@@ -95,6 +96,7 @@ async def _build_control_room(
     config: OnbotConfig,
     broadcast: BroadcastService,
     engine: ReconcilerEngine,
+    admins: AdminResolver,
 ) -> ControlRoomHandler | None:
     """Provision the admin control room and bind its command router (ADR-0010), or ``None``.
 
@@ -105,13 +107,13 @@ async def _build_control_room(
     if not config.admin_room.enabled:
         return None
     try:
-        room_id = await AdminRoomProvisioner(matrix, config).ensure()
+        room_id = await AdminRoomProvisioner(matrix, config, admins).ensure()
     except Exception:
         log.exception("could not provision the admin control room; continuing without it")
         return None
     if room_id is None:
         return None
-    handler = ControlRoomHandler(matrix, config, broadcast, engine=engine)
+    handler = ControlRoomHandler(matrix, config, broadcast, admins, engine=engine)
     await handler.start(room_id)
     return handler
 
@@ -196,7 +198,8 @@ async def build_app(config: OnbotConfig) -> AsyncIterator[App]:
     # One sync connection, fanned out to every consumer of the event stream (see onbot/sync.py).
     pump = SyncPump(matrix)
     pump.register(listener)
-    control_room = await _build_control_room(matrix, config, broadcast, engine)
+    admins = AdminResolver(authentik, config)
+    control_room = await _build_control_room(matrix, config, broadcast, engine, admins)
     if control_room is not None:
         pump.register(control_room)
     try:

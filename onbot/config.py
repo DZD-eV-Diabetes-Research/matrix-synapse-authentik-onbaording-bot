@@ -159,8 +159,10 @@ class AdminRoom(BaseModel):
     command here feeds the reconciler's desired state, which is why reading messages does not
     contradict ADR-0002.
 
-    Authorisation is the ``admin_user_ids`` allowlist, checked against the event sender — never the
-    sender's room power level. The power levels are the fence; the allowlist is the gate.
+    Authorisation is an allowlist, checked against the event sender — never the sender's room power
+    level. The power levels are the fence; the allowlist is the gate. The allowlist is the union of
+    ``admin_user_ids`` and the members of the Authentik groups in
+    ``authentik_group_pks_granting_bot_admin``; an empty union means nobody may command the bot.
     """
 
     enabled: Annotated[
@@ -169,7 +171,7 @@ class AdminRoom(BaseModel):
             title="Enable the admin control room",
             description=inspect.cleandoc(
                 """Create and listen in a control room where administrators can command the bot. Off
-                by default: the room lets anyone on the `admin_user_ids` list send a message to every
+                by default: the room lets anyone on the bot's admin allowlist send a message to every
                 user on the server, so it should be turned on deliberately. The `onbot broadcast`
                 command-line tool does the same job without a room."""
             ),
@@ -212,15 +214,41 @@ class AdminRoom(BaseModel):
         Field(
             title="Administrators allowed to command the bot",
             description=inspect.cleandoc(
-                """Full Matrix IDs permitted to run commands in the control room. Everyone else is
-                refused, even if they are somehow in the room and even if they hold a high power level
-                there — the check is against this list and nothing else, because a command like
+                """Full Matrix IDs permitted to run commands in the control room, listed by hand.
+                These are added to whatever `authentik_group_pks_granting_bot_admin` resolves to, and
+                this list is the right home for accounts Authentik has never heard of — a break-glass
+                admin, another bot. It is also the floor the bot falls back on: it needs no Authentik
+                call, so these administrators keep their commands when Authentik is unreachable.
+                Everyone not in the union of the two lists is refused, even if they are somehow in the
+                room and even if they hold a high power level there, because a command like
                 `!announce` reaches every user on the server. The bot invites these users to the room
-                when it creates it. Deriving this list from the Authentik superusers the bot already
-                knows about would be possible, but an explicit list is the safer default for a
-                capability with this reach; an empty list disables every command."""
+                when it creates it."""
             ),
             examples=[["@admin:company.org", "@ops-lead:company.org"]],
+        ),
+    ] = Field(default_factory=list)
+    authentik_group_pks_granting_bot_admin: Annotated[
+        list[str],
+        Field(
+            title="Authentik groups whose members may command the bot",
+            description=inspect.cleandoc(
+                """Primary keys (`pk`) of Authentik groups whose members may run commands in the
+                control room, so the allowlist can be maintained where the rest of your access
+                control already lives. Members are mapped to Matrix IDs with the same
+                `authentik_username_mapping_attribute` the reconciler uses, and the result is unioned
+                with `admin_user_ids`. Inactive users, users on `authentik_user_ignore_list`, and
+                users the bot cannot map to a Matrix ID are never granted anything. Membership is
+                re-read periodically, so removing somebody from the group revokes their commands
+                without restarting the bot.
+
+                Authentik *superusers* are deliberately not admins of this bot, and there is no
+                option to make them so: people are made superusers to administer an identity
+                provider, not to page the whole company, and a capability that reaches every user on
+                the server must not widen silently because somebody was granted an unrelated role
+                upstream. Create a group, put people in it, and name it here. An empty list, together
+                with an empty `admin_user_ids`, means nobody may command the bot."""
+            ),
+            examples=[["1120a6e1124f309bbe96c8be5fb09eab"]],
         ),
     ] = Field(default_factory=list)
 

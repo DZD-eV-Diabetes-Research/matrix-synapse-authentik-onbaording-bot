@@ -137,6 +137,14 @@ class AuthentikAdmin:
         r = self._http.post(f"/core/groups/{gpk}/add_user/", json={"pk": pk})
         r.raise_for_status()
 
+    def add_user_to_group(self, group_pk: str, user_pk: int) -> None:
+        r = self._http.post(f"/core/groups/{group_pk}/add_user/", json={"pk": user_pk})
+        r.raise_for_status()
+
+    def remove_user_from_group(self, group_pk: str, user_pk: int) -> None:
+        r = self._http.post(f"/core/groups/{group_pk}/remove_user/", json={"pk": user_pk})
+        r.raise_for_status()
+
 
 def _new_executor_url(flow_slug: str, query: str) -> str:
     return f"{AUTHENTIK_URL}/api/v3/flows/executor/{flow_slug}/?query={quote(query, safe='')}"

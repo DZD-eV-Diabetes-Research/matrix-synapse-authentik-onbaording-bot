@@ -10,8 +10,8 @@ Four decisions are baked into the room at creation, and each is load-bearing:
   has no business being reachable from other homeservers.
 * **Power levels that let members talk but not govern.** ``events_default: 0`` so admins can
   discuss; ``state_default``/``invite``/``kick``/``ban`` at 100 so only the bot changes the room
-  itself. These are the fence — the gate is the ``admin_user_ids`` allowlist checked on every
-  command, because a power level says what someone may do *in a room*, not whether they may
+  itself. These are the fence — the gate is the allowlist (:mod:`onbot.admin.admins`) checked on
+  every command, because a power level says what someone may do *in a room*, not whether they may
   address the whole server.
 * **Invited, never force-joined.** Admins are people who chose this job; users are employees who
   did not choose their notice board (:mod:`onbot.onboarding.welcome`).
@@ -25,6 +25,7 @@ from __future__ import annotations
 import hashlib
 from typing import Any
 
+from onbot.admin.admins import AdminResolver
 from onbot.admin.commands import help_text
 from onbot.clients.base import ApiError
 from onbot.clients.matrix import ApiClientMatrix
@@ -66,9 +67,10 @@ def help_text_hash(text: str) -> str:
 class AdminRoomProvisioner:
     """Ensure the control room exists, is shaped correctly, and carries the current pinned help."""
 
-    def __init__(self, client: ApiClientMatrix, config: OnbotConfig) -> None:
+    def __init__(self, client: ApiClientMatrix, config: OnbotConfig, admins: AdminResolver) -> None:
         self.client = client
         self.config = config
+        self.admins = admins
         self.cfg = config.admin_room
         self.bot_id = config.synapse_server.bot_user_id
         self.server_name = config.synapse_server.server_name
@@ -79,21 +81,25 @@ class AdminRoomProvisioner:
         """Return the control room's id, creating it if needed. ``None`` when the feature is off."""
         if not self.cfg.enabled:
             return None
+        admins = sorted(await self.admins.admins())
         room_id = await self.client.resolve_room_alias(self.alias)
         if room_id is None:
             room_id = await self._create()
-        await self._ensure_admins_invited(room_id)
+        await self._ensure_admins_invited(room_id, admins)
         await self._ensure_topic(room_id)
         await self._ensure_pinned_help(room_id)
         return room_id
 
     async def _create(self) -> str:
+        # Created empty and populated below, one invite at a time. An admin sourced from an Authentik
+        # group may not have logged in yet, and so may have no Matrix account; an unknown MXID in
+        # `createRoom`'s invite list fails the whole call, leaving the bot with no control room at
+        # all. A single failed invite is a warning.
         room_id = await self.client.create_room(
             alias_localpart=self.cfg.alias,
             name=self.cfg.name,
             topic=self.cfg.topic,
             encrypted=False,  # ADR-0009: the bot must be able to read what is said here.
-            invite=list(self.cfg.admin_user_ids),
             room_params={
                 "preset": "private_chat",
                 "visibility": "private",
@@ -109,13 +115,16 @@ class AdminRoomProvisioner:
         log.info("created admin control room %s (%s)", self.alias, room_id)
         return room_id
 
-    async def _ensure_admins_invited(self, room_id: str) -> None:
+    async def _ensure_admins_invited(self, room_id: str, admins: list[str]) -> None:
         """Invite allowlisted admins who are neither joined nor already invited.
 
-        Re-checked on every start so an admin added to the config later still gets in, without
-        re-inviting (and re-notifying) everybody who is already there.
+        Re-checked on every start so an admin added to the config or to the Authentik group later
+        still gets in, without re-inviting (and re-notifying) everybody who is already there. Startup
+        only, on purpose: somebody added to the group meanwhile can already *command* the bot (the
+        router re-resolves per command) and can be invited by hand or by a restart. That is not worth
+        turning the provisioner into a loop for.
         """
-        for mxid in self.cfg.admin_user_ids:
+        for mxid in admins:
             try:
                 membership = await self.client.get_membership(room_id, mxid)
                 if membership in ("join", "invite"):
