@@ -1,6 +1,6 @@
 # ADR-0010 — The admin control room is a bounded exception to "reconcile, don't react"
 
-- **Status:** Accepted (2026-07-10)
+- **Status:** Accepted (2026-07-10), amended 2026-07-10 (see [Amendment](#amendment-2026-07-10--an-authentik-group-may-also-grant-bot-admin))
 - **Context:** Operators need a way to address every user at once (GOALS G4.6). The bot already owns
   a read-only notice-board DM with each of them (ADR-0009, `onboarding/notice_board.py`), so the
   delivery mechanism exists. What did not exist is a way to *trigger* it from inside Matrix.
@@ -62,3 +62,36 @@ are enough:
 - A future debug room (BATTLE_PLAN, deferred) can reuse `onbot/rooms/admin.py` for its shape. It must
   not reuse the command router: an admin room that reads and one that only writes have very different
   risk profiles.
+
+## Amendment (2026-07-10) — an Authentik group may also grant bot admin
+
+The consequence above ("the allowlist is maintained by hand") is now half-wrong, and the decision it
+rests on is refined rather than reversed. `admin_room.authentik_group_pks_granting_bot_admin` names
+Authentik groups whose members may command the bot; the effective allowlist is the **union** of that
+and `admin_user_ids`, resolved in `onbot/admin/admins.py`.
+
+**Why a group is admissible where superusers were not.** The original objection was to a capability
+that *widens silently* — somebody is granted an unrelated upstream role and inherits the ability to
+page every employee. A superuser fallback has exactly that shape: the role means "administers the
+identity provider", and its members change for reasons that have nothing to do with this bot. A
+dedicated group does not. Somebody must create it, name it in `config.yml`, and put people in it;
+every one of those steps is a deliberate act about *this* capability, and the group's only meaning is
+the one the config field states. It is still an explicit opt-in list — it has simply moved to where
+the organisation already administers access, and stopped requiring a deploy to change.
+
+**Deriving admins from Authentik superusers remains rejected**, and there is no config option for it.
+The two arguments are not the same argument, and conflating them is the mistake this paragraph exists
+to prevent.
+
+Three properties follow, and the tests pin all three:
+
+- **The set is dynamic.** `ControlRoomHandler` re-resolves it per command, cached for one TTL (the
+  reconcile interval). Freezing it at construction would make revocation *look* possible while
+  requiring a restart — worse than the hand-maintained list, which was at least honest.
+- **Failure never opens the gate, and never slams it.** A refresh that cannot reach Authentik keeps
+  the previous set. Before any successful fetch the set is `admin_user_ids` alone: the explicit list
+  needs no Authentik call, so it is the floor an operator still has when the identity provider is
+  down. An empty union still means nobody may command the bot.
+- **Membership grants commands, not a seat, and losing it takes only the commands.** A demoted admin
+  stays in the control room and can keep reading it. Kicking them is a separate decision, not taken
+  here.

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from onbot.admin.admins import AdminResolver
 from onbot.clients.base import ApiError
 from onbot.config import AdminRoom, AuthentikServer, OnbotConfig, SynapseServer
 from onbot.rooms.admin import PINNED_EVENTS_TYPE, AdminRoomProvisioner, admin_room_power_levels
@@ -12,6 +13,7 @@ BOT = "@bot:matrix.test"
 ADMIN = "@admin:matrix.test"
 ROOM = "!control:matrix.test"
 ALIAS = "#onbot-admin:matrix.test"
+GROUP = "group-pk-1"
 # Custom onbot state events are namespaced with the reversed server name.
 MARKER_TYPE = "test.matrix.onbot.admin_room"
 
@@ -27,6 +29,14 @@ def _config(**admin_room: Any) -> OnbotConfig:
         authentik_server=AuthentikServer(url="https://authentik.test", api_key="k"),
         admin_room=AdminRoom(**{"enabled": True, "admin_user_ids": [ADMIN], **admin_room}),
     )
+
+
+class _FakeAuthentik:
+    def __init__(self, *usernames: str) -> None:
+        self.usernames = usernames
+
+    async def list_users(self, **kwargs: Any) -> list[dict[str, Any]]:
+        return [{"pk": name, "username": name} for name in self.usernames]
 
 
 class _FakeClient:
@@ -76,8 +86,14 @@ class _FakeClient:
         return f"$help{self._events}"
 
 
-def _provisioner(client: _FakeClient, config: OnbotConfig | None = None) -> AdminRoomProvisioner:
-    return AdminRoomProvisioner(client, config or _config())  # type: ignore[arg-type]
+def _provisioner(
+    client: _FakeClient,
+    config: OnbotConfig | None = None,
+    authentik: _FakeAuthentik | None = None,
+) -> AdminRoomProvisioner:
+    config = config or _config()
+    resolver = AdminResolver(authentik or _FakeAuthentik(), config)  # type: ignore[arg-type]
+    return AdminRoomProvisioner(client, config, resolver)  # type: ignore[arg-type]
 
 
 # --- power levels ----------------------------------------------------------
@@ -103,7 +119,8 @@ async def test_a_missing_room_is_created_unencrypted_unfederated_and_invite_only
     assert room_id == ROOM
     (created,) = client.created
     assert created["encrypted"] is False  # ADR-0009: the bot has to be able to read this room
-    assert created["invite"] == [ADMIN]  # invited, never force-joined — admins are people
+    assert "invite" not in created  # the room is created empty; the invites follow, one by one
+    assert client.invited == [ADMIN]  # invited, never force-joined — admins are people
     params = created["room_params"]
     assert params["creation_content"] == {"m.federate": False}
     assert params["preset"] == "private_chat"
@@ -156,8 +173,20 @@ async def test_an_admin_added_to_the_config_later_gets_invited() -> None:
     assert client.invited == [newcomer]
 
 
-async def test_a_failed_invitation_does_not_abort_provisioning() -> None:
+async def test_members_of_the_authentik_admin_group_are_invited_too() -> None:
+    # A new group member finds the room waiting for them, without being named in config.yml.
     client = _FakeClient(existing_room=ROOM)
+    config = _config(authentik_group_pks_granting_bot_admin=[GROUP])
+
+    await _provisioner(client, config, _FakeAuthentik("alice")).ensure()
+
+    assert client.invited == [ADMIN, "@alice:matrix.test"]
+
+
+async def test_a_failed_invitation_does_not_abort_provisioning() -> None:
+    # An admin from the Authentik group may not have logged in yet, so may have no Matrix account
+    # for Synapse to invite. That must cost them an invitation, not everybody else a control room.
+    client = _FakeClient(existing_room=None)
 
     async def _refuse(room_id: str, user_id: str) -> None:
         raise ApiError("POST", "/invite", 403, {"errcode": "M_FORBIDDEN"})

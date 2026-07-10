@@ -225,6 +225,121 @@ Set the room topic to a one-line version of the same thing, so it is visible wit
 * Explicit MXID allowlist, not derived from Authentik.
 * Commands are prefixed (`!announce`); bare chat in the room is inert.
 * Announcements go out as `m.notice`.
+* *(Revised by Session C: the allowlist may now also be sourced from an Authentik group.)*
+
+---
+
+## ~~Session C~~ — done: bot admins may also come from an Authentik group
+
+**Shipped.** `onbot/admin/admins.py` holds the pure `resolve_admin_mxids()` and the `AdminResolver`
+that caches it; `ControlRoomHandler` and `AdminRoomProvisioner` both take the resolver instead of
+reading `admin_user_ids` themselves. The ADR carries a dated amendment. The section below is kept as
+the record of what was asked for; the one open choice is resolved here rather than silently: the
+refresh TTL **reuses `server_tick_rate_sec`** rather than adding a knob, on the grounds that it is
+already the operator's answer to "how stale may the bot's view of Authentik be?".
+
+Sessions A and B are merged. This is a follow-up to Session B, and it partially reverses one of its
+decisions, so read `docs/adr/0010-admin-control-room.md` first — you will be amending it.
+
+### Where things stand
+
+`admin_room.admin_user_ids` in `onbot/config.py` is a hand-maintained list of MXIDs. It is the only
+gate on `!announce`, a command that writes into every user's room on the server. Two places read it,
+and **both snapshot it once**: `AdminRoomProvisioner._ensure_admins_invited()` (`onbot/rooms/admin.py`)
+iterates it on startup, and `ControlRoomHandler.__init__` (`onbot/admin/control_room.py`) freezes it
+into `self.admins`, which `_handle_message()` then checks the sender against.
+
+Keeping the list by hand is the friction we are removing. Authentik already knows who the
+administrators are, and `ApiClientAuthentik.list_users(filter_groups_by_pk=...)` already returns a
+group's members. `onbot.identity.compute_mxid()` already maps an Authentik user to the MXID their
+account will have under MAS — it is the same mapping the reconciler uses, so it cannot drift.
+
+### What to build
+
+**1. A second source for the allowlist.**
+
+Add `admin_room.authentik_group_pks_granting_bot_admin: list[str]`, defaulting to `[]`. Members of
+any listed Authentik group may command the bot. The effective admin set is the **union** of that and
+the existing `admin_user_ids`, which stays and is still the right home for Matrix-only accounts that
+Authentik has never heard of (a break-glass admin, another bot).
+
+`admin_user_ids` keeps its meaning; only its docstring changes, since it is no longer the only
+source. The generic name — `admin_authentik_group_pk` — was rejected on purpose: the field says what
+membership *grants*, because a reader of `config.yml` needs to see the capability, not the plumbing.
+
+**Do not add a fallback to Authentik superusers.** An empty union means *nobody may command the bot*;
+the control room is still created and every command is refused with the existing non-admin reply.
+This is the whole point: `!announce` reaches every employee, and people are made Authentik
+superusers to administer an identity provider, not to page the company. A superuser fallback would
+make the most dangerous capability in the bot the implicit default, and would silently extend it to
+whoever is granted superuser next month. Say this in the config field's description, and record it in
+the ADR amendment below — otherwise somebody will helpfully add the fallback back.
+
+**2. Resolution is pure; fetching is not.**
+
+Add `onbot/admin/admins.py` with a pure `resolve_admin_mxids(config, group_members) -> frozenset[str]`
+taking the raw Authentik user dicts and returning the union. It must:
+
+* map each member with `compute_mxid()`, using the same `authentik_username_mapping_attribute` the
+  reconciler uses. `compute_mxid` raises `KeyError` on an unmappable user — **catch it, log a
+  warning, and drop that user.** A user we cannot map deterministically must never be granted
+  anything, and must never take the bot down either;
+* drop users on `authentik_user_ignore_list` (matched on the raw `username`, as everywhere else). A
+  service account someone parked in the admin group is not an admin. `matrix_user_ignore_list` does
+  *not* apply here — those are the Matrix-only accounts `admin_user_ids` exists for;
+* leave inactive users out — `list_users` already defaults to `filter_is_active=True`, so let it, but
+  assert it in a test so a change to that default cannot silently re-admit a disabled account.
+
+Around it, an `AdminResolver` holding the Authentik client and a cached set, refreshed on demand.
+
+**3. The set is now dynamic, and that is the hard part.**
+
+Removing someone from the Authentik admin group must revoke their command access **without a bot
+restart** — otherwise this is worse than the hand-maintained list it replaces, because it *looks*
+revocable. So `ControlRoomHandler` may no longer freeze `self.admins` at construction: it consults
+the resolver when authorising, and the resolver refreshes on a TTL (a config field, or reuse
+`server_tick_rate_sec` — pick one and say why in a comment).
+
+Authorise against a set that is at most one TTL stale. Do not authorise against a set that is one
+process-lifetime stale.
+
+Note in passing what this does *not* do: a demoted admin stays in the control room and can still
+read it. Kicking them is a separate decision. Do not make it here; leave a comment saying so.
+
+`AdminRoomProvisioner` invites the resolved union too, so a new group member finds the room waiting.
+It runs on startup only, which is fine — an admin added later is invited on the next restart, and can
+be invited by hand meanwhile. Do not turn the provisioner into a loop for this.
+
+**4. A failure to reach Authentik must not open the gate.**
+
+If the refresh raises, keep the previous set and log — never fall back to an empty set that refuses
+everyone (a self-inflicted outage of the control room) and never to a permissive one. On the very
+first resolution, before any successful fetch, the set is `admin_user_ids` alone: the explicit list
+is the floor, and it does not depend on Authentik being up.
+
+### Definition of done
+
+* Config: the new field with `title`/`description`/`examples`, an updated `admin_user_ids`
+  description, then `./gen_config_docs.sh`. Never hand-edit `docs/CONFIG_REFERENCE.md` or
+  `config.example.yml`.
+* Unit tests: the pure resolver (union; unmappable user dropped, not fatal; ignore-listed user
+  dropped; empty union); a group member gaining and then **losing** command access across a refresh,
+  without reconstructing the handler; a failed refresh preserving the previous set; the explicit
+  `admin_user_ids` working with Authentik unreachable.
+* Integration test against the live stack (`./run_integration_tests.sh`): an Authentik user in the
+  configured group runs `!announce` and it lands in a provisioned user's welcome room; the same user,
+  removed from the group, is refused after a refresh.
+* **Amend `docs/adr/0010-admin-control-room.md`.** Its "Decisions" section says the allowlist is
+  explicit and not derived from Authentik; that is now half-wrong. Do not rewrite history — add a
+  dated amendment recording that an Authentik *group* is an accepted second source (it is still an
+  explicit opt-in: somebody must create the group and put people in it), that deriving from
+  *superusers* remains rejected, and why the two are not the same argument.
+
+### Decisions already made
+
+* Union of the two sources; no superuser fallback; empty union means no commands.
+* Authorisation is re-resolved on a TTL, not frozen at startup.
+* A user removed from the group loses commands but keeps their seat in the room.
 
 ---
 

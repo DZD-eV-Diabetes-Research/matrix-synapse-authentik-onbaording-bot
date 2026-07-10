@@ -20,6 +20,10 @@ command that pages the entire company, at-most-once is the failure mode you want
 **Authorisation is the allowlist, never the power level.** The room's power levels let any member
 speak — that is the point of a discussion room. If someone gets themselves into it, their power
 level must not be the only thing standing between them and a message to every employee.
+
+The allowlist is resolved per command through :class:`~onbot.admin.admins.AdminResolver` and is
+never cached on this handler. Half of it comes from an Authentik group, and somebody removed from
+that group must lose their commands within a TTL, not on the next restart of the bot.
 """
 
 from __future__ import annotations
@@ -29,6 +33,7 @@ from collections import deque
 from typing import Any
 
 from onbot import __version__
+from onbot.admin.admins import AdminResolver
 from onbot.admin.broadcast import BroadcastService
 from onbot.admin.commands import ANNOUNCE, STATUS, Command, help_text, parse_command
 from onbot.clients.matrix import ApiClientMatrix, SyncResult
@@ -56,6 +61,7 @@ class ControlRoomHandler:
         client: ApiClientMatrix,
         config: OnbotConfig,
         broadcast: BroadcastService,
+        admins: AdminResolver,
         *,
         engine: ReconcilerEngine | None = None,
         started_at_ms: int | None = None,
@@ -64,9 +70,9 @@ class ControlRoomHandler:
         self.client = client
         self.config = config
         self.broadcast = broadcast
+        self.admins = admins
         self.engine = engine
         self.bot_id = config.synapse_server.bot_user_id
-        self.admins = frozenset(config.admin_room.admin_user_ids)
         self.room_id: str | None = None
         self._started_at_ms = started_at_ms if started_at_ms is not None else int(time.time() * 1000)
         self._seen: deque[str] = deque(maxlen=remembered_events)
@@ -77,7 +83,7 @@ class ControlRoomHandler:
         self.room_id = room_id
         data = await self.client.get_account_data(self.bot_id, self._cursor_type)
         self._seen.extend(str(e) for e in data.get("event_ids", []))
-        log.info("admin control room active in %s (%d admins)", room_id, len(self.admins))
+        log.info("admin control room active in %s (%d admins)", room_id, len(await self.admins.admins()))
 
     async def handle_sync(self, result: SyncResult) -> None:
         if self.room_id is None:
@@ -107,7 +113,10 @@ class ControlRoomHandler:
         if event_id:
             await self._remember(event_id)
 
-        if sender not in self.admins:
+        # Resolved now, not at construction: an admin removed from the Authentik group loses their
+        # commands here, one TTL later at worst. They keep their seat in the room and can still read
+        # it — kicking them is a separate decision, deliberately not taken here.
+        if sender not in await self.admins.admins():
             log.warning("refused %r from non-admin %s in the control room", command.name, sender)
             await self._reply(f"{sender} is not on the bot's admin allowlist.")
             return
