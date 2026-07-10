@@ -1,11 +1,32 @@
-"""Unit tests for the welcome flow's two idempotency layers (one DM per user, each message once)."""
+"""Unit tests for the welcome flow's idempotency layers (one DM per user, each message once, one
+force-join ever) and for the read-only notice board the DM has become."""
 
 from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
+from onbot.clients.base import ApiError
 from onbot.config import AuthentikServer, OnbotConfig, SynapseServer
+from onbot.onboarding.notice_board import notice_board_power_levels
 from onbot.onboarding.welcome import WelcomeService
+
+BOT = "@bot:matrix.test"
+ALICE = "@alice:matrix.test"
+
+
+class FakeSynapseAdmin:
+    """Stand-in for ApiClientSynapseAdmin's force-join, optionally refusing with a given status."""
+
+    def __init__(self, *, fail_with: int | None = None) -> None:
+        self.joined: list[tuple[str, str]] = []
+        self.fail_with = fail_with
+
+    async def add_user_to_room(self, room_id: str, user_id: str) -> None:
+        if self.fail_with is not None:
+            raise ApiError("POST", f"/join/{room_id}", self.fail_with)
+        self.joined.append((room_id, user_id))
 
 
 class FakeMatrixClient:
@@ -18,6 +39,19 @@ class FakeMatrixClient:
         self.created_dms = 0
         self.aliases: dict[str, str] = {}
         self.space_links: list[tuple[str, str]] = []
+        self.power_levels: dict[str, dict[str, Any]] = {}
+        self.power_level_writes: list[str] = []
+        self.avatars: dict[str, str] = {}
+
+    async def get_room_power_levels(self, room_id: str) -> dict[str, Any]:
+        return dict(self.power_levels.get(room_id, {}))
+
+    async def set_room_power_levels(self, room_id: str, power_levels: dict[str, Any]) -> None:
+        self.power_levels[room_id] = dict(power_levels)
+        self.power_level_writes.append(room_id)
+
+    async def set_room_avatar(self, room_id: str, mxc_uri: str) -> None:
+        self.avatars[room_id] = mxc_uri
 
     async def resolve_room_alias(self, alias: str) -> str | None:
         return self.aliases.get(alias)
@@ -31,9 +65,20 @@ class FakeMatrixClient:
     async def set_account_data(self, user_id: str, data_type: str, content: dict[str, Any]) -> None:
         self.account_data[(user_id, data_type)] = dict(content)
 
-    async def create_direct_message_room(self, user_id: str) -> str:
+    async def create_direct_message_room(
+        self,
+        user_id: str,
+        *,
+        name: str | None = None,
+        topic: str | None = None,
+        power_level_content_override: dict[str, Any] | None = None,
+    ) -> str:
         self.created_dms += 1
-        return f"!dm-{self.created_dms}:matrix.test"
+        room_id = f"!dm-{self.created_dms}:matrix.test"
+        self.power_levels[room_id] = dict(power_level_content_override or {})
+        self.room_state[(room_id, "m.room.name")] = {"name": name}
+        self.room_state[(room_id, "m.room.topic")] = {"topic": topic}
+        return room_id
 
     async def get_room_state_event(
         self, room_id: str, event_type: str, state_key: str = ""
@@ -50,18 +95,25 @@ class FakeMatrixClient:
         return f"$e{len(self.sent)}"
 
 
-def _config(messages: list[str] | None, *, place_in_space: bool = False) -> OnbotConfig:
+def _config(
+    messages: list[str] | None, *, place_in_space: bool = False, force_join: bool = True
+) -> OnbotConfig:
     return OnbotConfig(
         synapse_server=SynapseServer(
             server_name="matrix.test",
             server_url="https://matrix.test",
-            bot_user_id="@bot:matrix.test",
+            bot_user_id=BOT,
             bot_access_token="tok",
         ),
         authentik_server=AuthentikServer(url="https://authentik.test", api_key="k"),
         welcome_new_users_messages=messages,
         place_onboarding_rooms_in_space=place_in_space,
+        force_join_onboarding_room=force_join,
     )
+
+
+def _direct_state(client: FakeMatrixClient, room_id: str) -> dict[str, Any]:
+    return client.room_state[(room_id, "test.matrix.onbot.direct_room")]
 
 
 async def test_welcome_creates_dm_and_sends_all_messages() -> None:
@@ -124,5 +176,96 @@ async def test_welcome_does_not_place_dm_in_space_by_default() -> None:
     client = FakeMatrixClient()
     client.aliases["#OnBotSpace:matrix.test"] = "!space:matrix.test"
     svc = WelcomeService(client, _config(["hi"]))  # type: ignore[arg-type]
-    await svc.welcome_user("@alice:matrix.test")
+    await svc.welcome_user(ALICE)
     assert client.space_links == []
+
+
+async def test_new_room_is_created_as_a_read_only_notice_board() -> None:
+    client = FakeMatrixClient()
+    config = _config(["hi"])
+    svc = WelcomeService(client, config)  # type: ignore[arg-type]
+
+    await svc.welcome_user(ALICE)
+
+    assert client.power_levels["!dm-1:matrix.test"] == notice_board_power_levels(BOT)
+    # Force-joining skips the invite that would have tagged the room as a DM, so it needs a name.
+    assert client.room_state[("!dm-1:matrix.test", "m.room.name")] == {"name": config.onboarding_room_name}
+
+
+async def test_user_is_force_joined_once_and_it_is_recorded() -> None:
+    client = FakeMatrixClient()
+    admin = FakeSynapseAdmin()
+    svc = WelcomeService(client, _config(["hi"]), admin=admin)  # type: ignore[arg-type]
+
+    await svc.welcome_user(ALICE)
+
+    assert admin.joined == [("!dm-1:matrix.test", ALICE)]
+    recorded = _direct_state(client, "!dm-1:matrix.test")["force_joined_at"]
+    # Whole seconds. Matrix's canonical JSON has no floats: Synapse answers M_BAD_JSON to a state
+    # event carrying one, which no fake homeserver here would have caught.
+    assert isinstance(recorded, int)
+
+
+async def test_a_user_who_left_the_room_is_not_dragged_back_in() -> None:
+    client = FakeMatrixClient()
+    admin = FakeSynapseAdmin()
+    svc = WelcomeService(client, _config(["hi"]), admin=admin)  # type: ignore[arg-type]
+
+    await svc.welcome_user(ALICE)
+    await svc.welcome_user(ALICE)  # a later reconcile tick, after Alice left the notice board
+
+    assert len(admin.joined) == 1
+
+
+@pytest.mark.parametrize("status", [403, 404])
+async def test_force_join_failure_degrades_to_the_standing_invite(status: int) -> None:
+    client = FakeMatrixClient()
+    admin = FakeSynapseAdmin(fail_with=status)
+    svc = WelcomeService(client, _config(["hi"]), admin=admin)  # type: ignore[arg-type]
+
+    await svc.welcome_user(ALICE)  # must not raise: the invite is the fallback
+
+    # Nothing recorded, so a later tick retries the join rather than assuming it happened.
+    assert _direct_state(client, "!dm-1:matrix.test")["force_joined_at"] is None
+    assert [body for _, body in client.sent] == ["hi"]
+
+
+async def test_an_unexpected_force_join_error_is_not_swallowed() -> None:
+    client = FakeMatrixClient()
+    admin = FakeSynapseAdmin(fail_with=500)
+    svc = WelcomeService(client, _config(["hi"]), admin=admin)  # type: ignore[arg-type]
+
+    with pytest.raises(ApiError):
+        await svc.welcome_user(ALICE)
+
+
+async def test_force_join_can_be_turned_off() -> None:
+    client = FakeMatrixClient()
+    admin = FakeSynapseAdmin()
+    svc = WelcomeService(client, _config(["hi"], force_join=False), admin=admin)  # type: ignore[arg-type]
+
+    await svc.welcome_user(ALICE)
+
+    assert admin.joined == []
+    assert _direct_state(client, "!dm-1:matrix.test")["force_joined_at"] is None
+
+
+async def test_hand_edited_power_levels_are_restored_on_the_next_welcome() -> None:
+    client = FakeMatrixClient()
+    svc = WelcomeService(client, _config(["hi"]))  # type: ignore[arg-type]
+    await svc.welcome_user(ALICE)
+    client.power_levels["!dm-1:matrix.test"]["events_default"] = 0  # somebody re-opened the composer
+
+    await svc.welcome_user(ALICE)
+
+    assert client.power_levels["!dm-1:matrix.test"] == notice_board_power_levels(BOT)
+    assert client.power_level_writes == ["!dm-1:matrix.test"]
+
+
+async def test_undrifted_power_levels_are_not_rewritten() -> None:
+    client = FakeMatrixClient()
+    svc = WelcomeService(client, _config(["hi"]))  # type: ignore[arg-type]
+    await svc.welcome_user(ALICE)
+    await svc.welcome_user(ALICE)
+
+    assert client.power_level_writes == []

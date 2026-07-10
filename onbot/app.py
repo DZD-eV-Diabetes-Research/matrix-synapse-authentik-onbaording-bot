@@ -54,20 +54,17 @@ def build_matrix_token_provider(synapse: SynapseServer) -> TokenProvider:
     raise ValueError("synapse_server needs either bot_access_token or an oauth2 block")
 
 
-async def _apply_bot_avatar(matrix: ApiClientMatrix, config: OnbotConfig) -> None:
+async def _apply_bot_avatar(matrix: ApiClientMatrix, config: OnbotConfig, media: MediaUploader) -> None:
     """Set the bot's own avatar from the configured URL on startup (G6.8), best-effort."""
     url = config.synapse_server.bot_avatar_url
     if not url:
         return
-    uploader = MediaUploader(matrix)
     try:
-        mxc = await uploader.upload_from_url(url)
+        mxc = await media.upload_from_url(url)
         await matrix.set_user_avatar(config.synapse_server.bot_user_id, mxc)
         log.info("set bot avatar from %s", url)
     except Exception:
         log.exception("failed to set bot avatar from %s", url)
-    finally:
-        await uploader.aclose()
 
 
 @dataclass(slots=True)
@@ -106,7 +103,10 @@ async def build_app(config: OnbotConfig) -> AsyncIterator[App]:
     # Register the bot's device so welcome DM sends work under MAS (compat-token devices are
     # otherwise absent from Synapse's devices table; ADR-0006/0009).
     await matrix.ensure_device_registered()
-    await _apply_bot_avatar(matrix, config)
+    # One uploader for the bot avatar, the group rooms and the onboarding rooms: it caches by source
+    # URL, so the bot's avatar is fetched and uploaded once no matter how many rooms wear it.
+    media = MediaUploader(matrix)
+    await _apply_bot_avatar(matrix, config, media)
     events = EventBus()
     # Lifecycle enforcement: under MAS only the MAS admin API can revoke a live session (§7 Q1), so
     # prefer it when configured; otherwise fall back to the Synapse-admin effectors.
@@ -132,17 +132,18 @@ async def build_app(config: OnbotConfig) -> AsyncIterator[App]:
         ),
         effectors=lifecycle_effectors,
     )
-    effectors = CSApiEffectors(matrix)
+    effectors = CSApiEffectors(matrix, media=media)
     engine = ReconcilerEngine(
         config, authentik, admin, effectors=effectors, events=events, lifecycle=lifecycle
     )
-    welcome = WelcomeService(matrix, config)
+    welcome = WelcomeService(matrix, config, admin=admin, media=media)
     listener = OnboardingListener(matrix, welcome, config, events)
     listener.start()  # subscribe onboarding to the reconciler's user-provisioned signal (AD-4)
     try:
         yield App(engine=engine, listener=listener)
     finally:
         await effectors.aclose()
+        await media.aclose()
         await authentik.aclose()
         await admin.aclose()
         await matrix.aclose()

@@ -214,6 +214,49 @@ welcome_new_users_messages:
     is very important. Save the file in a secure location, otherwise you could
     lose access to older encrypted messages later. Please follow the request.
 
+# ## onboarding_room_name - Welcome room name ###
+# Type:        str
+# Required:    False
+# Default:     "Announcements"
+# Env-var:     'ONBOT_ONBOARDING_ROOM_NAME'
+# Description: Display name of the 1:1 welcome room the bot opens with each user. The room needs a
+#              name because the bot joins the user directly instead of waiting for them to accept an
+#              invitation, and a Matrix client only tags a room as a direct message when its user
+#              accepted such an invitation — without a name the room would appear in their room list
+#              as an untitled room. Only read when a room is created; renaming later does not rewrite
+#              existing rooms.
+# Example No. 1:
+#  >onboarding_room_name: Announcements
+# Example No. 2:
+#  >onboarding_room_name: Company Chat Bot
+onboarding_room_name: Announcements
+
+# ## onboarding_room_topic - Welcome room topic ###
+# Type:        str
+# Required:    False
+# Default:     "Notices from the onboarding bot. This room is read-only \u2014 you cannot write here."
+# Env-var:     'ONBOT_ONBOARDING_ROOM_TOPIC'
+# Description: Matrix topic (tagline) of the 1:1 welcome room. A good place to say where a user
+#              should turn with questions, since they cannot ask them in this room — it is read-only.
+#              Only read when a room is created.
+# Example:
+#  >onboarding_room_topic: Notices from the onboarding bot. You cannot write here.
+onboarding_room_topic: Notices from the onboarding bot. This room is read-only —
+  you cannot write here.
+
+# ## force_join_onboarding_room - Force users into the welcome room ###
+# Type:        bool
+# Required:    False
+# Default:     true
+# Env-var:     'ONBOT_FORCE_JOIN_ONBOARDING_ROOM'
+# Description: Join users into their welcome room directly, through the Synapse admin API, instead
+#              of leaving them an invitation they have to accept. On by default: the room is a notice
+#              board the bot posts to, so an unaccepted invitation means a user who never receives
+#              the welcome messages. The join happens exactly once, when the room is created — a user
+#              who then leaves the room is not dragged back in. Turn this off to send a plain
+#              invitation instead; the bot also falls back to the invitation when the join fails.
+force_join_onboarding_room: true
+
 # ## place_onboarding_rooms_in_space - Put welcome rooms in the space ###
 # Type:        bool
 # Required:    False

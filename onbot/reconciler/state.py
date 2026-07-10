@@ -55,6 +55,12 @@ class DirectRoomState(_OnbotRoomState):
     marked_for_disabling_timestamp: float | None = None
     disabled_user_timestamp: float | None = None
     welcome_messages_sent: dict[str, str] = Field(default_factory=dict)
+    # Set once, when the bot force-joined the user at room creation. Its presence is what stops a
+    # user who deliberately left the notice board from being dragged back in on every reconcile.
+    # Whole seconds, not a float: Matrix's canonical JSON has no floats and Synapse rejects a state
+    # event carrying one with M_BAD_JSON.
+    # https://spec.matrix.org/latest/appendices/#canonical-json
+    force_joined_at: int | None = None
 
 
 AnyRoomState = SpaceRoomState | GroupRoomState | DirectRoomState
