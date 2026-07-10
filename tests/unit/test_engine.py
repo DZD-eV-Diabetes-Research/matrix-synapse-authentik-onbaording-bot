@@ -285,6 +285,22 @@ async def test_reconcile_emits_user_synced_events() -> None:
     assert set(seen) == {"@alice:company.org", "@bob:company.org", "@carol:company.org"}
 
 
+async def test_reconcile_emits_reconcile_completed_once_the_pass_is_done() -> None:
+    # The admin room's invite pass hangs off this signal (ADR-0010).
+    bus = EventBus()
+    engine, _, _ = _engine(events=bus)
+    seen_at: list[float | None] = []
+
+    async def handler(_event: Any) -> None:
+        seen_at.append(engine.last_reconcile_at)
+
+    bus.subscribe(Signal.reconcile_completed, handler)
+    await engine.reconcile_once()
+
+    assert len(seen_at) == 1
+    assert seen_at[0] is not None  # emitted after the pass is recorded as done, not before
+
+
 async def test_run_stops_gracefully_after_trigger() -> None:
     engine, _, _ = _engine()
     calls = 0

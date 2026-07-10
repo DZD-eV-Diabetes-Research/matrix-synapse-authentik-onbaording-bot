@@ -22,6 +22,9 @@ log = get_logger(__name__)
 class Signal(StrEnum):
     user_synced = "user_synced"
     drift_detected = "drift_detected"
+    # Emitted at the end of every reconcile pass, so state that must converge on the tick but is not
+    # the reconciler's business can ride along (the admin room's invites, ADR-0010).
+    reconcile_completed = "reconcile_completed"
 
 
 @dataclass(frozen=True, slots=True)

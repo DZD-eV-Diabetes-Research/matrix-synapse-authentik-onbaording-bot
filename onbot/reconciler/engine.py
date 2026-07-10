@@ -138,6 +138,8 @@ class ReconcilerEngine:
         await self._converge_lifecycle(matrix_users, {u.mxid for u in users})
         self.last_reconcile_at = time.time()
         log.info("reconcile: done (%d users, %d group rooms)", len(users), len(group_maps))
+        # Last, and after the timestamp: a subscriber that fails must not make the pass look unfinished.
+        await self.events.emit(Signal.reconcile_completed)
 
     async def _gather_mapped_users(self, matrix_users: list[dict[str, Any]]) -> list[MappedUser]:
         cfg = self.config.sync_authentik_users_with_matrix_rooms
