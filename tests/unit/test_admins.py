@@ -150,11 +150,22 @@ async def test_the_set_is_cached_for_the_ttl_and_refetched_after_it() -> None:
     assert len(authentik.calls) == 2
 
 
-async def test_the_ttl_defaults_to_the_reconcile_interval() -> None:
+async def test_the_ttl_defaults_to_the_authentik_poll_interval() -> None:
+    """Not the reconcile interval: that is a slow Matrix-side drift repair, and binding revocation
+    of bot admin to it would let a removed admin keep issuing commands for minutes."""
     config = _config(group_pks=[GROUP])
-    config.server_tick_rate_sec = 42
+    config.server_tick_rate_sec = 900
+    config.authentik_poll_rate_sec = 42
 
     assert _resolver(_FakeAuthentik(), config).ttl_sec == 42
+
+
+async def test_the_ttl_falls_back_to_the_reconcile_interval_without_a_poll() -> None:
+    config = _config(group_pks=[GROUP])
+    config.server_tick_rate_sec = 900
+    config.authentik_poll_rate_sec = 0
+
+    assert _resolver(_FakeAuthentik(), config).ttl_sec == 900
 
 
 async def test_losing_group_membership_revokes_command_access_on_the_next_refresh() -> None:
