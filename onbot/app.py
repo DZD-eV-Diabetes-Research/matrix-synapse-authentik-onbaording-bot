@@ -36,6 +36,7 @@ from onbot.media import MediaUploader
 from onbot.onboarding.listener import OnboardingListener
 from onbot.onboarding.welcome import WelcomeService
 from onbot.reconciler.engine import ReconcilerEngine
+from onbot.sync import SyncPump
 
 log = get_logger(__name__)
 
@@ -89,11 +90,12 @@ async def _apply_bot_avatar(matrix: ApiClientMatrix, config: OnbotConfig, media:
 
 @dataclass(slots=True)
 class App:
-    """Wired application: the reconciler engine and the onboarding listener over a shared bus."""
+    """Wired application: the reconciler engine and the sync-driven handlers over a shared bus."""
 
     engine: ReconcilerEngine
     listener: OnboardingListener
     broadcast: BroadcastService
+    pump: SyncPump
 
 
 @asynccontextmanager
@@ -163,8 +165,11 @@ async def build_app(config: OnbotConfig) -> AsyncIterator[App]:
     listener = OnboardingListener(matrix, welcome, config, events)
     listener.start()  # subscribe onboarding to the reconciler's user-provisioned signal (AD-4)
     broadcast = BroadcastService(matrix, config)
+    # One sync connection, fanned out to every consumer of the event stream (see onbot/sync.py).
+    pump = SyncPump(matrix)
+    pump.register(listener)
     try:
-        yield App(engine=engine, listener=listener, broadcast=broadcast)
+        yield App(engine=engine, listener=listener, broadcast=broadcast, pump=pump)
     finally:
         await effectors.aclose()
         await media.aclose()
@@ -176,16 +181,16 @@ async def build_app(config: OnbotConfig) -> AsyncIterator[App]:
 
 
 async def run_service(config: OnbotConfig) -> None:
-    """Run the reconcile loop and the onboarding listener concurrently until stopped."""
+    """Run the reconcile loop and the sync pump concurrently until stopped."""
     async with build_app(config) as app:
-        # The engine owns the signal handlers; when it stops, stop the listener too.
+        # The engine owns the signal handlers; when it stops, stop the sync stream too.
         async def _reconcile() -> None:
             try:
                 await app.engine.run()
             finally:
-                app.listener.request_stop()
+                app.pump.request_stop()
 
-        await asyncio.gather(_reconcile(), app.listener.run())
+        await asyncio.gather(_reconcile(), app.pump.run())
 
 
 async def run_reconcile_once(config: OnbotConfig) -> None:
