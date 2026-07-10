@@ -575,6 +575,142 @@ invitation instead; the bot also falls back to the invitation when the join fail
 
 ---
 
+## `admin_room`
+
+*Admin control room*
+
+A Matrix room in which listed administrators can command the bot — most notably
+announcing a message to every user. Disabled by default.
+
+| Property | Value |
+|---|---|
+| Type | Object (AdminRoom) |
+| Required | No |
+| Environment variable | `ONBOT_ADMIN_ROOM` |
+
+---
+
+### `admin_room.enabled`
+
+*Enable the admin control room*
+
+Create and listen in a control room where administrators can command the bot. Off
+by default: the room lets anyone on the `admin_user_ids` list send a message to every
+user on the server, so it should be turned on deliberately. The `onbot broadcast`
+command-line tool does the same job without a room.
+
+| Property | Value |
+|---|---|
+| Type | bool |
+| Required | No |
+| Default | `false` |
+| Environment variable | `ONBOT_ADMIN_ROOM__ENABLED` |
+
+---
+
+### `admin_room.alias`
+
+*Control room alias localpart*
+
+Localpart of the control room's canonical alias, i.e. the `<alias>` in
+`#<alias>:<server_name>`. This is how the bot finds the room again, so changing it
+later makes the bot create a second, empty control room rather than rename the
+first.
+
+| Property | Value |
+|---|---|
+| Type | str |
+| Required | No |
+| Default | `"onbot-admin"` |
+| Environment variable | `ONBOT_ADMIN_ROOM__ALIAS` |
+
+**Examples:**
+
+*Example 1:*
+
+```yaml
+alias: onbot-admin
+```
+
+*Example 2:*
+
+```yaml
+alias: bot-control
+```
+
+---
+
+### `admin_room.name`
+
+*Control room name*
+
+Display name of the control room. Only read when the room is created.
+
+| Property | Value |
+|---|---|
+| Type | str |
+| Required | No |
+| Default | `"Onbot Admin"` |
+| Environment variable | `ONBOT_ADMIN_ROOM__NAME` |
+
+**Examples:**
+
+```yaml
+name: Onbot Admin
+```
+
+---
+
+### `admin_room.topic`
+
+*Control room topic*
+
+Matrix topic (tagline) of the control room. The bot keeps this in sync with the
+commands it supports, so a one-line reminder is visible without scrolling.
+
+| Property | Value |
+|---|---|
+| Type | str |
+| Required | No |
+| Default | `"Onbot control room \u2014 say !help for the available commands."` |
+| Environment variable | `ONBOT_ADMIN_ROOM__TOPIC` |
+
+**Examples:**
+
+```yaml
+topic: Bot control room. !help for commands.
+```
+
+---
+
+### `admin_room.admin_user_ids`
+
+*Administrators allowed to command the bot*
+
+Full Matrix IDs permitted to run commands in the control room. Everyone else is
+refused, even if they are somehow in the room and even if they hold a high power level
+there — the check is against this list and nothing else, because a command like
+`!announce` reaches every user on the server. The bot invites these users to the room
+when it creates it. Deriving this list from the Authentik superusers the bot already
+knows about would be possible, but an explicit list is the safer default for a
+capability with this reach; an empty list disables every command.
+
+| Property | Value |
+|---|---|
+| Type | List of str |
+| Required | No |
+| Environment variable | `ONBOT_ADMIN_ROOM__ADMIN_USER_IDS` |
+
+**Examples:**
+
+```yaml
+admin_user_ids:
+- '@admin:company.org'
+- '@ops-lead:company.org'
+```
+
+---
+
 ## `place_onboarding_rooms_in_space`
 
 *Put welcome rooms in the space*

@@ -111,7 +111,12 @@ the user, i.e. rooms created after this change.
 
 ---
 
-## Session B — `onbot broadcast` and the `#onbot-admin` control room
+## ~~Session B~~ — done: `onbot broadcast` and the `#onbot-admin` control room
+
+**Shipped.** See `docs/adr/0010-admin-control-room.md`. Three commits: the broadcast CLI, the
+`SyncPump` refactor, then the control room. The section below is kept as the record of what was
+asked for; the one deviation is noted here rather than silently: `!status` needed a last-reconcile
+timestamp, so `ReconcilerEngine` gained a `last_reconcile_at` attribute set at the end of each pass.
 
 Covers the old todo item *"come up with an idea how an admin can send a message on the bot's behalf
 to all users' bot rooms"*. Two commits: the CLI first, because it needs no new machinery and is

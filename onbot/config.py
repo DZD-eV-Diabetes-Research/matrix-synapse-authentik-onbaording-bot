@@ -151,6 +151,80 @@ class MasAdmin(BaseModel):
     ]
 
 
+class AdminRoom(BaseModel):
+    """The operator control room (ADR-0010).
+
+    A single Matrix room the bot joins, invites the admins to, and listens in for prefixed commands
+    (``!announce``, ``!help``, ``!status``). It is an operator *interface*, not a state source: no
+    command here feeds the reconciler's desired state, which is why reading messages does not
+    contradict ADR-0002.
+
+    Authorisation is the ``admin_user_ids`` allowlist, checked against the event sender — never the
+    sender's room power level. The power levels are the fence; the allowlist is the gate.
+    """
+
+    enabled: Annotated[
+        bool,
+        Field(
+            title="Enable the admin control room",
+            description=inspect.cleandoc(
+                """Create and listen in a control room where administrators can command the bot. Off
+                by default: the room lets anyone on the `admin_user_ids` list send a message to every
+                user on the server, so it should be turned on deliberately. The `onbot broadcast`
+                command-line tool does the same job without a room."""
+            ),
+        ),
+    ] = False
+    alias: Annotated[
+        str,
+        Field(
+            title="Control room alias localpart",
+            description=inspect.cleandoc(
+                """Localpart of the control room's canonical alias, i.e. the `<alias>` in
+                `#<alias>:<server_name>`. This is how the bot finds the room again, so changing it
+                later makes the bot create a second, empty control room rather than rename the
+                first."""
+            ),
+            examples=["onbot-admin", "bot-control"],
+        ),
+    ] = "onbot-admin"
+    name: Annotated[
+        str,
+        Field(
+            title="Control room name",
+            description="Display name of the control room. Only read when the room is created.",
+            examples=["Onbot Admin"],
+        ),
+    ] = "Onbot Admin"
+    topic: Annotated[
+        str,
+        Field(
+            title="Control room topic",
+            description=inspect.cleandoc(
+                """Matrix topic (tagline) of the control room. The bot keeps this in sync with the
+                commands it supports, so a one-line reminder is visible without scrolling."""
+            ),
+            examples=["Bot control room. !help for commands."],
+        ),
+    ] = "Onbot control room — say !help for the available commands."
+    admin_user_ids: Annotated[
+        list[str],
+        Field(
+            title="Administrators allowed to command the bot",
+            description=inspect.cleandoc(
+                """Full Matrix IDs permitted to run commands in the control room. Everyone else is
+                refused, even if they are somehow in the room and even if they hold a high power level
+                there — the check is against this list and nothing else, because a command like
+                `!announce` reaches every user on the server. The bot invites these users to the room
+                when it creates it. Deriving this list from the Authentik superusers the bot already
+                knows about would be possible, but an explicit list is the safer default for a
+                capability with this reach; an empty list disables every command."""
+            ),
+            examples=[["@admin:company.org", "@ops-lead:company.org"]],
+        ),
+    ] = Field(default_factory=list)
+
+
 class SynapseServer(BaseModel):
     """Where the homeserver lives and how the bot authenticates against it."""
 
@@ -863,6 +937,17 @@ class OnbotConfig(BaseSettings):
             ),
         ),
     ] = True
+
+    admin_room: Annotated[
+        AdminRoom,
+        Field(
+            title="Admin control room",
+            description=inspect.cleandoc(
+                """A Matrix room in which listed administrators can command the bot — most notably
+                announcing a message to every user. Disabled by default."""
+            ),
+        ),
+    ] = Field(default_factory=AdminRoom)
 
     place_onboarding_rooms_in_space: Annotated[
         bool,
