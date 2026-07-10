@@ -4,8 +4,12 @@ Sub-commands mirror the operational surface from ``BATTLE_PLAN.md`` §4:
 
 * ``run``             — long-running service: scheduled reconcile + (Phase 4) onboarding
 * ``reconcile-once``  — run a single idempotent reconcile and exit
+* ``broadcast``       — send one announcement to every user's notice board (G4.6)
 * ``generate-config`` — emit a documented example config (G11.2)
 * ``healthcheck``     — probe dependencies for container/orchestrator health (Phase 8)
+
+``broadcast`` carries no authorisation check of its own, deliberately: anyone who can run this
+command can already read the bot's access token out of its config or environment.
 """
 
 from __future__ import annotations
@@ -29,6 +33,15 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("run", help="Run the bot service (reconcile loop + onboarding).")
     sub.add_parser("reconcile-once", help="Run a single reconcile pass and exit.")
+    bcast = sub.add_parser(
+        "broadcast",
+        help="Send a message to every user's onboarding room.",
+        description=(
+            "Send one message, as a notice, into the read-only onboarding room of every user the "
+            "bot has onboarded. Exits non-zero if any room could not be reached."
+        ),
+    )
+    bcast.add_argument("message", help="The message to send, e.g. 'Maintenance at 22:00 UTC'.")
     gen = sub.add_parser("generate-config", help="Write a documented example configuration file.")
     gen.add_argument("-o", "--output", default=None, help="Write to this path instead of stdout.")
     sub.add_parser("healthcheck", help="Check connectivity to required services.")
@@ -75,6 +88,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "reconcile-once":
         asyncio.run(app.run_reconcile_once(config))
         return 0
+    if args.command == "broadcast":
+        return asyncio.run(app.run_broadcast(config, args.message))
 
     raise SystemExit(f"unknown command {args.command!r}")  # pragma: no cover
 

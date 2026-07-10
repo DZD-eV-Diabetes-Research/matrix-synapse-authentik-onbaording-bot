@@ -12,6 +12,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
+from onbot.admin.broadcast import BroadcastService
 from onbot.auth.token_provider import (
     OAuth2ClientCredentialsTokenProvider,
     StaticTokenProvider,
@@ -54,6 +55,25 @@ def build_matrix_token_provider(synapse: SynapseServer) -> TokenProvider:
     raise ValueError("synapse_server needs either bot_access_token or an oauth2 block")
 
 
+async def _relax_bot_ratelimit(admin: ApiClientSynapseAdmin, config: OnbotConfig) -> None:
+    """Lift Synapse's per-user send limit for the bot, best-effort.
+
+    A broadcast is one account writing into every managed direct room at once, which the limiter sees
+    as a flood. Failure here is not fatal — the fan-out is bounded and retries 429s (see
+    :mod:`onbot.admin.broadcast`) — so a homeserver that refuses the override (no admin rights, the
+    endpoint remounted) only makes broadcasts slower, never wrong.
+    """
+    try:
+        await admin.override_ratelimit(config.synapse_server.bot_user_id)
+        log.info("lifted Synapse send rate limit for %s", config.synapse_server.bot_user_id)
+    except Exception:
+        log.warning(
+            "could not override the rate limit for %s; large broadcasts may be throttled",
+            config.synapse_server.bot_user_id,
+            exc_info=True,
+        )
+
+
 async def _apply_bot_avatar(matrix: ApiClientMatrix, config: OnbotConfig, media: MediaUploader) -> None:
     """Set the bot's own avatar from the configured URL on startup (G6.8), best-effort."""
     url = config.synapse_server.bot_avatar_url
@@ -73,6 +93,7 @@ class App:
 
     engine: ReconcilerEngine
     listener: OnboardingListener
+    broadcast: BroadcastService
 
 
 @asynccontextmanager
@@ -103,6 +124,8 @@ async def build_app(config: OnbotConfig) -> AsyncIterator[App]:
     # Register the bot's device so welcome DM sends work under MAS (compat-token devices are
     # otherwise absent from Synapse's devices table; ADR-0006/0009).
     await matrix.ensure_device_registered()
+    # Broadcasts write to every managed direct room at once; ask Synapse not to throttle the bot.
+    await _relax_bot_ratelimit(admin, config)
     # One uploader for the bot avatar, the group rooms and the onboarding rooms: it caches by source
     # URL, so the bot's avatar is fetched and uploaded once no matter how many rooms wear it.
     media = MediaUploader(matrix)
@@ -139,8 +162,9 @@ async def build_app(config: OnbotConfig) -> AsyncIterator[App]:
     welcome = WelcomeService(matrix, config, admin=admin, media=media)
     listener = OnboardingListener(matrix, welcome, config, events)
     listener.start()  # subscribe onboarding to the reconciler's user-provisioned signal (AD-4)
+    broadcast = BroadcastService(matrix, config)
     try:
-        yield App(engine=engine, listener=listener)
+        yield App(engine=engine, listener=listener, broadcast=broadcast)
     finally:
         await effectors.aclose()
         await media.aclose()
@@ -172,3 +196,15 @@ async def run_reconcile_once(config: OnbotConfig) -> None:
     """
     async with build_app(config) as app:
         await app.engine.reconcile_once()
+
+
+async def run_broadcast(config: OnbotConfig, message: str) -> int:
+    """Send one announcement to every managed direct room (``onbot broadcast``).
+
+    Returns a shell exit code: non-zero when any room refused the message, so a script can tell a
+    partial delivery from a clean one.
+    """
+    async with build_app(config) as app:
+        result = await app.broadcast.broadcast(message)
+    print(result.summary())
+    return 1 if result.failures else 0

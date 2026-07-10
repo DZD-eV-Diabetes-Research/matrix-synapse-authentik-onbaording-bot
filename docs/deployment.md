@@ -56,8 +56,19 @@ The image runs `onbot run` by default. You can override the command to run any o
 ```
 onbot run               # long-running service: reconcile loop + event-driven onboarding (default)
 onbot reconcile-once    # one idempotent reconcile pass, then exit
+onbot broadcast "..."   # send one notice to every user's onboarding room; exit 1 if a room failed
 onbot generate-config   # print a minimal config template (config.example.yml is the rich one)
 onbot healthcheck       # probe Synapse/Authentik/MAS with the real credentials; exit 0 healthy, 1 not
+```
+
+`broadcast` reaches every user the bot has onboarded, so treat it with the caution that deserves. It
+performs no permission check of its own: whoever can run it can already read the bot's access token
+from the config, and the bot's onboarding rooms are read-only notice boards that only it may post to.
+
+```bash
+docker run --rm \
+  -v "$PWD/config.yml:/config/config.yml:ro" \
+  dzdde/onbot:latest broadcast "Maintenance window tonight at 22:00 UTC"
 ```
 
 For example, a one-shot reconcile:

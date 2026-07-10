@@ -364,12 +364,18 @@ class ApiClientMatrix(BaseApiClient):
 
     # --- messaging -----------------------------------------------------------
 
-    async def send_text_message(self, room_id: str, body: str) -> str:
-        """Send a plain-text message; returns the event id. Uses a unique transaction id."""
+    async def send_text_message(self, room_id: str, body: str, *, msgtype: str = "m.text") -> str:
+        """Send a textual message; returns the event id. Uses a unique transaction id.
+
+        ``msgtype`` is ``m.text`` for a plain message and ``m.notice`` for one the client should not
+        auto-reply to or notify on as loudly — the convention for bot-originated messages, used by
+        the broadcast fan-out.
+        https://spec.matrix.org/latest/client-server-api/#mnotice
+        """
         txn = uuid.uuid4().hex
         result = await self.put_json(
             f"v3/rooms/{room_id}/send/m.room.message/{txn}",
-            json_body={"msgtype": "m.text", "body": body},
+            json_body={"msgtype": msgtype, "body": body},
         )
         event_id: str = result["event_id"]
         return event_id

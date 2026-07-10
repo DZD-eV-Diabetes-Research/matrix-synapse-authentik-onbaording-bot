@@ -63,3 +63,25 @@ def test_cli_log_level_overrides_config(monkeypatch: pytest.MonkeyPatch) -> None
 def test_unknown_command_is_rejected() -> None:
     with pytest.raises(SystemExit):
         cli.main(["does-not-exist"])
+
+
+def test_broadcast_passes_the_message_and_propagates_its_exit_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_run_broadcast(config: object, message: str) -> int:
+        captured["message"] = message
+        return 1  # a room failed; the exit code must survive to the shell
+
+    monkeypatch.setattr(cli, "load_config", lambda: SimpleNamespace(log_level="INFO"))
+    monkeypatch.setattr(cli, "get_config_file_path", lambda: "config.yml")
+    monkeypatch.setattr("onbot.app.run_broadcast", fake_run_broadcast)
+
+    assert cli.main(["broadcast", "Maintenance at 22:00 UTC"]) == 1
+    assert captured["message"] == "Maintenance at 22:00 UTC"
+
+
+def test_broadcast_requires_a_message() -> None:
+    with pytest.raises(SystemExit):
+        cli.main(["broadcast"])
