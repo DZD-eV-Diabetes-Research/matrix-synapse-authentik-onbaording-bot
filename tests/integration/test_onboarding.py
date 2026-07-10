@@ -1,5 +1,10 @@
 """End-to-end onboarding: a provisioned user gets a welcome DM, sent exactly once (idempotent,
-GOALS G4.1/G4.3). The welcome fires via the reconciler's user-synced signal during reconcile."""
+GOALS G4.1/G4.3). The welcome fires via the reconciler's user-synced signal during reconcile.
+
+That DM is a read-only notice board: the bot force-joins the user into it and holds the only power
+level that may post. Both are asserted here against the live homeserver, because both depend on
+Synapse's own rules — that the admin join API works on an invite-only room the calling admin may
+invite into, and that a user at power level 0 is refused when they try to send."""
 
 from __future__ import annotations
 
@@ -37,3 +42,41 @@ async def test_welcome_dm_sent_once(
         if ev.get("type") == "m.room.message" and ev.get("sender") == S.BOT_USER_ID
     ]
     assert len(bot_messages) == len(config.welcome_new_users_messages)
+
+
+async def _welcome_room_of(
+    make_config, authentik_admin: S.AuthentikAdmin, matrix_client: ApiClientMatrix, prefix: str
+) -> tuple[S.LoginResult, str]:
+    """Provision a user, reconcile once, and return them alongside their welcome room."""
+    _user, login = S.provision(authentik_admin, S.uniq(prefix))
+    await run_reconcile_once(make_config())
+    direct = await matrix_client.get_account_data(S.BOT_USER_ID, "m.direct")
+    return login, (direct[login.mxid])[0]
+
+
+async def test_user_is_force_joined_into_the_welcome_room(
+    make_config, authentik_admin: S.AuthentikAdmin, matrix_client: ApiClientMatrix
+) -> None:
+    login, room_id = await _welcome_room_of(make_config, authentik_admin, matrix_client, "forcejoin")
+
+    # Joined outright — the user never saw, let alone accepted, an invitation.
+    member = await matrix_client.get_room_state_event(room_id, "m.room.member", login.mxid)
+    assert member is not None and member["membership"] == "join"
+
+
+async def test_the_welcome_room_is_read_only_for_its_user(
+    make_config, authentik_admin: S.AuthentikAdmin, matrix_client: ApiClientMatrix
+) -> None:
+    login, room_id = await _welcome_room_of(make_config, authentik_admin, matrix_client, "readonly")
+
+    levels = await matrix_client.get_room_power_levels(room_id)
+    assert levels["users"][S.BOT_USER_ID] == 100
+    assert login.mxid not in levels["users"]  # they sit at users_default
+    assert levels["users_default"] == 0
+
+    # And Synapse actually enforces it: the composer in Element is not the only thing stopping them.
+    assert S.send_message_status(login.access_token, room_id, "can I talk here?") == 403
+
+    # Force-joining skips the invite that makes a client tag the room as a DM, so it carries a name.
+    name = await matrix_client.get_room_state_event(room_id, "m.room.name")
+    assert name is not None and name["name"]

@@ -822,6 +822,48 @@ class OnbotConfig(BaseSettings):
         ]
     )
 
+    onboarding_room_name: Annotated[
+        str,
+        Field(
+            title="Welcome room name",
+            description=inspect.cleandoc(
+                """Display name of the 1:1 welcome room the bot opens with each user. The room needs a
+                name because the bot joins the user directly instead of waiting for them to accept an
+                invitation, and a Matrix client only tags a room as a direct message when its user
+                accepted such an invitation — without a name the room would appear in their room list
+                as an untitled room. Only read when a room is created; renaming later does not rewrite
+                existing rooms."""
+            ),
+            examples=["Announcements", "Company Chat Bot"],
+        ),
+    ] = "Announcements"
+    onboarding_room_topic: Annotated[
+        str,
+        Field(
+            title="Welcome room topic",
+            description=inspect.cleandoc(
+                """Matrix topic (tagline) of the 1:1 welcome room. A good place to say where a user
+                should turn with questions, since they cannot ask them in this room — it is read-only.
+                Only read when a room is created."""
+            ),
+            examples=["Notices from the onboarding bot. You cannot write here."],
+        ),
+    ] = "Notices from the onboarding bot. This room is read-only — you cannot write here."
+    force_join_onboarding_room: Annotated[
+        bool,
+        Field(
+            title="Force users into the welcome room",
+            description=inspect.cleandoc(
+                """Join users into their welcome room directly, through the Synapse admin API, instead
+                of leaving them an invitation they have to accept. On by default: the room is a notice
+                board the bot posts to, so an unaccepted invitation means a user who never receives
+                the welcome messages. The join happens exactly once, when the room is created — a user
+                who then leaves the room is not dragged back in. Turn this off to send a plain
+                invitation instead; the bot also falls back to the invitation when the join fails."""
+            ),
+        ),
+    ] = True
+
     place_onboarding_rooms_in_space: Annotated[
         bool,
         Field(

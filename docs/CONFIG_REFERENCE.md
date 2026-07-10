@@ -498,6 +498,83 @@ welcome_new_users_messages:
 
 ---
 
+## `onboarding_room_name`
+
+*Welcome room name*
+
+Display name of the 1:1 welcome room the bot opens with each user. The room needs a
+name because the bot joins the user directly instead of waiting for them to accept an
+invitation, and a Matrix client only tags a room as a direct message when its user
+accepted such an invitation — without a name the room would appear in their room list
+as an untitled room. Only read when a room is created; renaming later does not rewrite
+existing rooms.
+
+| Property | Value |
+|---|---|
+| Type | str |
+| Required | No |
+| Default | `"Announcements"` |
+| Environment variable | `ONBOT_ONBOARDING_ROOM_NAME` |
+
+**Examples:**
+
+*Example 1:*
+
+```yaml
+onboarding_room_name: Announcements
+```
+
+*Example 2:*
+
+```yaml
+onboarding_room_name: Company Chat Bot
+```
+
+---
+
+## `onboarding_room_topic`
+
+*Welcome room topic*
+
+Matrix topic (tagline) of the 1:1 welcome room. A good place to say where a user
+should turn with questions, since they cannot ask them in this room — it is read-only.
+Only read when a room is created.
+
+| Property | Value |
+|---|---|
+| Type | str |
+| Required | No |
+| Default | `"Notices from the onboarding bot. This room is read-only \u2014 you cannot write here."` |
+| Environment variable | `ONBOT_ONBOARDING_ROOM_TOPIC` |
+
+**Examples:**
+
+```yaml
+onboarding_room_topic: Notices from the onboarding bot. You cannot write here.
+```
+
+---
+
+## `force_join_onboarding_room`
+
+*Force users into the welcome room*
+
+Join users into their welcome room directly, through the Synapse admin API, instead
+of leaving them an invitation they have to accept. On by default: the room is a notice
+board the bot posts to, so an unaccepted invitation means a user who never receives
+the welcome messages. The join happens exactly once, when the room is created — a user
+who then leaves the room is not dragged back in. Turn this off to send a plain
+invitation instead; the bot also falls back to the invitation when the join fails.
+
+| Property | Value |
+|---|---|
+| Type | bool |
+| Required | No |
+| Default | `true` |
+| Environment variable | `ONBOT_FORCE_JOIN_ONBOARDING_ROOM` |
+
+---
+
 ## `place_onboarding_rooms_in_space`
 
 *Put welcome rooms in the space*

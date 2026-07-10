@@ -319,6 +319,17 @@ def whoami_status(access_token: str) -> int:
     ).status_code
 
 
+def send_message_status(access_token: str, room_id: str, body: str) -> int:
+    """HTTP status of a CS message send by the token's owner (200 sent, 403 forbidden by power level)."""
+    return httpx.put(
+        f"{SYNAPSE_URL}/_matrix/client/v3/rooms/{quote(room_id, safe='')}/send/m.room.message/"
+        f"{secrets.token_hex(8)}",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json={"msgtype": "m.text", "body": body},
+        timeout=15.0,
+    ).status_code
+
+
 def wait_revoked(access_token: str, *, timeout: float = 15.0) -> bool:
     """Poll until the token is rejected (revocation is near-instant via MAS, but allow slack)."""
     import time

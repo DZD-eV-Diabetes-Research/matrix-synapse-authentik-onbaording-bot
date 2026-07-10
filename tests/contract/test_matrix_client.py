@@ -250,14 +250,26 @@ async def test_create_direct_message_room_is_direct_and_invites() -> None:
     )
     client = _client()
     try:
-        room_id = await client.create_direct_message_room("@u:matrix.test")
+        room_id = await client.create_direct_message_room(
+            "@u:matrix.test",
+            name="Announcements",
+            topic="read-only",
+            power_level_content_override={"users_default": 0},
+        )
     finally:
         await client.aclose()
     assert room_id == "!dm:matrix.test"
     body = json.loads(route.calls[0].request.content)
     assert body["is_direct"] is True
+    # The invite stands even though the bot force-joins the user: it is the fallback when the
+    # force-join is disabled or refused.
     assert body["invite"] == ["@u:matrix.test"]
-    assert body["preset"] == "trusted_private_chat"
+    # NOT trusted_private_chat, which would hand the user power level 100 and make the room's
+    # read-only power levels impossible to enforce, then and forever after.
+    assert body["preset"] == "private_chat"
+    assert body["power_level_content_override"] == {"users_default": 0}
+    assert body["name"] == "Announcements"
+    assert body["topic"] == "read-only"
     assert "initial_state" not in body
 
 

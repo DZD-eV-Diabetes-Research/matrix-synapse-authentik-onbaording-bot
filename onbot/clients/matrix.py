@@ -217,12 +217,32 @@ class ApiClientMatrix(BaseApiClient):
         room_id: str = result["room_id"]
         return room_id
 
-    async def create_direct_message_room(self, user_id: str) -> str:
-        """Create a 1:1 invite-only DM room with ``user_id`` (G4.1)."""
+    async def create_direct_message_room(
+        self,
+        user_id: str,
+        *,
+        name: str | None = None,
+        topic: str | None = None,
+        power_level_content_override: Mapping[str, Any] | None = None,
+    ) -> str:
+        """Create a 1:1 invite-only DM room with ``user_id`` (G4.1).
+
+        ``private_chat`` — not ``trusted_private_chat``, which hands the invitee power level 100 and
+        makes the room un-demotable forever. ``power_level_content_override`` shapes the room at
+        creation instead; see :mod:`onbot.onboarding.notice_board`.
+
+        The invite is kept even when the caller force-joins the user afterwards: it is the fallback
+        when force-join is disabled or fails.
+        """
+        room_params: dict[str, Any] = {"preset": "private_chat"}
+        if power_level_content_override:
+            room_params["power_level_content_override"] = dict(power_level_content_override)
         return await self.create_room(
             is_direct=True,
             invite=[user_id],
-            room_params={"preset": "trusted_private_chat"},
+            name=name,
+            topic=topic,
+            room_params=room_params,
         )
 
     async def resolve_room_alias(self, alias: str) -> str | None:
