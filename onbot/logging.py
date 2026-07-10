@@ -13,12 +13,17 @@ _DEFAULT_FORMAT = "%(asctime)s %(levelname)-8s %(name)s: %(message)s"
 
 
 def configure_logging(level: str | int | None = None) -> None:
-    """Configure root logging once, honouring ``ONBOT_LOG_LEVEL`` when ``level`` is unset."""
+    """Configure root logging, honouring ``ONBOT_LOG_LEVEL`` when ``level`` is unset.
+
+    Safe to call more than once: the CLI configures logging before the config file is readable, then
+    re-applies the loaded ``log_level``. ``force`` makes the second call take effect (``basicConfig``
+    is otherwise a no-op once the root logger has handlers).
+    """
     if level is None:
         level = os.environ.get("ONBOT_LOG_LEVEL", "INFO")
     if isinstance(level, str):
         level = logging.getLevelName(level.upper())
-    logging.basicConfig(level=level, format=_DEFAULT_FORMAT)
+    logging.basicConfig(level=level, format=_DEFAULT_FORMAT, force=True)
 
 
 def get_logger(name: str) -> logging.Logger:

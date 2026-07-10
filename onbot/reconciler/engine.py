@@ -16,6 +16,8 @@ import contextlib
 import signal
 from typing import Any
 
+from pydantic import ValidationError
+
 from onbot.clients.authentik import ApiClientAuthentik
 from onbot.clients.synapse_admin import ApiClientSynapseAdmin
 from onbot.config import OnbotConfig, SyncMatrixRoomsBasedOnAuthentikGroups
@@ -120,9 +122,11 @@ class ReconcilerEngine:
         matrix_users = await self.admin.list_users()
         users = await self._gather_mapped_users(matrix_users)
         space = await self._resolve_space()
-        group_maps = await self._gather_group_room_maps()
+        rooms = await self._gather_group_rooms()
+        group_maps = await self._gather_group_room_maps(rooms)
 
         await self._converge_rooms(group_maps, space)
+        await self._converge_obsolete_rooms(rooms, group_maps)
         if space is not None:
             await self._converge_space_avatar(space)
             await self._converge_space_membership(space, users)
@@ -172,12 +176,16 @@ class ReconcilerEngine:
                 await self.events.emit(Signal.user_synced, mxid=mxid)
         return mapped
 
-    async def _gather_group_room_maps(self) -> list[GroupRoomMap]:
+    async def _gather_group_rooms(self) -> list[MatrixRoom]:
+        if not self.config.sync_matrix_rooms_based_on_authentik_groups.enabled:
+            return []
+        return [MatrixRoom.from_admin_api(r) for r in await self.admin.list_non_space_rooms()]
+
+    async def _gather_group_room_maps(self, rooms: list[MatrixRoom]) -> list[GroupRoomMap]:
         settings = self.config.sync_matrix_rooms_based_on_authentik_groups
         if not settings.enabled:
             return []
         groups = await self.authentik.list_groups(filter_by_attribute=settings.only_groups_with_attributes)
-        rooms = [MatrixRoom.from_admin_api(r) for r in await self.admin.list_non_space_rooms()]
         return build_group_room_maps(groups, rooms, self.config, self.server_name)
 
     async def _resolve_space(self) -> MatrixRoom | None:
@@ -268,6 +276,62 @@ class ReconcilerEngine:
                 gm.desired.avatar_source_url,
                 GroupRoomState(group_id=gm.group_pk, authentik_server=self.config.authentik_server.url),
             )
+
+    async def _converge_obsolete_rooms(self, rooms: list[MatrixRoom], group_maps: list[GroupRoomMap]) -> None:
+        """Tear down rooms whose mapped Authentik group disappeared (G2.3, the inverse of G2.2).
+
+        A room is obsolete when it carries our ``group_room`` state event but the ``group_id``
+        recorded there no longer names a group that survives the sync filters — because the group was
+        deleted upstream, or lost the attribute/prefix/parent that opted it into chat.
+
+        Identification is by the recorded ``group_id``, not by set-differencing room ids as legacy
+        did: a room whose alias changed, or one created earlier in this very pass, must not read as
+        obsolete. Rooms with no ``group_room`` state event are never touched, so unrelated and
+        onboarding rooms are structurally out of reach.
+        """
+        settings = self.config.sync_matrix_rooms_based_on_authentik_groups
+        if not settings.enabled or not settings.disable_rooms_when_mapped_authentik_group_disappears:
+            return
+        live_group_pks = {gm.group_pk for gm in group_maps}
+        mapped_room_ids = {gm.room.room_id for gm in group_maps if gm.room is not None}
+        event_type = event_type_name(self.server_name, OnbotRoomType.group_room)
+
+        for room in rooms:
+            if room.room_id in mapped_room_ids:
+                continue  # backed by a live group; skip the state read
+            raw = await self.effectors.get_room_state(room.room_id, event_type)
+            if not raw:
+                continue  # not a room we manage
+            try:
+                state = parse_room_state(OnbotRoomType.group_room, raw)
+            except ValidationError:
+                log.warning("room %s has unreadable onbot state; leaving it alone", room.room_id)
+                continue
+            assert isinstance(state, GroupRoomState)
+            if state.group_id in live_group_pks:
+                continue
+            await self._disable_room(room, state.group_id, settings)
+
+    async def _disable_room(
+        self, room: MatrixRoom, group_id: str, settings: SyncMatrixRoomsBasedOnAuthentikGroups
+    ) -> None:
+        """Block an obsolete room and clear it of users; optionally delete it (irreversible)."""
+        reason = (
+            f"The group mapped to this room is no longer synced from the central user directory "
+            f"({self.config.authentik_server.url})."
+        )
+        log.info("disabling room %s: authentik group %s disappeared", room.room_id, group_id)
+        await self.admin.room_set_blocked(room.room_id, blocked=True)
+
+        bot_id = self.config.synapse_server.bot_user_id
+        for mxid in await self.admin.list_room_members(room.room_id):
+            if mxid == bot_id:
+                continue
+            await self.effectors.kick_user(room.room_id, mxid, reason)
+
+        if settings.delete_disabled_rooms:
+            log.warning("deleting room %s (delete_disabled_rooms is enabled)", room.room_id)
+            await self.admin.delete_room(room.room_id, block=True, purge=True, message=reason)
 
     async def _converge_space_membership(self, space: MatrixRoom, users: list[MappedUser]) -> None:
         members = await self.admin.list_room_members(space.room_id)

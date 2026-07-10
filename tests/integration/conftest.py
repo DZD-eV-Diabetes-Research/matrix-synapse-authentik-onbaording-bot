@@ -63,6 +63,14 @@ def _wait_ready() -> None:
     if pending:
         raise RuntimeError(f"stack not ready: {list(pending)} (last errors: {last_err})")
 
+    # The endpoint checks above can all pass while Authentik still answers 404 on
+    # /application/o/authorize/, so a login started here would fail. Gate on the chain itself.
+    while time.time() < deadline:
+        if S.login_chain_ready():
+            return
+        time.sleep(3.0)
+    raise RuntimeError("stack not ready: MAS -> Authentik login chain never reached the flow interface")
+
 
 @pytest.fixture(scope="session")
 def compose_stack() -> Iterator[DockerCompose]:
