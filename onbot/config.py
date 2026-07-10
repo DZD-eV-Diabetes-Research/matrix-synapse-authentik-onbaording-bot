@@ -26,9 +26,13 @@ reads each field's ``title``, ``description`` and ``examples`` (type, default, r
 * Use single backticks in ``description``: they are a code span in the generated Markdown and stay
   legible in the generated YAML comments.
 
-Loading: :func:`load_config` reads the YAML at ``ONBOT_CONFIG_FILE_PATH`` (env overrides still apply
-via the ``ONBOT_`` prefix and ``__`` nesting delimiter); :func:`generate_example_config` dumps the
-default model to YAML (G11.2).
+Loading: :func:`load_config` builds the model from, in descending precedence, ``ONBOT_*`` environment
+variables (``ONBOT_`` prefix, ``__`` nesting delimiter) and then the YAML file at
+``ONBOT_CONFIG_FILE_PATH``. The file is the *lowest*-priority source, which is what lets a
+deployment commit a fully documented config and inject only the credentials through the
+environment; the sources are deep-merged, so ``ONBOT_MAS_ADMIN__CLIENT_SECRET`` fills in one key of
+a ``mas_admin`` block the file otherwise defines. :func:`generate_example_config` dumps the default
+model to YAML (G11.2), deliberately with every source switched off.
 """
 
 from __future__ import annotations
@@ -40,7 +44,12 @@ from typing import Annotated, Any, Literal
 
 import yaml
 from pydantic import BaseModel, Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import (
+    BaseSettings,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+    YamlConfigSettingsSource,
+)
 
 CONFIG_FILE_ENV_VAR = "ONBOT_CONFIG_FILE_PATH"
 
@@ -839,6 +848,27 @@ class MatrixDynamicRoomSettings(BaseModel):
 class OnbotConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="ONBOT_", env_nested_delimiter="__")
 
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        """Layer the YAML file *under* the environment, so a secret never has to enter the file.
+
+        Sources are consulted in order of descending priority. The YAML file is last, which is what
+        lets an operator commit a fully documented config and inject only ``bot_access_token`` and
+        the Authentik ``api_key`` through ``ONBOT_*`` variables at runtime.
+        """
+        sources = [init_settings, env_settings, dotenv_settings, file_secret_settings]
+        yaml_file = get_config_file_path()
+        if yaml_file is not None:
+            sources.append(YamlConfigSettingsSource(settings_cls, yaml_file=yaml_file))
+        return tuple(sources)
+
     log_level: Annotated[
         Literal["INFO", "DEBUG"],
         Field(
@@ -1096,13 +1126,11 @@ def get_config_file_path(*, not_exists_ok: bool = False) -> Path | None:
 
 
 def load_config() -> OnbotConfig:
-    """Load config from YAML if present; env vars (``ONBOT_*``) override either way."""
-    yaml_file = get_config_file_path()
-    if yaml_file is not None:
-        with yaml_file.open() as reader:
-            data = yaml.safe_load(reader) or {}
-        return OnbotConfig.model_validate(data)
-    # No file: required fields are supplied from the environment by pydantic-settings.
+    """Load config from YAML if present; env vars (``ONBOT_*``) override either way.
+
+    Both cases go through ``BaseSettings``: the YAML file, when it exists, is merely the
+    lowest-priority source (see :meth:`OnbotConfig.settings_customise_sources`).
+    """
     return OnbotConfig()  # type: ignore[call-arg]
 
 
@@ -1112,7 +1140,23 @@ def generate_example_config() -> str:
     Required fields that have no default are emitted as ``null`` placeholders so the result is a
     fillable template rather than a validation error.
     """
-    model = OnbotConfig(
+
+    # The template must show the *defaults*. Every normal construction path consults the settings
+    # sources, so an ambient config.yml or ONBOT_* variable would otherwise leak into the generated
+    # example — and from there into the committed config.example.yml. Take the sources away.
+    class _DefaultsOnly(OnbotConfig):
+        @classmethod
+        def settings_customise_sources(
+            cls,
+            settings_cls: type[BaseSettings],
+            init_settings: PydanticBaseSettingsSource,
+            env_settings: PydanticBaseSettingsSource,
+            dotenv_settings: PydanticBaseSettingsSource,
+            file_secret_settings: PydanticBaseSettingsSource,
+        ) -> tuple[PydanticBaseSettingsSource, ...]:
+            return (init_settings,)
+
+    model = _DefaultsOnly(
         synapse_server=SynapseServer(server_name="", server_url="", bot_user_id="", bot_access_token=""),
         authentik_server=AuthentikServer(url="", api_key=""),
     )
