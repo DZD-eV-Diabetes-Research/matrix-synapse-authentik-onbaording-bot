@@ -78,6 +78,7 @@ class ApiClientMatrix(BaseApiClient):
         access_token: str | None = None,
         *,
         server_name: str,
+        room_version: str | None = None,
         token_provider: TokenProvider | None = None,
         **kwargs: Any,
     ) -> None:
@@ -87,6 +88,10 @@ class ApiClientMatrix(BaseApiClient):
         kwargs.setdefault("timeout", 60.0)
         super().__init__(base_url=base, auth_token=access_token, token_provider=token_provider, **kwargs)
         self.server_name = server_name
+        # Server-wide room version for createRoom; None leaves rooms to inherit the server default
+        # (spec now says v12). Applied uniformly to every room/space the bot creates. See
+        # SynapseServer.room_version.
+        self.room_version = room_version
         self._versions: ServerVersions | None = None
 
     # --- version negotiation (Phase 6) --------------------------------------
@@ -161,6 +166,13 @@ class ApiClientMatrix(BaseApiClient):
 
         Returns the new ``room_id``. ``room_params`` (preset/visibility/federation/…) are merged in
         verbatim; encryption and the space-parent link are added as ``initial_state`` events.
+
+        The bot is the *creator* of every room it makes. Under room version 12 (the spec default) the
+        creator holds an infinite, immutable power level and is deliberately **absent** from
+        ``m.room.power_levels`` — naming it in a ``power_level_content_override``'s ``users`` map is
+        rejected by the auth rules — so callers must not put the bot there (see
+        :mod:`onbot.onboarding.notice_board`, :mod:`onbot.rooms.admin`). The returned ``room_id`` is a
+        hash with no ``:domain`` component under v12; treat it as an opaque token, never split it.
         """
         initial_state: list[dict[str, Any]] = []
         if parent_space_id:
@@ -178,6 +190,8 @@ class ApiClientMatrix(BaseApiClient):
             )
 
         body: dict[str, Any] = {**(room_params or {})}
+        if self.room_version is not None and "room_version" not in body:
+            body["room_version"] = self.room_version
         if alias_localpart:
             body["room_alias_name"] = alias_localpart
         if name is not None:
@@ -213,6 +227,8 @@ class ApiClientMatrix(BaseApiClient):
             "topic": topic,
             **params,
         }
+        if self.room_version is not None and "room_version" not in body:
+            body["room_version"] = self.room_version
         result = await self.post_json("v3/createRoom", json_body=body)
         room_id: str = result["room_id"]
         return room_id

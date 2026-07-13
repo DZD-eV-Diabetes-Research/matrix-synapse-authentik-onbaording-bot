@@ -50,10 +50,16 @@ BOT_LEVEL = 100
 _GOVERNED_KEYS = ("state_default", "invite", "kick", "ban", "redact")
 
 
-def admin_room_power_levels(bot_user_id: str) -> dict[str, Any]:
-    """``power_level_content_override`` for the control room: talk freely, govern not at all."""
+def admin_room_power_levels() -> dict[str, Any]:
+    """``power_level_content_override`` for the control room: talk freely, govern not at all.
+
+    The ``users`` map is deliberately omitted. The bot creates this room, so it is the *creator*:
+    under room version 12 it holds an infinite power level and must not be named in
+    ``m.room.power_levels`` (the auth rules reject it), and on older versions the server's default
+    power levels seat the creator at 100 anyway. Either way the bot governs the room without being
+    listed here. See ``docs/adr/0011-room-version-12.md``.
+    """
     return {
-        "users": {bot_user_id: BOT_LEVEL},
         "users_default": 0,
         "events_default": 0,
         **dict.fromkeys(_GOVERNED_KEYS, BOT_LEVEL),
@@ -73,7 +79,6 @@ class AdminRoomProvisioner:
         self.config = config
         self.admins = admins
         self.cfg = config.admin_room
-        self.bot_id = config.synapse_server.bot_user_id
         self.server_name = config.synapse_server.server_name
         self.alias = f"#{self.cfg.alias}:{self.server_name}"
         # Bound by ensure(); until then the invite pass has no room to invite anybody into.
@@ -138,7 +143,7 @@ class AdminRoomProvisioner:
                 "preset": "private_chat",
                 "visibility": "private",
                 "creation_content": {"m.federate": False},
-                "power_level_content_override": admin_room_power_levels(self.bot_id),
+                "power_level_content_override": admin_room_power_levels(),
             },
         )
         await self.client.put_room_state_event(

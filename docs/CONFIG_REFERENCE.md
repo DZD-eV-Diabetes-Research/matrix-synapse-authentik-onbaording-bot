@@ -376,6 +376,45 @@ admin_api_path: _synapse/admin/
 
 ---
 
+### `synapse_server.room_version`
+
+*Room version for rooms the bot creates*
+
+Room version passed to `POST /createRoom` for every room and space the bot
+creates. Leave unset (`null`) — the default — so new rooms inherit the homeserver's
+own default room version, which the Matrix spec says SHOULD now be `12`. Room
+version 12 changes two things the bot depends on: the room creator (the bot) holds an
+infinite power level and is deliberately absent from `m.room.power_levels`, and room
+IDs are a hash with no `:domain` component. The bot is written for that world, so
+pinning a number here is only for two cases: an operator whose Synapse is too old to
+default to a version this bot needs (it requires at least version 8 for the features
+it uses; `restricted` join rules need 8 and `knock_restricted` needs 10), or a test
+that must force a specific version. Do not pin a number to freeze the bot behind the
+ecosystem — prefer upgrading Synapse.
+
+| Property | Value |
+|---|---|
+| Type | str |
+| Required | No |
+| Default | `null` |
+| Environment variable | `ONBOT_SYNAPSE_SERVER__ROOM_VERSION` |
+
+**Examples:**
+
+*Example 1:*
+
+```yaml
+room_version: '12'
+```
+
+*Example 2:*
+
+```yaml
+room_version: '11'
+```
+
+---
+
 ## `authentik_server`
 
 *Authentik server*

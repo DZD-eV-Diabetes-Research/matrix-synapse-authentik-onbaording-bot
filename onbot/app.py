@@ -153,6 +153,7 @@ async def build_app(config: OnbotConfig) -> AsyncIterator[App]:
         server_url=config.synapse_server.server_url,
         token_provider=token_provider,
         server_name=config.synapse_server.server_name,
+        room_version=config.synapse_server.room_version,
     )
     # Negotiate CS-API capabilities up front (sliding sync / authenticated media); best-effort so a
     # transient failure does not block startup — the listener re-checks and falls back if needed.

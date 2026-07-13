@@ -140,7 +140,7 @@ class WelcomeService:
             mxid,
             name=self.config.onboarding_room_name,
             topic=self.config.onboarding_room_topic,
-            power_level_content_override=notice_board_power_levels(self.bot_id),
+            power_level_content_override=notice_board_power_levels(),
         )
         direct.setdefault(mxid, []).append(room_id)
         await self.client.set_account_data(self.bot_id, M_DIRECT, direct)
@@ -190,7 +190,7 @@ class WelcomeService:
         harmlessly.
         """
         current = await self.client.get_room_power_levels(room_id)
-        drifted = power_level_drift(current, self.bot_id)
+        drifted = power_level_drift(current)
         if drifted is None:
             return
         try:

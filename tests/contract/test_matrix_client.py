@@ -20,6 +20,58 @@ def _client() -> ApiClientMatrix:
     return ApiClientMatrix(server_url="https://matrix.test", access_token="tok", server_name="matrix.test")
 
 
+def _client_pinned(room_version: str) -> ApiClientMatrix:
+    return ApiClientMatrix(
+        server_url="https://matrix.test",
+        access_token="tok",
+        server_name="matrix.test",
+        room_version=room_version,
+    )
+
+
+@respx.mock
+async def test_create_room_omits_room_version_when_unset() -> None:
+    """Default: no room_version is sent, so new rooms inherit the server's default (spec: v12)."""
+    route = respx.post("https://matrix.test/_matrix/client/v3/createRoom").mock(
+        return_value=httpx.Response(200, json={"room_id": "!new:matrix.test"})
+    )
+    client = _client()
+    try:
+        await client.create_room(alias_localpart="team")
+    finally:
+        await client.aclose()
+    assert "room_version" not in json.loads(route.calls[0].request.content)
+
+
+@respx.mock
+async def test_create_room_and_space_pin_the_configured_room_version() -> None:
+    room = respx.post("https://matrix.test/_matrix/client/v3/createRoom").mock(
+        return_value=httpx.Response(200, json={"room_id": "!new:matrix.test"})
+    )
+    client = _client_pinned("12")
+    try:
+        await client.create_room(alias_localpart="team")
+        await client.create_space(alias_localpart="onbot", name="OnBot", topic="s", params={})
+    finally:
+        await client.aclose()
+    assert json.loads(room.calls[0].request.content)["room_version"] == "12"
+    assert json.loads(room.calls[1].request.content)["room_version"] == "12"
+
+
+@respx.mock
+async def test_room_params_may_override_the_pinned_room_version() -> None:
+    """A per-call room_version (e.g. a test forcing a version) wins over the server-wide default."""
+    route = respx.post("https://matrix.test/_matrix/client/v3/createRoom").mock(
+        return_value=httpx.Response(200, json={"room_id": "!new:matrix.test"})
+    )
+    client = _client_pinned("12")
+    try:
+        await client.create_room(alias_localpart="team", room_params={"room_version": "11"})
+    finally:
+        await client.aclose()
+    assert json.loads(route.calls[0].request.content)["room_version"] == "11"
+
+
 @respx.mock
 async def test_create_room_sets_encryption_and_space_parent() -> None:
     create = respx.post("https://matrix.test/_matrix/client/v3/createRoom").mock(

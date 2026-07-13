@@ -90,7 +90,10 @@ services:
       postgres: {condition: service_healthy}
 
   synapse:
-    image: ghcr.io/element-hq/synapse@sha256:925534da6deefc83d3b82bdb08acd7bedfd34ca29f8d47a27c386c0ece9a0515
+    # Synapse 1.156.0 — new enough to support room version 12, which the stack forces as its default
+    # (see `default_room_version` in synapse/homeserver.yaml) so the integration suite exercises the
+    # v12 world the bot now runs in: creator absent from power_levels, domainless room IDs.
+    image: ghcr.io/element-hq/synapse@sha256:6882d26594b87171e0fe807ac6bd7f0000665cd70e73fb88c58ec9bff14c19ce
     # Wait for MAS (auth is delegated to it via MSC3861), generate the signing key, then run.
     entrypoint: ["/bin/bash", "-c"]
     command:
