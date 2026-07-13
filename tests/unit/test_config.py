@@ -65,6 +65,37 @@ def test_per_group_override_is_typed() -> None:
     assert override.topic_prefix == "X:"
 
 
+def test_visitor_lobby_requires_a_space() -> None:
+    # A lobby's `restricted` join rule needs a space to be restricted to; enabling one while the
+    # space is off is rejected at config-validation time rather than silently creating a dead room.
+    with pytest.raises(ValueError, match="create_matrix_rooms_in_a_matrix_space"):
+        OnbotConfig.model_validate(
+            _MINIMAL
+            | {
+                "matrix_room_default_settings": {"visitor_lobby_enabled": True},
+                "create_matrix_rooms_in_a_matrix_space": {"enabled": False},
+            }
+        )
+
+
+def test_visitor_lobby_in_a_per_group_override_requires_a_space() -> None:
+    with pytest.raises(ValueError, match="create_matrix_rooms_in_a_matrix_space"):
+        OnbotConfig.model_validate(
+            _MINIMAL
+            | {
+                "per_authentik_group_pk_matrix_room_settings": {"g1": {"visitor_lobby_enabled": True}},
+                "create_matrix_rooms_in_a_matrix_space": {"enabled": False},
+            }
+        )
+
+
+def test_visitor_lobby_with_a_space_is_accepted() -> None:
+    cfg = OnbotConfig.model_validate(
+        _MINIMAL | {"matrix_room_default_settings": {"visitor_lobby_enabled": True}}
+    )
+    assert cfg.matrix_room_default_settings.visitor_lobby_enabled is True
+
+
 def test_generate_example_config_roundtrips() -> None:
     text = generate_example_config()
     data = yaml.safe_load(text)

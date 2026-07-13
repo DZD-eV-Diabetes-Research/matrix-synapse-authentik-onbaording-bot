@@ -96,6 +96,8 @@ below.
 
 ## Documentation
 
+- [docs/features.md](docs/features.md) explains, in plain language, what each Onbot feature does —
+  for both users and admins.
 - [docs/configuration.md](docs/configuration.md) walks through every config block, the bot
   credential choices, and how to generate the reference.
 - [docs/CONFIG_REFERENCE.md](docs/CONFIG_REFERENCE.md) lists every field, its type, default,

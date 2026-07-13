@@ -28,6 +28,7 @@ from onbot.lifecycle.accounts import AccountLifecycleManager
 from onbot.logging import get_logger
 from onbot.models import GroupRoomMap, MappedUser, MatrixRoom
 from onbot.reconciler.effectors import DryRunEffectors, MatrixEffectors
+from onbot.reconciler.join_rules import desired_join_rules, join_rules_change
 from onbot.reconciler.membership import (
     desired_room_members,
     diff_room_membership,
@@ -39,18 +40,21 @@ from onbot.reconciler.power_levels import (
     extract_power_level_groups,
     merge_power_levels,
 )
-from onbot.reconciler.rooms import build_group_room_maps
+from onbot.reconciler.rooms import build_group_room_maps, resolve_room_settings
 from onbot.reconciler.state import (
     AnyRoomState,
     GroupRoomState,
     OnbotRoomType,
     SpaceRoomState,
+    VisitorLobbyRoomState,
     dump_room_state,
     event_type_name,
     parse_room_state,
 )
 
 log = get_logger(__name__)
+
+JOIN_RULES_EVENT_TYPE = "m.room.join_rules"
 
 
 class ConfigurationError(RuntimeError):
@@ -134,7 +138,7 @@ class ReconcilerEngine:
         if space is not None:
             await self._converge_space_avatar(space)
             await self._converge_space_membership(space, users)
-        await self._converge_room_membership_and_levels(group_maps, users)
+        await self._converge_room_membership_and_levels(group_maps, users, space)
         await self._converge_lifecycle(matrix_users, {u.mxid for u in users})
         self.last_reconcile_at = time.time()
         log.info("reconcile: done (%d users, %d group rooms)", len(users), len(group_maps))
@@ -284,16 +288,54 @@ class ReconcilerEngine:
                 GroupRoomState(group_id=gm.group_pk, authentik_server=self.config.authentik_server.url),
             )
 
+            if gm.lobby_desired is not None:
+                await self._converge_lobby_creation(gm, parent_space_id)
+
+    async def _converge_lobby_creation(self, gm: GroupRoomMap, parent_space_id: str | None) -> None:
+        """Create the group's visitor lobby if it does not exist yet, and stamp it (ADR-0012).
+
+        The lobby is stamped with ``OnbotRoomType.visitor_lobby`` — never ``group_room`` — so no later
+        pass mistakes it for the group room, projects Authentik membership onto it, and kicks every
+        visitor. Its join rule is set at creation (via the effector) from the runtime space id, so it
+        is never briefly invite-only nor briefly open. Requires a space (the config validator enforces
+        that when the lobby comes from config; this guard covers a lobby enabled by an Authentik
+        attribute while no space is configured).
+        """
+        assert gm.lobby_desired is not None
+        if gm.lobby is not None:
+            return
+        if parent_space_id is None:
+            log.warning(
+                "group %s requests a visitor lobby but no parent space is configured; skipping",
+                gm.group_pk,
+            )
+            return
+        join_rules_content = desired_join_rules(OnbotRoomType.visitor_lobby, parent_space_id)
+        assert join_rules_content is not None
+        room_id = await self.effectors.create_lobby_room(
+            gm.lobby_desired, parent_space_id, join_rules_content
+        )
+        await self.effectors.put_room_state(
+            room_id,
+            event_type_name(self.server_name, OnbotRoomType.visitor_lobby),
+            dump_room_state(
+                VisitorLobbyRoomState(group_id=gm.group_pk, authentik_server=self.config.authentik_server.url)
+            ),
+        )
+        gm.lobby = MatrixRoom(room_id=room_id, canonical_alias=gm.lobby_desired.canonical_alias)
+
     async def _converge_obsolete_rooms(self, rooms: list[MatrixRoom], group_maps: list[GroupRoomMap]) -> None:
         """Tear down rooms whose mapped Authentik group disappeared (G2.3, the inverse of G2.2).
 
-        A room is obsolete when it carries our ``group_room`` state event but the ``group_id``
-        recorded there no longer names a group that survives the sync filters — because the group was
-        deleted upstream, or lost the attribute/prefix/parent that opted it into chat.
+        A room is obsolete when it carries our ``group_room`` *or* ``visitor_lobby`` state event but
+        the ``group_id`` recorded there no longer names a group that survives the sync filters —
+        because the group was deleted upstream, or lost the attribute/prefix/parent that opted it into
+        chat. The lobby is torn down with its group room (ADR-0012): a blocked group room beside a
+        live, joinable lobby is the worst of both.
 
         Identification is by the recorded ``group_id``, not by set-differencing room ids as legacy
         did: a room whose alias changed, or one created earlier in this very pass, must not read as
-        obsolete. Rooms with no ``group_room`` state event are never touched, so unrelated and
+        obsolete. Rooms with neither of our state events are never touched, so unrelated and
         onboarding rooms are structurally out of reach.
         """
         settings = self.config.sync_matrix_rooms_based_on_authentik_groups
@@ -301,23 +343,27 @@ class ReconcilerEngine:
             return
         live_group_pks = {gm.group_pk for gm in group_maps}
         mapped_room_ids = {gm.room.room_id for gm in group_maps if gm.room is not None}
-        event_type = event_type_name(self.server_name, OnbotRoomType.group_room)
+        mapped_room_ids |= {gm.lobby.room_id for gm in group_maps if gm.lobby is not None}
+        managed_types = (OnbotRoomType.group_room, OnbotRoomType.visitor_lobby)
 
         for room in rooms:
             if room.room_id in mapped_room_ids:
-                continue  # backed by a live group; skip the state read
-            raw = await self.effectors.get_room_state(room.room_id, event_type)
-            if not raw:
-                continue  # not a room we manage
-            try:
-                state = parse_room_state(OnbotRoomType.group_room, raw)
-            except ValidationError:
-                log.warning("room %s has unreadable onbot state; leaving it alone", room.room_id)
-                continue
-            assert isinstance(state, GroupRoomState)
-            if state.group_id in live_group_pks:
-                continue
-            await self._disable_room(room, state.group_id, settings)
+                continue  # backed by a live group (room or lobby); skip the state read
+            for room_type in managed_types:
+                raw = await self.effectors.get_room_state(
+                    room.room_id, event_type_name(self.server_name, room_type)
+                )
+                if not raw:
+                    continue  # not this kind of managed room
+                try:
+                    state = parse_room_state(room_type, raw)
+                except ValidationError:
+                    log.warning("room %s has unreadable onbot state; leaving it alone", room.room_id)
+                    break
+                assert isinstance(state, GroupRoomState | VisitorLobbyRoomState)
+                if state.group_id not in live_group_pks:
+                    await self._disable_room(room, state.group_id, settings)
+                break  # matched one managed type; do not re-check the other
 
     async def _disable_room(
         self, room: MatrixRoom, group_id: str, settings: SyncMatrixRoomsBasedOnAuthentikGroups
@@ -347,7 +393,7 @@ class ReconcilerEngine:
             await self.admin.add_user_to_room(space.room_id, mxid)
 
     async def _converge_room_membership_and_levels(
-        self, group_maps: list[GroupRoomMap], users: list[MappedUser]
+        self, group_maps: list[GroupRoomMap], users: list[MappedUser], space: MatrixRoom | None
     ) -> None:
         sync_cfg = self.config.sync_authentik_users_with_matrix_rooms
         room_cfg = self.config.sync_matrix_rooms_based_on_authentik_groups
@@ -384,6 +430,51 @@ class ReconcilerEngine:
 
             await self._converge_power_levels(room_id, gm.group_pk, users, pl_groups, room_cfg)
             await self._converge_room_attributes(gm)
+
+            if gm.lobby is not None:
+                await self._converge_lobby_membership_and_join_rules(gm, users, space)
+
+    async def _converge_lobby_membership_and_join_rules(
+        self, gm: GroupRoomMap, users: list[MappedUser], space: MatrixRoom | None
+    ) -> None:
+        """Converge a lobby's membership (add-only) and its ``restricted`` join rule (ADR-0012).
+
+        A lobby is **add-only**: ``kick_enabled=False``, so nobody is ever removed — a user kicked
+        from the group room keeps their seat here, and visitors who joined on purpose stay. When
+        ``visitor_lobby_inject_group_members`` is set (the default) the group's members are seeded in;
+        visitors are never injected anywhere.
+
+        The join-rule pass runs over existing lobbies as well as new ones, so an operator can *close* a
+        lobby again by editing the room — the pass rewrites the rule only on a difference (a no-op tick
+        sends nothing). The bot is PL 100 with ``state_default`` 100 so it may write the rule, but a
+        hand-edited room can still 403: that is logged and the tick carries on.
+        """
+        assert gm.lobby is not None
+        room_id = gm.lobby.room_id
+        bot_id = self.config.synapse_server.bot_user_id
+        settings = resolve_room_settings(gm.group_pk, self.config)
+
+        desired_mxids = (
+            desired_room_members(gm.group_pk, users) if settings.visitor_lobby_inject_group_members else set()
+        )
+        actual_members = await self.admin.list_room_members(room_id)
+        mdiff = diff_room_membership(
+            desired_mxids, actual_members, kick_enabled=False, protected_ids=[bot_id]
+        )
+        for mxid in mdiff.to_add:
+            await self.admin.add_user_to_room(room_id, mxid)
+
+        if space is None:  # cannot express `restricted` without a space to restrict to
+            return
+        desired = desired_join_rules(OnbotRoomType.visitor_lobby, space.room_id)
+        current = await self.effectors.get_room_state(room_id, JOIN_RULES_EVENT_TYPE) or {}
+        change = join_rules_change(current, desired)
+        if change is None:
+            return
+        try:
+            await self.effectors.put_room_state(room_id, JOIN_RULES_EVENT_TYPE, change)
+        except Exception:
+            log.exception("could not set join rules on lobby %s; leaving it and continuing", room_id)
 
     async def _converge_power_levels(
         self,

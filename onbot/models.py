@@ -64,11 +64,18 @@ class MappedUser:
 
 @dataclass(slots=True)
 class GroupRoomMap:
-    """A desired group→room projection, paired with the actual room if one exists."""
+    """A desired group→room projection, paired with the actual room if one exists.
+
+    A group may also have a *lobby* — an open room beside the private group room (ADR-0012). When the
+    lobby is enabled for this group, ``lobby_desired`` holds its computed attributes and ``lobby``
+    holds the actual lobby room if one exists yet. Both are ``None`` when the group has no lobby.
+    """
 
     authentik_group: dict[str, Any]
     desired: RoomCreateAttributes
     room: MatrixRoom | None = None
+    lobby_desired: RoomCreateAttributes | None = None
+    lobby: MatrixRoom | None = None
 
     @property
     def group_pk(self) -> str:

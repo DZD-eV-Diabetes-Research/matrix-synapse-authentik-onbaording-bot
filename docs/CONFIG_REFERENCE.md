@@ -1805,6 +1805,199 @@ change.
 
 ---
 
+### `matrix_room_default_settings.visitor_lobby_enabled`
+
+*Open a visitor lobby beside the group room*
+
+Maintain a second, open room — a lobby — beside each private group room. Every
+member of the parent space can find the lobby in the space listing and join it of
+their own accord, and nobody is ever kicked from it, so it is a front door in front of
+the closed group room. The group room itself is untouched: same members, same history,
+same privacy. Off by default — a lobby is a deliberate decision, not a migration.
+
+Requires the parent space (`create_matrix_rooms_in_a_matrix_space`), because a lobby is
+joinable precisely by space members and to nobody else; enabling a lobby without a
+space is rejected at startup. A single group can opt in without a config change through
+`matrix_room_visitor_lobby_from_authentik_attribute`.
+
+| Property | Value |
+|---|---|
+| Type | bool |
+| Required | No |
+| Default | `false` |
+| Environment variable | `ONBOT_MATRIX_ROOM_DEFAULT_SETTINGS__VISITOR_LOBBY_ENABLED` |
+
+---
+
+### `matrix_room_default_settings.visitor_lobby_name_suffix`
+
+*Lobby name suffix*
+
+Appended to the group room's name to name its lobby — `Düsseldorf` becomes
+`Düsseldorf (Lobby)`. The suffix is the whole user-facing explanation of what the
+second room is, so it should say *this is a door*, not *these are more people*.
+Alternatives worth a deliberate choice: ` (Foyer)` (reads naturally to a
+German-speaking org), ` (Open)` (shortest, states the property not the metaphor), or
+` & Guests` (if the room should feel like the group hosting). ` & Friends` was
+rejected: the ampersand reads as a statement about membership.
+
+| Property | Value |
+|---|---|
+| Type | str |
+| Required | No |
+| Default | `" (Lobby)"` |
+| Environment variable | `ONBOT_MATRIX_ROOM_DEFAULT_SETTINGS__VISITOR_LOBBY_NAME_SUFFIX` |
+
+**Examples:**
+
+*Example 1:*
+
+```yaml
+visitor_lobby_name_suffix: ' (Lobby)'
+```
+
+*Example 2:*
+
+```yaml
+visitor_lobby_name_suffix: ' (Foyer)'
+```
+
+*Example 3:*
+
+```yaml
+visitor_lobby_name_suffix: ' (Open)'
+```
+
+---
+
+### `matrix_room_default_settings.visitor_lobby_alias_suffix`
+
+*Lobby alias suffix*
+
+Appended to the group room's alias localpart to form the lobby's alias —
+`#duesseldorf` gets a `#duesseldorf-lobby` beside it. Unlike the group alias, dashes
+here are kept. A Matrix alias cannot be changed after the room is created, so changing
+this later makes the bot build a second, empty lobby rather than rename the first.
+
+| Property | Value |
+|---|---|
+| Type | str |
+| Required | No |
+| Default | `"-lobby"` |
+| Environment variable | `ONBOT_MATRIX_ROOM_DEFAULT_SETTINGS__VISITOR_LOBBY_ALIAS_SUFFIX` |
+
+**Examples:**
+
+*Example 1:*
+
+```yaml
+visitor_lobby_alias_suffix: -lobby
+```
+
+*Example 2:*
+
+```yaml
+visitor_lobby_alias_suffix: -foyer
+```
+
+*Example 3:*
+
+```yaml
+visitor_lobby_alias_suffix: -open
+```
+
+---
+
+### `matrix_room_default_settings.visitor_lobby_topic_template`
+
+*Lobby topic template*
+
+Topic set on the lobby, with `{name}` replaced by the group room's name. State the
+arrangement in the one place every visitor looks, so a visitor who reads it never
+wonders why the room is quiet or which room to post in.
+
+| Property | Value |
+|---|---|
+| Type | str |
+| Required | No |
+| Default | `"Open lobby for {name} \u2014 anyone in the space may join. The group's working room is private."` |
+| Environment variable | `ONBOT_MATRIX_ROOM_DEFAULT_SETTINGS__VISITOR_LOBBY_TOPIC_TEMPLATE` |
+
+**Examples:**
+
+```yaml
+visitor_lobby_topic_template: "Open lobby for {name} \u2014 anyone in the space may\
+  \ join. The group's working room is private."
+```
+
+---
+
+### `matrix_room_default_settings.visitor_lobby_end2end_encryption_enabled`
+
+*Encrypt the lobby*
+
+Enable end-to-end encryption in the lobby. Off by default, and deliberately weaker
+than the group room's own encryption default: a lobby is open to the whole space by
+construction, so encryption buys it little, while it guarantees every visitor's first
+impression is a screen of `unable to decrypt`. Encryption cannot be turned off again
+once a room has it, so this default is chosen for you to be able to change it before
+the lobby exists rather than after.
+
+| Property | Value |
+|---|---|
+| Type | bool |
+| Required | No |
+| Default | `false` |
+| Environment variable | `ONBOT_MATRIX_ROOM_DEFAULT_SETTINGS__VISITOR_LOBBY_END2END_ENCRYPTION_ENABLED` |
+
+---
+
+### `matrix_room_default_settings.visitor_lobby_inject_group_members`
+
+*Seed the lobby with the group's members*
+
+Join the group's members into the lobby as well, so a visitor who walks in finds
+somebody there. On by default: an empty lobby is a dead lobby. This is a social bet —
+it works when the group room is where the group *works* and the lobby is where the
+group is *reachable*, and it fails, producing two half-dead rooms and doubled
+notifications, when both are general-purpose. Turn it off for a large group that would
+rather staff an empty lobby deliberately. Visitors are never injected anywhere — they
+joined on purpose — and members are only ever added, never kicked.
+
+| Property | Value |
+|---|---|
+| Type | bool |
+| Required | No |
+| Default | `true` |
+| Environment variable | `ONBOT_MATRIX_ROOM_DEFAULT_SETTINGS__VISITOR_LOBBY_INJECT_GROUP_MEMBERS` |
+
+---
+
+### `matrix_room_default_settings.matrix_room_visitor_lobby_from_authentik_attribute`
+
+*Group attribute that opts a group into a lobby*
+
+Authentik group attribute (dotted path) holding a boolean that turns the lobby on or
+off for that one group, overriding `visitor_lobby_enabled`. This lets whoever owns the
+group in Authentik open a lobby without a config deploy. A value that is not a boolean
+is ignored with a warning and the configured default applies. `null` disables the
+per-group override, leaving `visitor_lobby_enabled` in sole charge.
+
+| Property | Value |
+|---|---|
+| Type | str |
+| Required | No |
+| Default | `"attributes.chatroom_visitor_lobby"` |
+| Environment variable | `ONBOT_MATRIX_ROOM_DEFAULT_SETTINGS__MATRIX_ROOM_VISITOR_LOBBY_FROM_AUTHENTIK_ATTRIBUTE` |
+
+**Examples:**
+
+```yaml
+matrix_room_visitor_lobby_from_authentik_attribute: attributes.chatroom_visitor_lobby
+```
+
+---
+
 ## `per_authentik_group_pk_matrix_room_settings`
 
 *Per-group room setting overrides*
@@ -2071,6 +2264,199 @@ change.
 | Required | No |
 | Default | `true` |
 | Environment variable | `ONBOT_PER_AUTHENTIK_GROUP_PK_MATRIX_ROOM_SETTINGS[*]__KEEP_UPDATING_MATRIX_ATTRIBUTES_FROM_AUTHENTIK` |
+
+---
+
+### `per_authentik_group_pk_matrix_room_settings[*].visitor_lobby_enabled`
+
+*Open a visitor lobby beside the group room*
+
+Maintain a second, open room — a lobby — beside each private group room. Every
+member of the parent space can find the lobby in the space listing and join it of
+their own accord, and nobody is ever kicked from it, so it is a front door in front of
+the closed group room. The group room itself is untouched: same members, same history,
+same privacy. Off by default — a lobby is a deliberate decision, not a migration.
+
+Requires the parent space (`create_matrix_rooms_in_a_matrix_space`), because a lobby is
+joinable precisely by space members and to nobody else; enabling a lobby without a
+space is rejected at startup. A single group can opt in without a config change through
+`matrix_room_visitor_lobby_from_authentik_attribute`.
+
+| Property | Value |
+|---|---|
+| Type | bool |
+| Required | No |
+| Default | `false` |
+| Environment variable | `ONBOT_PER_AUTHENTIK_GROUP_PK_MATRIX_ROOM_SETTINGS[*]__VISITOR_LOBBY_ENABLED` |
+
+---
+
+### `per_authentik_group_pk_matrix_room_settings[*].visitor_lobby_name_suffix`
+
+*Lobby name suffix*
+
+Appended to the group room's name to name its lobby — `Düsseldorf` becomes
+`Düsseldorf (Lobby)`. The suffix is the whole user-facing explanation of what the
+second room is, so it should say *this is a door*, not *these are more people*.
+Alternatives worth a deliberate choice: ` (Foyer)` (reads naturally to a
+German-speaking org), ` (Open)` (shortest, states the property not the metaphor), or
+` & Guests` (if the room should feel like the group hosting). ` & Friends` was
+rejected: the ampersand reads as a statement about membership.
+
+| Property | Value |
+|---|---|
+| Type | str |
+| Required | No |
+| Default | `" (Lobby)"` |
+| Environment variable | `ONBOT_PER_AUTHENTIK_GROUP_PK_MATRIX_ROOM_SETTINGS[*]__VISITOR_LOBBY_NAME_SUFFIX` |
+
+**Examples:**
+
+*Example 1:*
+
+```yaml
+visitor_lobby_name_suffix: ' (Lobby)'
+```
+
+*Example 2:*
+
+```yaml
+visitor_lobby_name_suffix: ' (Foyer)'
+```
+
+*Example 3:*
+
+```yaml
+visitor_lobby_name_suffix: ' (Open)'
+```
+
+---
+
+### `per_authentik_group_pk_matrix_room_settings[*].visitor_lobby_alias_suffix`
+
+*Lobby alias suffix*
+
+Appended to the group room's alias localpart to form the lobby's alias —
+`#duesseldorf` gets a `#duesseldorf-lobby` beside it. Unlike the group alias, dashes
+here are kept. A Matrix alias cannot be changed after the room is created, so changing
+this later makes the bot build a second, empty lobby rather than rename the first.
+
+| Property | Value |
+|---|---|
+| Type | str |
+| Required | No |
+| Default | `"-lobby"` |
+| Environment variable | `ONBOT_PER_AUTHENTIK_GROUP_PK_MATRIX_ROOM_SETTINGS[*]__VISITOR_LOBBY_ALIAS_SUFFIX` |
+
+**Examples:**
+
+*Example 1:*
+
+```yaml
+visitor_lobby_alias_suffix: -lobby
+```
+
+*Example 2:*
+
+```yaml
+visitor_lobby_alias_suffix: -foyer
+```
+
+*Example 3:*
+
+```yaml
+visitor_lobby_alias_suffix: -open
+```
+
+---
+
+### `per_authentik_group_pk_matrix_room_settings[*].visitor_lobby_topic_template`
+
+*Lobby topic template*
+
+Topic set on the lobby, with `{name}` replaced by the group room's name. State the
+arrangement in the one place every visitor looks, so a visitor who reads it never
+wonders why the room is quiet or which room to post in.
+
+| Property | Value |
+|---|---|
+| Type | str |
+| Required | No |
+| Default | `"Open lobby for {name} \u2014 anyone in the space may join. The group's working room is private."` |
+| Environment variable | `ONBOT_PER_AUTHENTIK_GROUP_PK_MATRIX_ROOM_SETTINGS[*]__VISITOR_LOBBY_TOPIC_TEMPLATE` |
+
+**Examples:**
+
+```yaml
+visitor_lobby_topic_template: "Open lobby for {name} \u2014 anyone in the space may\
+  \ join. The group's working room is private."
+```
+
+---
+
+### `per_authentik_group_pk_matrix_room_settings[*].visitor_lobby_end2end_encryption_enabled`
+
+*Encrypt the lobby*
+
+Enable end-to-end encryption in the lobby. Off by default, and deliberately weaker
+than the group room's own encryption default: a lobby is open to the whole space by
+construction, so encryption buys it little, while it guarantees every visitor's first
+impression is a screen of `unable to decrypt`. Encryption cannot be turned off again
+once a room has it, so this default is chosen for you to be able to change it before
+the lobby exists rather than after.
+
+| Property | Value |
+|---|---|
+| Type | bool |
+| Required | No |
+| Default | `false` |
+| Environment variable | `ONBOT_PER_AUTHENTIK_GROUP_PK_MATRIX_ROOM_SETTINGS[*]__VISITOR_LOBBY_END2END_ENCRYPTION_ENABLED` |
+
+---
+
+### `per_authentik_group_pk_matrix_room_settings[*].visitor_lobby_inject_group_members`
+
+*Seed the lobby with the group's members*
+
+Join the group's members into the lobby as well, so a visitor who walks in finds
+somebody there. On by default: an empty lobby is a dead lobby. This is a social bet —
+it works when the group room is where the group *works* and the lobby is where the
+group is *reachable*, and it fails, producing two half-dead rooms and doubled
+notifications, when both are general-purpose. Turn it off for a large group that would
+rather staff an empty lobby deliberately. Visitors are never injected anywhere — they
+joined on purpose — and members are only ever added, never kicked.
+
+| Property | Value |
+|---|---|
+| Type | bool |
+| Required | No |
+| Default | `true` |
+| Environment variable | `ONBOT_PER_AUTHENTIK_GROUP_PK_MATRIX_ROOM_SETTINGS[*]__VISITOR_LOBBY_INJECT_GROUP_MEMBERS` |
+
+---
+
+### `per_authentik_group_pk_matrix_room_settings[*].matrix_room_visitor_lobby_from_authentik_attribute`
+
+*Group attribute that opts a group into a lobby*
+
+Authentik group attribute (dotted path) holding a boolean that turns the lobby on or
+off for that one group, overriding `visitor_lobby_enabled`. This lets whoever owns the
+group in Authentik open a lobby without a config deploy. A value that is not a boolean
+is ignored with a warning and the configured default applies. `null` disables the
+per-group override, leaving `visitor_lobby_enabled` in sole charge.
+
+| Property | Value |
+|---|---|
+| Type | str |
+| Required | No |
+| Default | `"attributes.chatroom_visitor_lobby"` |
+| Environment variable | `ONBOT_PER_AUTHENTIK_GROUP_PK_MATRIX_ROOM_SETTINGS[*]__MATRIX_ROOM_VISITOR_LOBBY_FROM_AUTHENTIK_ATTRIBUTE` |
+
+**Examples:**
+
+```yaml
+matrix_room_visitor_lobby_from_authentik_attribute: attributes.chatroom_visitor_lobby
+```
 
 ---
 

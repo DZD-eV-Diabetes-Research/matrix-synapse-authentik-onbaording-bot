@@ -17,3 +17,4 @@ numbered file; superseded ones are marked, not deleted.
 | [0009](0009-e2ee-stance.md) | E2EE stance — bot operates outside encrypted rooms | Accepted |
 | [0010](0010-admin-control-room.md) | Admin control room — a bounded exception to "reconcile, don't react" | Accepted |
 | [0011](0011-room-version-12.md) | Room version 12 readiness — creator-as-top-of-lattice, domainless room IDs | Accepted |
+| [0012](0012-lobby-rooms.md) | Visitor lobby rooms — an open front door in front of a closed group room | Accepted |

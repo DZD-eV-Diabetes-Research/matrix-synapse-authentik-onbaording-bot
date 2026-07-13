@@ -25,6 +25,13 @@ log = get_logger(__name__)
 class MatrixEffectors(Protocol):
     async def create_group_room(self, attrs: RoomCreateAttributes, parent_space_id: str | None) -> str: ...
 
+    async def create_lobby_room(
+        self, attrs: RoomCreateAttributes, parent_space_id: str, join_rules_content: dict[str, Any]
+    ) -> str:
+        """Create a visitor lobby: room + space child (``suggested``) with its join rule set at
+        creation, so it is never briefly invite-only nor briefly open (ADR-0012)."""
+        ...
+
     async def create_space(self, *, alias: str, name: str, topic: str, params: dict[str, Any]) -> str: ...
 
     async def kick_user(self, room_id: str, user_id: str, reason: str | None = None) -> None: ...
@@ -62,6 +69,18 @@ class DryRunEffectors:
             attrs.canonical_alias,
             attrs.name,
             parent_space_id,
+        )
+        return self._synthetic_room_id()
+
+    async def create_lobby_room(
+        self, attrs: RoomCreateAttributes, parent_space_id: str, join_rules_content: dict[str, Any]
+    ) -> str:
+        log.info(
+            "[dry-run] would create lobby alias=%s name=%r in space=%s join_rule=%s",
+            attrs.canonical_alias,
+            attrs.name,
+            parent_space_id,
+            join_rules_content.get("join_rule"),
         )
         return self._synthetic_room_id()
 

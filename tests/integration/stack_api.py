@@ -338,6 +338,33 @@ def send_message_status(access_token: str, room_id: str, body: str) -> int:
     ).status_code
 
 
+def join_room_status(access_token: str, room_id_or_alias: str) -> int:
+    """HTTP status of the token owner joining a room (200 joined, 403 forbidden by join rule)."""
+    return httpx.post(
+        f"{SYNAPSE_URL}/_matrix/client/v3/join/{quote(room_id_or_alias, safe='')}",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json={},
+        timeout=30.0,
+    ).status_code
+
+
+def space_hierarchy_room_ids(access_token: str, space_id: str) -> set[str]:
+    """Room ids the token owner can see under ``space_id`` via the space-hierarchy endpoint.
+
+    Synapse includes a child only if the asking user may see it: joined/invited, world-readable, or a
+    ``public``/``knock``/``restricted`` join rule the user satisfies. A lobby (restricted to the
+    space) shows; a private group room does not.
+    https://spec.matrix.org/latest/client-server-api/#get_matrixclientv1roomsroomidhierarchy
+    """
+    r = httpx.get(
+        f"{SYNAPSE_URL}/_matrix/client/v1/rooms/{quote(space_id, safe='')}/hierarchy",
+        headers={"Authorization": f"Bearer {access_token}"},
+        timeout=30.0,
+    )
+    r.raise_for_status()
+    return {room["room_id"] for room in r.json().get("rooms", [])}
+
+
 def wait_revoked(access_token: str, *, timeout: float = 150.0) -> bool:
     """Poll until Synapse rejects the token (401) after MAS has revoked the session.
 

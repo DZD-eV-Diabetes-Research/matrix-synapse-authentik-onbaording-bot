@@ -101,6 +101,42 @@ async def test_create_room_sets_encryption_and_space_parent() -> None:
 
 
 @respx.mock
+async def test_create_room_preserves_caller_supplied_initial_state() -> None:
+    """A caller's initial_state event survives alongside the bot's own (regression: it was clobbered).
+
+    The bot's events (space parent, encryption) come first; the caller's come last, so a same-typed
+    event supplied by the caller wins.
+    """
+    create = respx.post("https://matrix.test/_matrix/client/v3/createRoom").mock(
+        return_value=httpx.Response(200, json={"room_id": "!new:matrix.test"})
+    )
+    respx.put(url__regex=r".*/state/m\.space\.child/.+").mock(
+        return_value=httpx.Response(200, json={"event_id": "$e"})
+    )
+    client = _client()
+    join_rule = {"type": "m.room.join_rules", "state_key": "", "content": {"join_rule": "restricted"}}
+    try:
+        await client.create_room(
+            alias_localpart="team",
+            encrypted=True,
+            parent_space_id="!space:matrix.test",
+            room_params={"preset": "public_chat", "initial_state": [join_rule]},
+        )
+    finally:
+        await client.aclose()
+
+    body = json.loads(create.calls[0].request.content)
+    assert body["preset"] == "public_chat"
+    initial_state = body["initial_state"]
+    types = [ev["type"] for ev in initial_state]
+    # The bot's own events survive AND the caller's join-rule event is kept, appended last.
+    assert "m.room.encryption" in types
+    assert "m.space.parent" in types
+    assert join_rule in initial_state
+    assert initial_state[-1] == join_rule
+
+
+@respx.mock
 async def test_create_space_marks_creation_content() -> None:
     route = respx.post("https://matrix.test/_matrix/client/v3/createRoom").mock(
         return_value=httpx.Response(200, json={"room_id": "!s:matrix.test"})
@@ -490,3 +526,33 @@ async def test_cs_api_effectors_delegate_to_client() -> None:
     create_kwargs = client.calls[0][2]
     assert create_kwargs["alias_localpart"] == "team"
     assert create_kwargs["parent_space_id"] == "!space:matrix.test"
+
+
+async def test_cs_api_effectors_create_lobby_sets_join_rule_and_suggested() -> None:
+    client = _RecordingMatrixClient()
+    effectors = CSApiEffectors(client)  # type: ignore[arg-type]
+    attrs = RoomCreateAttributes(
+        alias="team-lobby",
+        canonical_alias="#team-lobby:matrix.test",
+        name="Team (Lobby)",
+        topic="open",
+        room_params={"preset": "private_chat", "power_level_content_override": {"state_default": 100}},
+        encrypted=False,
+    )
+    join_rules = {
+        "join_rule": "restricted",
+        "allow": [{"type": "m.room_membership", "room_id": "!space:matrix.test"}],
+    }
+    await effectors.create_lobby_room(attrs, "!space:matrix.test", join_rules)
+
+    kwargs = client.calls[0][2]
+    assert kwargs["alias_localpart"] == "team-lobby"
+    assert kwargs["parent_space_id"] == "!space:matrix.test"
+    # A lobby is filed as a suggested space child (a room space members should be nudged toward).
+    assert kwargs["suggested"] is True
+    # The join rule is set at creation as an initial_state event, so the lobby is never briefly
+    # invite-only nor briefly open.
+    initial_state = kwargs["room_params"]["initial_state"]
+    assert {"type": "m.room.join_rules", "state_key": "", "content": join_rules} in initial_state
+    # The lobby's own create params (power levels) are preserved.
+    assert kwargs["room_params"]["power_level_content_override"] == {"state_default": 100}
