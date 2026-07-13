@@ -159,13 +159,17 @@ class ApiClientMatrix(BaseApiClient):
         encrypted: bool = False,
         room_params: Mapping[str, Any] | None = None,
         parent_space_id: str | None = None,
+        suggested: bool = False,
         is_direct: bool = False,
         invite: list[str] | None = None,
     ) -> str:
         """Create a room (https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3createroom).
 
         Returns the new ``room_id``. ``room_params`` (preset/visibility/federation/…) are merged in
-        verbatim; encryption and the space-parent link are added as ``initial_state`` events.
+        verbatim; encryption and the space-parent link are added as ``initial_state`` events. Any
+        ``initial_state`` a caller passes under ``room_params`` is preserved and appended *after* the
+        bot's own events, so an operator-supplied state event (e.g. a lobby's join rule) survives and
+        wins over a same-typed default rather than being silently dropped.
 
         The bot is the *creator* of every room it makes. Under room version 12 (the spec default) the
         creator holds an infinite, immutable power level and is deliberately **absent** from
@@ -190,6 +194,10 @@ class ApiClientMatrix(BaseApiClient):
             )
 
         body: dict[str, Any] = {**(room_params or {})}
+        # Merge, don't clobber: keep whatever initial_state the caller passed and append it after the
+        # bot's own events (space parent, encryption), so the caller's events win on a type/state_key
+        # collision. Assigning body["initial_state"] outright would drop them.
+        caller_initial_state = list(body.pop("initial_state", None) or [])
         if self.room_version is not None and "room_version" not in body:
             body["room_version"] = self.room_version
         if alias_localpart:
@@ -202,17 +210,20 @@ class ApiClientMatrix(BaseApiClient):
             body["is_direct"] = True
         if invite:
             body["invite"] = invite
-        if initial_state:
-            body["initial_state"] = initial_state
+        combined_initial_state = [*initial_state, *caller_initial_state]
+        if combined_initial_state:
+            body["initial_state"] = combined_initial_state
 
         result = await self.post_json("v3/createRoom", json_body=body)
         room_id: str = result["room_id"]
         if parent_space_id:
             # https://spec.matrix.org/latest/client-server-api/#mspacechild
+            # `suggested` nudges clients to surface the room to space members: true for a lobby (a room
+            # a wandering space member should join), false for a private group room (they cannot).
             await self.put_room_state_event(
                 parent_space_id,
                 "m.space.child",
-                {"suggested": True, "via": [self.server_name]},
+                {"suggested": suggested, "via": [self.server_name]},
                 state_key=room_id,
             )
         return room_id
@@ -501,6 +512,29 @@ class CSApiEffectors:
             encrypted=attrs.encrypted,
             room_params=attrs.room_params,
             parent_space_id=parent_space_id,
+        )
+
+    async def create_lobby_room(
+        self, attrs: RoomCreateAttributes, parent_space_id: str, join_rules_content: dict[str, Any]
+    ) -> str:
+        # Set the join rule as initial_state at creation so the lobby is never briefly invite-only
+        # (before the reconcile pass writes it) nor briefly open. create_room merges this alongside
+        # its own space-parent/encryption events (the initial_state-clobber fix).
+        join_rules_event = {
+            "type": "m.room.join_rules",
+            "state_key": "",
+            "content": join_rules_content,
+        }
+        room_params = {**attrs.room_params}
+        room_params["initial_state"] = [*(room_params.get("initial_state") or []), join_rules_event]
+        return await self.client.create_room(
+            alias_localpart=attrs.alias,
+            name=attrs.name,
+            topic=attrs.topic,
+            encrypted=attrs.encrypted,
+            room_params=room_params,
+            parent_space_id=parent_space_id,
+            suggested=True,
         )
 
     async def create_space(self, *, alias: str, name: str, topic: str, params: dict[str, Any]) -> str:

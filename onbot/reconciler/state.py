@@ -23,6 +23,7 @@ class OnbotRoomType(StrEnum):
     group_room = "group_room"
     direct_room = "direct_room"
     admin_room = "admin_room"
+    visitor_lobby = "visitor_lobby"
 
 
 def event_type_name(server_name: str, room_type: OnbotRoomType | str) -> str:
@@ -64,6 +65,20 @@ class DirectRoomState(_OnbotRoomState):
     force_joined_at: int | None = None
 
 
+class VisitorLobbyRoomState(_OnbotRoomState):
+    """Marks a room as a group's visitor lobby, not the group room itself.
+
+    Carries the same ``group_id`` as the group room it fronts, so obsolete-room teardown can take the
+    lobby down with the group room when the Authentik group disappears. The distinct ``room_type`` is
+    the safety rail: without it discovery would read the lobby as a group room, project Authentik
+    membership onto it, and kick every visitor. A lobby's membership is deliberately *not* a mirror of
+    the group (ADR-0012).
+    """
+
+    room_type: Literal[OnbotRoomType.visitor_lobby] = OnbotRoomType.visitor_lobby
+    group_id: str
+
+
 class AdminRoomState(_OnbotRoomState):
     """Marks the operator control room as bot-managed, and remembers what it pinned there.
 
@@ -76,13 +91,14 @@ class AdminRoomState(_OnbotRoomState):
     help_event_id: str | None = None
 
 
-AnyRoomState = SpaceRoomState | GroupRoomState | DirectRoomState | AdminRoomState
+AnyRoomState = SpaceRoomState | GroupRoomState | DirectRoomState | AdminRoomState | VisitorLobbyRoomState
 
 _STATE_MODEL_BY_TYPE: dict[OnbotRoomType, type[AnyRoomState]] = {
     OnbotRoomType.space: SpaceRoomState,
     OnbotRoomType.group_room: GroupRoomState,
     OnbotRoomType.direct_room: DirectRoomState,
     OnbotRoomType.admin_room: AdminRoomState,
+    OnbotRoomType.visitor_lobby: VisitorLobbyRoomState,
 }
 
 

@@ -81,9 +81,17 @@ class RecordingEffectors(DryRunEffectors):
         self.uploads: list[str] = []
         self.avatars: list[tuple[str, str]] = []
         self.state_store: dict[tuple[str, str], dict[str, Any]] = {}
+        self.lobbies_created: list[tuple[str, str, dict[str, Any]]] = []
+        self.state_writes: list[tuple[str, str, dict[str, Any]]] = []
 
     async def kick_user(self, room_id: str, user_id: str, reason: str | None = None) -> None:
         self.kicks.append((room_id, user_id))
+
+    async def create_lobby_room(
+        self, attrs: Any, parent_space_id: str, join_rules_content: dict[str, Any]
+    ) -> str:
+        self.lobbies_created.append((attrs.canonical_alias, parent_space_id, join_rules_content))
+        return "!newlobby:company.org"
 
     async def set_room_power_levels(self, room_id: str, power_levels: dict[str, Any]) -> None:
         self.power_levels.append((room_id, power_levels))
@@ -102,6 +110,7 @@ class RecordingEffectors(DryRunEffectors):
 
     async def put_room_state(self, room_id: str, event_type: str, content: dict[str, Any]) -> None:
         self.state_store[(room_id, event_type)] = content
+        self.state_writes.append((room_id, event_type, content))
 
 
 def _engine(events: EventBus | None = None) -> tuple[ReconcilerEngine, FakeAdmin, RecordingEffectors]:
@@ -383,3 +392,136 @@ async def test_run_survives_a_failing_pass(caplog: pytest.LogCaptureFixture) -> 
     engine.config.server_tick_rate_sec = 0  # don't actually wait between passes
     await asyncio.wait_for(engine.run(), timeout=2)
     assert calls == 2  # first pass failed but the loop continued
+
+
+# --- visitor lobby (ADR-0012) ---
+
+_JOIN_RULES = "m.room.join_rules"
+_LOBBY_EVENT = "org.company.onbot.visitor_lobby"
+_LOBBY_ID = "!lobby1:company.org"
+
+
+def _lobby_config() -> OnbotConfig:
+    config = OnbotConfig.model_validate(_BASE)
+    config.matrix_room_default_settings.visitor_lobby_enabled = True
+    return config
+
+
+class LobbyAdmin(FakeAdmin):
+    """Serves the g1 room plus its lobby, with a visitor in the lobby who is not in the group."""
+
+    def __init__(self, *, with_lobby_room: bool) -> None:
+        super().__init__()
+        self._with_lobby_room = with_lobby_room
+
+    async def list_non_space_rooms(self) -> list[dict[str, Any]]:
+        rooms = await super().list_non_space_rooms()
+        if self._with_lobby_room:
+            rooms = [
+                *rooms,
+                {"room_id": _LOBBY_ID, "canonical_alias": "#g1-lobby:company.org", "name": "Team (Lobby)"},
+            ]
+        return rooms
+
+    async def list_room_members(self, room_id: str) -> list[str]:
+        if room_id == _LOBBY_ID:
+            # A visitor who joined on purpose and is NOT in the Authentik group, plus the bot.
+            return ["@visitor:company.org", "@bot:company.org"]
+        return await super().list_room_members(room_id)
+
+
+async def test_lobby_created_stamped_and_join_rule_set() -> None:
+    engine = ReconcilerEngine(
+        _lobby_config(), FakeAuthentik(), LobbyAdmin(with_lobby_room=False), RecordingEffectors()
+    )  # type: ignore[arg-type]
+    effectors = engine.effectors
+    assert isinstance(effectors, RecordingEffectors)
+    await engine.reconcile_once()
+
+    # A lobby was created for g1, restricted to the parent space, and stamped visitor_lobby (never
+    # group_room), so no later pass mistakes it for the group room.
+    assert len(effectors.lobbies_created) == 1
+    alias, space_id, join_rules = effectors.lobbies_created[0]
+    assert alias == "#g1-lobby:company.org"
+    assert space_id == "!space:company.org"
+    assert join_rules == {
+        "join_rule": "restricted",
+        "allow": [{"type": "m.room_membership", "room_id": "!space:company.org"}],
+    }
+    stamped = effectors.state_store[("!newlobby:company.org", _LOBBY_EVENT)]
+    assert stamped["room_type"] == "visitor_lobby"
+    assert stamped["group_id"] == "g1"
+
+
+async def test_lobby_is_add_only_and_never_kicks_a_visitor() -> None:
+    """The single most dangerous bug: a lobby mistaken for a group room, projecting membership and
+    kicking every visitor. The visitor must survive; the lobby must never appear in a kick."""
+    engine = ReconcilerEngine(
+        _lobby_config(), FakeAuthentik(), LobbyAdmin(with_lobby_room=True), RecordingEffectors()
+    )  # type: ignore[arg-type]
+    effectors = engine.effectors
+    admin = engine.admin
+    assert isinstance(effectors, RecordingEffectors)
+    assert isinstance(admin, LobbyAdmin)
+    await engine.reconcile_once()
+
+    # The visitor (not in the group) is NOT kicked from the lobby — the lobby never enters a kick.
+    assert all(room != _LOBBY_ID for room, _ in effectors.kicks)
+    # Meanwhile the group room DID kick its stale member: lobby membership ≠ group-room membership.
+    assert ("!room1:company.org", "@stale:company.org") in effectors.kicks
+    # Group members are seeded into the lobby (inject default), visitors are left in place.
+    added_to_lobby = {mxid for room, mxid in admin.added if room == _LOBBY_ID}
+    assert "@bob:company.org" in added_to_lobby  # a group member injected
+    assert "@visitor:company.org" not in added_to_lobby  # visitor already there, untouched
+
+
+async def test_lobby_join_rule_is_a_noop_when_already_restricted() -> None:
+    admin = LobbyAdmin(with_lobby_room=True)
+    effectors = RecordingEffectors()
+    # The lobby already carries the exact restricted rule the bot wants.
+    effectors.state_store[(_LOBBY_ID, _JOIN_RULES)] = {
+        "join_rule": "restricted",
+        "allow": [{"type": "m.room_membership", "room_id": "!space:company.org"}],
+    }
+    engine = ReconcilerEngine(_lobby_config(), FakeAuthentik(), admin, effectors)  # type: ignore[arg-type]
+    await engine.reconcile_once()
+    # A no-op tick sends no join-rules state event.
+    assert not any(evt == _JOIN_RULES for _room, evt, _content in effectors.state_writes)
+
+
+async def test_lobby_inject_disabled_seeds_nobody() -> None:
+    config = _lobby_config()
+    config.matrix_room_default_settings.visitor_lobby_inject_group_members = False
+    admin = LobbyAdmin(with_lobby_room=True)
+    engine = ReconcilerEngine(config, FakeAuthentik(), admin, RecordingEffectors())  # type: ignore[arg-type]
+    await engine.reconcile_once()
+    assert all(room != _LOBBY_ID for room, _ in admin.added)  # no group members injected
+
+
+_ORPHAN_LOBBY = "!orphanlobby:company.org"
+
+
+class OrphanLobbyAdmin(FakeAdmin):
+    async def list_non_space_rooms(self) -> list[dict[str, Any]]:
+        return [
+            *await super().list_non_space_rooms(),
+            {"room_id": _ORPHAN_LOBBY, "canonical_alias": "#gone-lobby:company.org", "name": "Gone (Lobby)"},
+        ]
+
+
+async def test_lobby_taken_down_with_its_group_when_group_disappears() -> None:
+    # A lobby carries group_id "g-gone"; Authentik no longer returns that group, so the lobby is
+    # obsolete and must be blocked — not left as a live, joinable room beside a blocked group room.
+    config = _lobby_config()
+    room_cfg = config.sync_matrix_rooms_based_on_authentik_groups
+    room_cfg.disable_rooms_when_mapped_authentik_group_disappears = True
+    admin = OrphanLobbyAdmin()
+    effectors = RecordingEffectors()
+    effectors.state_store[(_ORPHAN_LOBBY, _LOBBY_EVENT)] = {
+        "schema_version": 1,
+        "room_type": "visitor_lobby",
+        "group_id": "g-gone",
+    }
+    engine = ReconcilerEngine(config, FakeAuthentik(), admin, effectors)  # type: ignore[arg-type]
+    await engine.reconcile_once()
+    assert (_ORPHAN_LOBBY, True) in admin.blocked_changes

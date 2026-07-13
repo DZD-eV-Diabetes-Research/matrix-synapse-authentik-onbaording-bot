@@ -43,7 +43,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -864,6 +864,110 @@ class MatrixDynamicRoomSettings(BaseModel):
             ),
         ),
     ] = True
+    visitor_lobby_enabled: Annotated[
+        bool,
+        Field(
+            title="Open a visitor lobby beside the group room",
+            description=inspect.cleandoc(
+                """Maintain a second, open room — a lobby — beside each private group room. Every
+                member of the parent space can find the lobby in the space listing and join it of
+                their own accord, and nobody is ever kicked from it, so it is a front door in front of
+                the closed group room. The group room itself is untouched: same members, same history,
+                same privacy. Off by default — a lobby is a deliberate decision, not a migration.
+
+                Requires the parent space (`create_matrix_rooms_in_a_matrix_space`), because a lobby is
+                joinable precisely by space members and to nobody else; enabling a lobby without a
+                space is rejected at startup. A single group can opt in without a config change through
+                `matrix_room_visitor_lobby_from_authentik_attribute`."""
+            ),
+        ),
+    ] = False
+    visitor_lobby_name_suffix: Annotated[
+        str,
+        Field(
+            title="Lobby name suffix",
+            description=inspect.cleandoc(
+                """Appended to the group room's name to name its lobby — `Düsseldorf` becomes
+                `Düsseldorf (Lobby)`. The suffix is the whole user-facing explanation of what the
+                second room is, so it should say *this is a door*, not *these are more people*.
+                Alternatives worth a deliberate choice: ` (Foyer)` (reads naturally to a
+                German-speaking org), ` (Open)` (shortest, states the property not the metaphor), or
+                ` & Guests` (if the room should feel like the group hosting). ` & Friends` was
+                rejected: the ampersand reads as a statement about membership."""
+            ),
+            examples=[" (Lobby)", " (Foyer)", " (Open)"],
+        ),
+    ] = " (Lobby)"
+    visitor_lobby_alias_suffix: Annotated[
+        str,
+        Field(
+            title="Lobby alias suffix",
+            description=inspect.cleandoc(
+                """Appended to the group room's alias localpart to form the lobby's alias —
+                `#duesseldorf` gets a `#duesseldorf-lobby` beside it. Unlike the group alias, dashes
+                here are kept. A Matrix alias cannot be changed after the room is created, so changing
+                this later makes the bot build a second, empty lobby rather than rename the first."""
+            ),
+            examples=["-lobby", "-foyer", "-open"],
+        ),
+    ] = "-lobby"
+    visitor_lobby_topic_template: Annotated[
+        str,
+        Field(
+            title="Lobby topic template",
+            description=inspect.cleandoc(
+                """Topic set on the lobby, with `{name}` replaced by the group room's name. State the
+                arrangement in the one place every visitor looks, so a visitor who reads it never
+                wonders why the room is quiet or which room to post in."""
+            ),
+            examples=[
+                "Open lobby for {name} — anyone in the space may join. The group's working room is private."
+            ],
+        ),
+    ] = "Open lobby for {name} — anyone in the space may join. The group's working room is private."
+    visitor_lobby_end2end_encryption_enabled: Annotated[
+        bool,
+        Field(
+            title="Encrypt the lobby",
+            description=inspect.cleandoc(
+                """Enable end-to-end encryption in the lobby. Off by default, and deliberately weaker
+                than the group room's own encryption default: a lobby is open to the whole space by
+                construction, so encryption buys it little, while it guarantees every visitor's first
+                impression is a screen of `unable to decrypt`. Encryption cannot be turned off again
+                once a room has it, so this default is chosen for you to be able to change it before
+                the lobby exists rather than after."""
+            ),
+        ),
+    ] = False
+    visitor_lobby_inject_group_members: Annotated[
+        bool,
+        Field(
+            title="Seed the lobby with the group's members",
+            description=inspect.cleandoc(
+                """Join the group's members into the lobby as well, so a visitor who walks in finds
+                somebody there. On by default: an empty lobby is a dead lobby. This is a social bet —
+                it works when the group room is where the group *works* and the lobby is where the
+                group is *reachable*, and it fails, producing two half-dead rooms and doubled
+                notifications, when both are general-purpose. Turn it off for a large group that would
+                rather staff an empty lobby deliberately. Visitors are never injected anywhere — they
+                joined on purpose — and members are only ever added, never kicked."""
+            ),
+        ),
+    ] = True
+    matrix_room_visitor_lobby_from_authentik_attribute: Annotated[
+        str | None,
+        Field(
+            title="Group attribute that opts a group into a lobby",
+            description=inspect.cleandoc(
+                """Authentik group attribute (dotted path) holding a boolean that turns the lobby on or
+                off for that one group, overriding `visitor_lobby_enabled`. This lets whoever owns the
+                group in Authentik open a lobby without a config deploy. A value that is not a boolean
+                is ignored with a warning and the configured default applies. `null` disables the
+                per-group override, leaving `visitor_lobby_enabled` in sole charge."""
+            ),
+            examples=["attributes.chatroom_visitor_lobby"],
+        ),
+    ] = "attributes.chatroom_visitor_lobby"
 
 
 class OnbotConfig(BaseSettings):
@@ -1157,6 +1261,28 @@ class OnbotConfig(BaseSettings):
             examples=[["1120a6e1124f309bbe96c8be5fb09eab"]],
         ),
     ] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _visitor_lobby_requires_a_space(self) -> OnbotConfig:
+        """A lobby's ``restricted`` join rule needs a space to be restricted *to*.
+
+        Reject a lobby enabled — in the defaults or in any per-group override — while the parent space
+        is switched off, rather than silently create a lobby that stays invite-only and joinable by
+        nobody. The per-group Authentik attribute can still enable a lobby at runtime; the engine
+        skips lobby creation when no space is resolved, so that case degrades safely rather than at
+        startup.
+        """
+        if self.create_matrix_rooms_in_a_matrix_space.enabled:
+            return self
+        lobby_enabled = self.matrix_room_default_settings.visitor_lobby_enabled or any(
+            s.visitor_lobby_enabled for s in self.per_authentik_group_pk_matrix_room_settings.values()
+        )
+        if lobby_enabled:
+            raise ValueError(
+                "visitor_lobby_enabled requires create_matrix_rooms_in_a_matrix_space to be enabled: "
+                "a lobby is joinable precisely by parent-space members, so there must be a space."
+            )
+        return self
 
 
 def get_config_file_path(*, not_exists_ok: bool = False) -> Path | None:
