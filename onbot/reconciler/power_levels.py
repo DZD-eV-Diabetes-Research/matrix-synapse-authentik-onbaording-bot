@@ -86,6 +86,10 @@ def merge_power_levels(
 
     Only ``managed_mxids`` are added/updated/removed; everyone else is left untouched. Returns a new
     dict (the caller decides whether it changed before writing).
+
+    Note this never adds the bot: the bot is the room *creator* and, under room version 12, is absent
+    from ``users`` by design (see :func:`legacy_user_matches_or_outranks_creator`). It is not in
+    ``managed_mxids``, so its absence here is correct, not a demotion.
     """
     merged = dict(current_users)
     for mxid in managed_mxids:
@@ -94,3 +98,35 @@ def merge_power_levels(
         else:
             merged.pop(mxid, None)
     return merged
+
+
+def legacy_user_matches_or_outranks_creator(
+    power_levels: dict[str, Any], user_id: str, creator_id: str
+) -> bool:
+    """Is ``user_id`` seated at or above the room creator's power level? (v12-aware.)
+
+    This is the single rule the v12 audit enforces on every "is this user ≥ the bot?" read, and the
+    selection predicate for the destructive ``recreate-dm-rooms`` migration: the bot creates the DM,
+    so ``creator_id`` is the bot.
+
+    Under **room version 12** the creator holds an infinite, immutable power level and is
+    deliberately **absent** from ``m.room.power_levels`` — the auth rules reject naming a creator in
+    the ``users`` map. So an absent creator is not a powerless one: it is infinite, and *nobody* can
+    match it. When ``creator_id`` is not in ``users`` we return ``False`` unconditionally. This is
+    what makes a v12 DM immune to the un-demotable-user trap the migration exists to repair.
+
+    On **older room versions** the creator is an ordinary ``users`` entry (``trusted_private_chat``
+    seated both the bot and the invitee at 100). There the creator *can* be matched, and a user at or
+    above it is the legacy room the migration must recreate — so we compare levels, reading an
+    unlisted user at ``users_default``.
+
+    Reading ``creator_id`` as absent-means-powerless (level ``users_default``) — the pre-v12
+    assumption baked into naive power-level code — would wrongly flag every healthy v12 room as
+    needing migration. Do not reintroduce it.
+    """
+    users = power_levels.get("users") or {}
+    if creator_id not in users:
+        return False
+    creator_level = users[creator_id]
+    user_level = users.get(user_id, power_levels.get("users_default", 0))
+    return bool(user_level >= creator_level)

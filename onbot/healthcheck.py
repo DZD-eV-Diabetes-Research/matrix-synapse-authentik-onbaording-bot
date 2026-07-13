@@ -87,6 +87,7 @@ async def run_healthcheck(config: OnbotConfig) -> int:
         server_url=config.synapse_server.server_url,
         token_provider=token_provider,
         server_name=config.synapse_server.server_name,
+        room_version=config.synapse_server.room_version,
     )
     mas: ApiClientMasAdmin | None = None
     if config.mas_admin is not None:

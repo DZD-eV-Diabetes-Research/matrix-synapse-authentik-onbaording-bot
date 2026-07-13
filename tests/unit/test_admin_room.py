@@ -101,9 +101,12 @@ def _provisioner(
 
 
 def test_members_may_speak_but_only_the_bot_governs() -> None:
-    content = admin_room_power_levels(BOT)
+    content = admin_room_power_levels()
 
-    assert content["users"] == {BOT: 100}
+    # The bot creates this room and is its creator: under room version 12 it must NOT be named in
+    # m.room.power_levels (the auth rules reject it), and on older versions the server seats the
+    # creator at 100 for us. Either way the override leaves `users` out.
+    assert "users" not in content
     assert content["events_default"] == 0  # admins must be able to talk to the bot, and each other
     for key in ("state_default", "invite", "kick", "ban", "redact"):
         assert content[key] == 100
@@ -125,7 +128,7 @@ async def test_a_missing_room_is_created_unencrypted_unfederated_and_invite_only
     params = created["room_params"]
     assert params["creation_content"] == {"m.federate": False}
     assert params["preset"] == "private_chat"
-    assert params["power_level_content_override"] == admin_room_power_levels(BOT)
+    assert params["power_level_content_override"] == admin_room_power_levels()
 
 
 async def test_a_created_room_is_marked_as_bot_managed() -> None:

@@ -24,7 +24,12 @@ log = get_logger(__name__)
 
 
 def mxid_localpart(mxid: str) -> str:
-    """Extract the localpart from a full MXID (``@local:server`` -> ``local``)."""
+    """Extract the localpart from a full MXID (``@local:server`` -> ``local``).
+
+    MXIDs keep their ``:server`` component, so splitting on ``:`` is correct here. This must never be
+    used on a room *ID*: since room version 12 a room ID is a domainless hash with no ``:`` to split
+    (``docs/adr/0011-room-version-12.md``).
+    """
     return mxid.removeprefix("@").split(":", 1)[0]
 
 

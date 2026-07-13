@@ -235,7 +235,7 @@ async def test_new_room_is_created_as_a_read_only_notice_board() -> None:
 
     await svc.welcome_user(ALICE)
 
-    assert client.power_levels["!dm-1:matrix.test"] == notice_board_power_levels(BOT)
+    assert client.power_levels["!dm-1:matrix.test"] == notice_board_power_levels()
     # Force-joining skips the invite that would have tagged the room as a DM, so it needs a name.
     assert client.room_state[("!dm-1:matrix.test", "m.room.name")] == {"name": config.onboarding_room_name}
 
@@ -306,7 +306,7 @@ async def test_hand_edited_power_levels_are_restored_on_the_next_welcome() -> No
 
     await svc.welcome_user(ALICE)
 
-    assert client.power_levels["!dm-1:matrix.test"] == notice_board_power_levels(BOT)
+    assert client.power_levels["!dm-1:matrix.test"] == notice_board_power_levels()
     assert client.power_level_writes == ["!dm-1:matrix.test"]
 
 

@@ -7,8 +7,12 @@ from onbot.reconciler.power_levels import (
     PowerLevelGroup,
     compute_desired_user_levels,
     extract_power_level_groups,
+    legacy_user_matches_or_outranks_creator,
     merge_power_levels,
 )
+
+BOT = "@bot:matrix.test"
+USER = "@alice:matrix.test"
 
 
 def _user(pk: str, mxid: str, *, superuser: bool = False) -> MappedUser:
@@ -56,3 +60,36 @@ def test_merge_removes_managed_user_who_lost_all_levels() -> None:
     current = {"@a:x": 50, "@bot:x": 100}
     merged = merge_power_levels(current, desired={}, managed_mxids={"@a:x"})
     assert merged == {"@bot:x": 100}
+
+
+# --- v12 creator authority (the single rule the room-version audit enforces) ------------------
+
+
+def test_v12_room_creator_absent_from_users_is_never_matched() -> None:
+    # A v12 DM: the bot created it, so it is the infinite-power creator and is deliberately absent
+    # from `users`. Even a user sitting at 100 does not match it — the bot stays authoritative, and
+    # the room never qualifies for the destructive recreate-dm-rooms migration.
+    v12 = {"users": {USER: 100}, "users_default": 0}
+    assert legacy_user_matches_or_outranks_creator(v12, USER, BOT) is False
+
+
+def test_v12_room_with_empty_users_treats_creator_as_infinite() -> None:
+    assert legacy_user_matches_or_outranks_creator({"users": {}, "users_default": 0}, USER, BOT) is False
+
+
+def test_legacy_room_where_user_equals_the_bot_is_flagged() -> None:
+    # A pre-v12 trusted_private_chat room: both bot and user seated at 100. The bot cannot demote the
+    # user (spec forbids touching an entry >= your own), so this is exactly the room the migration
+    # must recreate.
+    legacy = {"users": {BOT: 100, USER: 100}, "users_default": 0}
+    assert legacy_user_matches_or_outranks_creator(legacy, USER, BOT) is True
+
+
+def test_legacy_room_where_user_is_below_the_bot_is_healthy() -> None:
+    legacy = {"users": {BOT: 100, USER: 0}, "users_default": 0}
+    assert legacy_user_matches_or_outranks_creator(legacy, USER, BOT) is False
+
+
+def test_legacy_room_reads_an_unlisted_user_at_users_default() -> None:
+    legacy = {"users": {BOT: 50}, "users_default": 100}
+    assert legacy_user_matches_or_outranks_creator(legacy, USER, BOT) is True

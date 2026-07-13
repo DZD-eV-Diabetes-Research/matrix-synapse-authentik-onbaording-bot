@@ -15,13 +15,18 @@ from typing import Any, Literal
 
 from onbot.utils import get_nested_dict_val_by_path
 
-SigilT = Literal["@", "#", "!"]
+SigilT = Literal["@", "#"]
 
 
 def build_canonical(local_part: str, server_name: str, sigil: SigilT = "@") -> str:
     """Build a fully-qualified Matrix identifier: ``<sigil><local_part>:<server_name>``.
 
-    ``@`` → user ID, ``#`` → room alias, ``!`` → room/space ID.
+    ``@`` → user ID, ``#`` → room alias. **Not for room IDs.** A user ID and a room *alias* are
+    ``localpart:server_name`` and keep their ``:server`` component. A room *ID* (sigil ``!``) does
+    **not**: since room version 12 it is a hash of the ``m.room.create`` event with no ``:domain``
+    part at all (e.g. ``!Nhcu5BS-UMnFX7hBVfVSoXiD7OgH6iRT-xyIuqDnpYQ``). Room IDs are opaque tokens
+    the server hands us — never construct one from parts, and never split one on ``:`` to recover a
+    server name (there is none). See ``docs/adr/0011-room-version-12.md``.
     """
     return f"{sigil}{local_part}:{server_name}"
 

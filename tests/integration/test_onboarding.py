@@ -69,12 +69,19 @@ async def test_the_welcome_room_is_read_only_for_its_user(
 ) -> None:
     login, room_id = await _welcome_room_of(make_config, authentik_admin, matrix_client, "readonly")
 
+    # The stack forces room version 12 (see stack/synapse/homeserver.yaml), so the bot — as room
+    # creator — holds an infinite power level and is DELIBERATELY ABSENT from m.room.power_levels:
+    # naming a creator in the `users` map is rejected by the v12 auth rules. Absent ≠ powerless.
+    create = await matrix_client.get_room_state_event(room_id, "m.room.create")
+    assert create is not None and create.get("room_version") == "12"
+
     levels = await matrix_client.get_room_power_levels(room_id)
-    assert levels["users"][S.BOT_USER_ID] == 100
-    assert login.mxid not in levels["users"]  # they sit at users_default
+    assert S.BOT_USER_ID not in levels.get("users", {})  # the creator is not (and cannot be) listed
+    assert login.mxid not in levels.get("users", {})  # the user sits at users_default
     assert levels["users_default"] == 0
 
-    # And Synapse actually enforces it: the composer in Element is not the only thing stopping them.
+    # The bot's authority is real regardless of the empty `users` map: Synapse actually refuses the
+    # user's send, so the composer being hidden in Element is not the only thing stopping them.
     assert S.send_message_status(login.access_token, room_id, "can I talk here?") == 403
 
     # Force-joining skips the invite that makes a client tag the room as a DM, so it carries a name.

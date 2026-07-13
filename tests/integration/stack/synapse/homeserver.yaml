@@ -39,6 +39,13 @@ federation_domain_whitelist: []
 trusted_key_servers: []
 enable_registration: false
 
+# Force room version 12 as the default for rooms created here (createRoom without an explicit
+# room_version), so the integration suite exercises the world a current spec-compliant server hands
+# the bot: room creators hold infinite power and are absent from m.room.power_levels, and room IDs
+# are domainless hashes. The bot pins no version itself (synapse_server.room_version is unset), so
+# this server default is what its createRoom calls inherit. See docs/adr/0011-room-version-12.md.
+default_room_version: "12"
+
 experimental_features:
   msc3861:
     enabled: true

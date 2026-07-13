@@ -338,8 +338,16 @@ def send_message_status(access_token: str, room_id: str, body: str) -> int:
     ).status_code
 
 
-def wait_revoked(access_token: str, *, timeout: float = 15.0) -> bool:
-    """Poll until the token is rejected (revocation is near-instant via MAS, but allow slack)."""
+def wait_revoked(access_token: str, *, timeout: float = 150.0) -> bool:
+    """Poll until Synapse rejects the token (401) after MAS has revoked the session.
+
+    MAS revokes the session immediately (a *fresh* login is denied at once), but Synapse only learns
+    of it when its access-token introspection cache lapses. Synapse 1.128+ caches introspection
+    results for ~2 minutes with no explicit invalidation
+    (https://github.com/element-hq/synapse/pull/18231), so a revoked token keeps working against
+    Synapse until then. onbot's revocation is correct; the observation just trails the cache TTL, so
+    poll well past it rather than the old near-instant 15s.
+    """
     import time
 
     deadline = time.time() + timeout
