@@ -20,6 +20,7 @@ from onbot.auth.token_provider import (
     StaticTokenProvider,
     TokenProvider,
 )
+from onbot.avatar import ensure_bot_avatar
 from onbot.clients.authentik import ApiClientAuthentik
 from onbot.clients.mas_admin import ApiClientMasAdmin
 from onbot.clients.matrix import ApiClientMatrix, CSApiEffectors
@@ -80,16 +81,18 @@ async def _relax_bot_ratelimit(admin: ApiClientSynapseAdmin, config: OnbotConfig
 
 
 async def _apply_bot_avatar(matrix: ApiClientMatrix, config: OnbotConfig, media: MediaUploader) -> None:
-    """Set the bot's own avatar from the configured URL on startup (G6.8), best-effort."""
-    url = config.synapse_server.bot_avatar_url
-    if not url:
-        return
-    try:
-        mxc = await media.upload_from_url(url)
-        await matrix.set_user_avatar(config.synapse_server.bot_user_id, mxc)
-        log.info("set bot avatar from %s", url)
-    except Exception:
-        log.exception("failed to set bot avatar from %s", url)
+    """Set the bot's own avatar from the configured URL on startup (G6.8), best-effort.
+
+    Idempotent: re-setting an unchanged picture would announce "changed their profile picture" in
+    every room the bot is in, so :mod:`onbot.avatar` writes the profile only when it has to.
+    """
+    await ensure_bot_avatar(
+        matrix,
+        media,
+        user_id=config.synapse_server.bot_user_id,
+        server_name=config.synapse_server.server_name,
+        source_url=config.synapse_server.bot_avatar_url,
+    )
 
 
 async def _build_control_room(

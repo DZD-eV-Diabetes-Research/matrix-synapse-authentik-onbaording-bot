@@ -335,8 +335,10 @@ scope: urn:matrix:org.matrix.msc2967.client:api:* urn:synapse:admin:*
 *Bot avatar*
 
 HTTP(S) URL to a picture the bot sets as its own avatar on start. The image is
-downloaded and re-uploaded to the homeserver's media repository, and only re-uploaded
-when the URL changes. `null` leaves the bot's current avatar untouched.
+downloaded and re-uploaded to the homeserver's media repository, and the profile is
+only rewritten when the picture actually changed, so a restart does not announce
+"changed their profile picture" in every room. `null` leaves the bot's current
+avatar untouched.
 
 | Property | Value |
 |---|---|

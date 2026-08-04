@@ -370,6 +370,21 @@ class ApiClientMatrix(BaseApiClient):
         # https://spec.matrix.org/latest/client-server-api/#put_matrixclientv3profileuseridavatar_url
         await self.put_json(f"v3/profile/{user_id}/avatar_url", json_body={"avatar_url": mxc_uri})
 
+    async def get_user_avatar(self, user_id: str) -> str | None:
+        """The user's current profile avatar as an ``mxc://`` URI, or ``None`` if unset.
+
+        Synapse answers a profile with no avatar as either 404 or 200 with the key missing.
+        https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3profileuseridavatar_url
+        """
+        try:
+            content: dict[str, Any] = await self.get_json(f"v3/profile/{user_id}/avatar_url")
+        except ApiError as exc:
+            if exc.status_code == 404:
+                return None
+            raise
+        avatar_url: str | None = content.get("avatar_url")
+        return avatar_url or None
+
     # --- media (authenticated, MSC3916) --------------------------------------
 
     async def upload_media(self, content: bytes, *, content_type: str, filename: str | None = None) -> str:

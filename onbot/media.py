@@ -32,14 +32,34 @@ class MediaUploader:
         cached = self._cache.get(url)
         if cached is not None:
             return cached
+        content, content_type = await self.fetch(url)
+        return await self.upload(url, content, content_type)
+
+    async def fetch(self, url: str) -> tuple[bytes, str]:
+        """Download the source image, returning its bytes and content type (no upload, no cache).
+
+        Split out of :meth:`upload_from_url` so a caller can compare the bytes against what the
+        homeserver already holds before deciding to upload them again (see :mod:`onbot.avatar`).
+        """
         response = await self._http.get(url)
         response.raise_for_status()
         raw_type = response.headers.get("content-type", _DEFAULT_CONTENT_TYPE).split(";")[0].strip()
-        content_type = raw_type or _DEFAULT_CONTENT_TYPE
-        mxc = await self.client.upload_media(response.content, content_type=content_type)
-        self._cache[url] = mxc
+        return response.content, raw_type or _DEFAULT_CONTENT_TYPE
+
+    async def upload(self, url: str, content: bytes, content_type: str) -> str:
+        """Upload already-fetched bytes, caching the result under their source ``url``."""
+        mxc = await self.client.upload_media(content, content_type=content_type)
+        self.remember(url, mxc)
         log.info("uploaded avatar %s -> %s", url, mxc)
         return mxc
+
+    def remember(self, url: str, mxc: str) -> None:
+        """Record that ``url`` is already on the homeserver as ``mxc``.
+
+        Lets a caller that skipped an upload (because the media is unchanged) still hand the existing
+        mxc to everything else wearing the same source URL, instead of re-uploading it.
+        """
+        self._cache[url] = mxc
 
     async def aclose(self) -> None:
         if self._owns_http:

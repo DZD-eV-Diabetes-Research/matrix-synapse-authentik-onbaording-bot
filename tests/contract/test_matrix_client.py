@@ -304,6 +304,31 @@ async def test_set_user_avatar_puts_profile() -> None:
 
 
 @respx.mock
+async def test_get_user_avatar_reads_profile() -> None:
+    respx.get("https://matrix.test/_matrix/client/v3/profile/@bot:matrix.test/avatar_url").mock(
+        return_value=httpx.Response(200, json={"avatar_url": "mxc://matrix.test/abc"})
+    )
+    client = _client()
+    try:
+        assert await client.get_user_avatar("@bot:matrix.test") == "mxc://matrix.test/abc"
+    finally:
+        await client.aclose()
+
+
+@respx.mock
+async def test_get_user_avatar_is_none_when_unset() -> None:
+    """Synapse answers an avatar-less profile as 404 or as 200 without the key; both mean "none"."""
+    route = respx.get("https://matrix.test/_matrix/client/v3/profile/@bot:matrix.test/avatar_url")
+    route.side_effect = [httpx.Response(404, json={"errcode": "M_NOT_FOUND"}), httpx.Response(200, json={})]
+    client = _client()
+    try:
+        assert await client.get_user_avatar("@bot:matrix.test") is None
+        assert await client.get_user_avatar("@bot:matrix.test") is None
+    finally:
+        await client.aclose()
+
+
+@respx.mock
 async def test_resolve_room_alias_returns_none_on_404() -> None:
     respx.get("https://matrix.test/_matrix/client/v3/directory/room/%23nope%3Amatrix.test").mock(
         return_value=httpx.Response(404, json={"errcode": "M_NOT_FOUND"})
