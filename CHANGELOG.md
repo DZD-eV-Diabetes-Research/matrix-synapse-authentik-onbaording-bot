@@ -11,6 +11,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Markdown welcome messages:** every entry of `welcome_new_users_messages` is rendered from
+  CommonMark to the `org.matrix.custom.html` `formatted_body` a client displays, so links, emphasis,
+  lists, headings and bare URLs arrive formatted. The markdown source stays in `body` as the fallback,
+  raw HTML in a message is not passed through, and an unformatted message is still sent as plain text.
+- **Placeholders in welcome messages:** `{space_link}` (a `matrix.to` link to the parent space),
+  `{space_alias}`, `{space_name}` and `{user_id}` are filled in per recipient. A message using a
+  `space_*` placeholder while `create_matrix_rooms_in_a_matrix_space` is disabled is held back with a
+  warning instead of being sent with a gap in it. Substitution does not affect the once-per-user
+  bookkeeping, which still keys on the configured text.
 - **`onbot broadcast "<message>"`:** sends one `m.notice` into every user's onboarding room, fanned
   out from the bot's `m.direct` account data with bounded concurrency. Exits non-zero if any room
   could not be reached, naming them. The bot's Synapse send rate limit is lifted at startup

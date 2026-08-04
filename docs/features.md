@@ -300,6 +300,8 @@ hand.
 - **The messages are yours to write.** `welcome_new_users_messages` is the list, sent in order;
   `null` or an empty list disables the welcome room entirely. Each message is sent at most once per
   user and matched by its text, so editing one message re-sends *that* message to everyone.
+- **Messages are Markdown, and can link to your space.** See
+  [writing welcome messages](#writing-welcome-messages) below.
 - **The room's name and topic** come from `onboarding_room_name` and `onboarding_room_topic`, read
   only when the room is created. The room needs a name because the bot joins the user directly rather
   than through a direct-message invitation, and without one the client would show it as an untitled
@@ -312,6 +314,48 @@ hand.
 - **A gotcha for old deployments:** welcome rooms created by a much earlier Onbot granted the user the
   same power level as the bot, so they can still write in them and cannot be demoted. The fix is in
   [troubleshooting.md](troubleshooting.md#welcome-rooms-created-before-onbot-made-them-read-only).
+
+### Writing welcome messages
+
+Each entry of `welcome_new_users_messages` is **Markdown** (CommonMark), so links, emphasis, lists,
+headings and quotes all arrive formatted:
+
+```yaml
+welcome_new_users_messages:
+  - |
+    ## Welcome aboard, {user_id}
+
+    I am the company bot. I will invite you to the rooms of the groups you are assigned to.
+
+    - New to Matrix? Read the [Element user guide](https://element.io/user-guide).
+    - Something broken? Write to [an admin](https://matrix.to/#/@admin:matrix.company.org).
+  - |
+    Everything open to everyone lives in **[{space_name}]({space_link})**.
+    Open it to see which rooms you can join.
+```
+
+Matrix itself has no "this is Markdown" flag: the bot renders each message to HTML before sending it,
+the same thing Element's composer does when you type. The Markdown source stays in the message as the
+fallback for clients that show no formatting, and HTML written directly into a message is *not* passed
+through, it appears as literal text.
+
+Placeholders are filled in as the message is sent:
+
+| Placeholder | Becomes |
+|---|---|
+| `{space_link}` | a `matrix.to` link to the parent space, e.g. `https://matrix.to/#/%23myspace:matrix.company.org` |
+| `{space_alias}` | the space's alias, e.g. `#myspace:matrix.company.org` |
+| `{space_name}` | the space's display name |
+| `{user_id}` | the recipient's Matrix ID |
+
+The link is built from the space's alias rather than its room id, so it needs no `?via=` server hints
+and stays readable if a client ever shows it as plain text. The three `space_*` placeholders need
+`create_matrix_rooms_in_a_matrix_space` enabled; a message using one while it is disabled is held back
+with a warning in the log rather than sent with a gap in it, and goes out on the next reconcile once
+you enable the space. Any other `{...}` in a message is left exactly as you wrote it.
+
+Placeholders do not affect the once-per-user bookkeeping: a message is identified by the text in your
+config, not by what an individual user saw, so renaming the space does not re-send anything.
 
 **Settings:** `welcome_new_users_messages`, `onboarding_room_name`, `onboarding_room_topic` and
 `force_join_onboarding_room` in the [configuration reference](CONFIG_REFERENCE.md). The design is in

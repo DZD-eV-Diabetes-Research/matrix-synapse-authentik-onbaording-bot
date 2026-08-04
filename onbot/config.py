@@ -1083,9 +1083,30 @@ class OnbotConfig(BaseSettings):
                 """Messages the bot sends, in order, in the 1:1 welcome direct room it opens with each
                 newly onboarded user. Each message is sent at most once per user — they are matched by
                 content, so editing a message here re-sends that one message to everyone. `null` or an
-                empty list disables the welcome direct room entirely."""
+                empty list disables the welcome direct room entirely.
+
+                Each message is **Markdown** (CommonMark): `[text](url)`, `**bold**`, `*italic*`,
+                `` `code` ``, lists, headings and quotes all render in the client, and a bare URL
+                becomes a link on its own. Embedded HTML is not passed through.
+
+                A message may also use these placeholders, filled in as it is sent:
+
+                - `{space_link}` — a `matrix.to` link to the parent space, ready to put in
+                  `[our space]({space_link})`
+                - `{space_alias}` — the space's alias, e.g. `#myspace:matrix.company.org`
+                - `{space_name}` — the space's display name
+                - `{user_id}` — the recipient's Matrix ID
+
+                The three space placeholders need `create_matrix_rooms_in_a_matrix_space` to be
+                enabled; a message using one while it is disabled is held back (and logged) rather
+                than sent with a gap in it. Any other `{...}` is left as written."""
             ),
-            examples=[["Welcome aboard! I will invite you to the rooms for your groups."]],
+            examples=[
+                [
+                    "Welcome aboard! I will invite you to the rooms for your groups.",
+                    "Everything else lives in **[{space_name}]({space_link})** — have a look around.",
+                ]
+            ],
         ),
     ] = Field(
         default_factory=lambda: [

@@ -231,9 +231,26 @@ mas_admin:
 #              newly onboarded user. Each message is sent at most once per user — they are matched by
 #              content, so editing a message here re-sends that one message to everyone. `null` or an
 #              empty list disables the welcome direct room entirely.
+#
+#              Each message is **Markdown** (CommonMark): `[text](url)`, `**bold**`, `*italic*`,
+#              `` `code` ``, lists, headings and quotes all render in the client, and a bare URL
+#              becomes a link on its own. Embedded HTML is not passed through.
+#
+#              A message may also use these placeholders, filled in as it is sent:
+#
+#              - `{space_link}` — a `matrix.to` link to the parent space, ready to put in
+#                `[our space]({space_link})`
+#              - `{space_alias}` — the space's alias, e.g. `#myspace:matrix.company.org`
+#              - `{space_name}` — the space's display name
+#              - `{user_id}` — the recipient's Matrix ID
+#
+#              The three space placeholders need `create_matrix_rooms_in_a_matrix_space` to be
+#              enabled; a message using one while it is disabled is held back (and logged) rather
+#              than sent with a gap in it. Any other `{...}` is left as written.
 # Example:
 #  >welcome_new_users_messages:
 #  >- Welcome aboard! I will invite you to the rooms for your groups.
+#  >- "Everything else lives in **[{space_name}]({space_link})** \u2014 have a look around."
 welcome_new_users_messages:
 
   # ## List[0] ###

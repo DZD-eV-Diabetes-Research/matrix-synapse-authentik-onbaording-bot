@@ -21,6 +21,11 @@ written as soon as the room exists and again after each message, never once at t
 are also serialised by :attr:`WelcomeService._locks`, since neither Matrix account data nor room state
 offers a compare-and-set.
 
+The messages themselves are templates: placeholders (``{space_link}`` and friends) are filled in per
+recipient and the result is rendered from markdown to HTML, both in :mod:`onbot.formatting`. Neither
+step touches the idempotency key, which is hashed over the configured text — a message is identified
+by what the operator wrote, not by what one user saw.
+
 No database: all bookkeeping lives in Matrix account data + room state (AD-1).
 """
 
@@ -29,11 +34,13 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from datetime import UTC, datetime
+from urllib.parse import quote
 
 from onbot.clients.base import ApiError
 from onbot.clients.matrix import ApiClientMatrix
 from onbot.clients.synapse_admin import ApiClientSynapseAdmin
 from onbot.config import OnbotConfig
+from onbot.formatting import placeholders_in, render_markdown, substitute
 from onbot.logging import get_logger
 from onbot.media import MediaUploader
 from onbot.onboarding.notice_board import notice_board_power_levels, power_level_drift
@@ -49,14 +56,32 @@ log = get_logger(__name__)
 
 M_DIRECT = "m.direct"
 
+# Placeholders a welcome message can only use when a parent space is configured. A message using one
+# of these without a space is held back rather than sent with a hole in it.
+_SPACE_PLACEHOLDERS = frozenset({"space_link", "space_alias", "space_name"})
+
 # A force-join the homeserver refuses for a reason of its own (the user is gone, the room is not
 # joinable): degrade to the standing invite rather than failing the whole welcome.
 _FORCE_JOIN_SOFT_FAILURES = (403, 404)
 
 
 def _message_key(message: str) -> str:
-    """Stable per-message idempotency key (content hash). Changing the text re-sends only that one."""
+    """Stable per-message idempotency key (content hash). Changing the text re-sends only that one.
+
+    Hashed over the *configured* text, before placeholders are filled in — what identifies a message
+    is what the operator wrote, not what one particular user ended up seeing.
+    """
     return hashlib.sha256(message.encode("utf-8")).hexdigest()[:16]
+
+
+def matrix_to_link(alias: str) -> str:
+    """A ``matrix.to`` permalink for a room alias, the form clients turn into a join/open link.
+
+    Built from the alias rather than the resolved room id on purpose: an alias link carries its own
+    routing, needs no ``?via=`` server hints, and reads as the room's name if the link ever shows up
+    as raw text. https://spec.matrix.org/latest/appendices/#matrixto-navigation
+    """
+    return f"https://matrix.to/#/{quote(alias, safe=':')}"
 
 
 class WelcomeService:
@@ -82,6 +107,18 @@ class WelcomeService:
         self._place_in_space = config.place_onboarding_rooms_in_space and space_cfg.enabled
         self._space_alias = f"#{space_cfg.alias}:{self.server_name}"
         self._space_id: str | None = None
+        # G4.6: what a welcome message may refer to by placeholder. The space entries are absent when
+        # no parent space is configured, which is what makes a message using them unsendable.
+        self._space_values: dict[str, str] = (
+            {
+                "space_alias": self._space_alias,
+                "space_link": matrix_to_link(self._space_alias),
+                "space_name": space_cfg.create_matrix_space_if_not_exists.name,
+            }
+            if space_cfg.enabled
+            else {}
+        )
+        self._warned_about_placeholders = False
         # One lock per user, so the reconciler signal and the sync stream cannot welcome the same
         # person at once. Bounded by the number of users the bot has ever seen.
         self._locks: dict[str, asyncio.Lock] = {}
@@ -110,7 +147,10 @@ class WelcomeService:
             key = _message_key(message)
             if key in state.welcome_messages_sent:
                 continue
-            await self.client.send_text_message(room_id, message)
+            body = self._fill_placeholders(message, mxid)
+            if body is None:
+                continue
+            await self.client.send_text_message(room_id, body, formatted_body=render_markdown(body))
             state.welcome_messages_sent[key] = datetime.now(UTC).isoformat()
             # Record each message the moment it lands: a crash (or a restart) between two sends must
             # not replay the ones already delivered.
@@ -125,6 +165,24 @@ class WelcomeService:
                 sent,
                 len(state.welcome_messages_sent),
             )
+
+    def _fill_placeholders(self, message: str, mxid: str) -> str | None:
+        """Fill ``message``'s placeholders for ``mxid``; ``None`` if it needs a space there is none of.
+
+        Held back rather than sent with a hole where the link should be. The message is not recorded
+        as sent either, so configuring the space makes it go out on the next tick instead of never.
+        """
+        missing = (placeholders_in(message) & _SPACE_PLACEHOLDERS) - self._space_values.keys()
+        if missing:
+            if not self._warned_about_placeholders:
+                self._warned_about_placeholders = True
+                log.warning(
+                    "welcome message uses %s, but create_matrix_rooms_in_a_matrix_space is disabled; "
+                    "holding that message back",
+                    ", ".join(f"{{{name}}}" for name in sorted(missing)),
+                )
+            return None
+        return substitute(message, {"user_id": mxid, **self._space_values})
 
     async def _persist(self, room_id: str, state: DirectRoomState) -> None:
         await self.client.put_room_state_event(room_id, self._direct_event_type, dump_room_state(state))

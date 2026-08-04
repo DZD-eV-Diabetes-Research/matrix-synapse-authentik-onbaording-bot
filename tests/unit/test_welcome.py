@@ -10,7 +10,12 @@ from typing import Any
 import pytest
 
 from onbot.clients.base import ApiError
-from onbot.config import AuthentikServer, OnbotConfig, SynapseServer
+from onbot.config import (
+    AuthentikServer,
+    CreateMatrixRoomsInAMatrixSpace,
+    OnbotConfig,
+    SynapseServer,
+)
 from onbot.onboarding.notice_board import notice_board_power_levels
 from onbot.onboarding.welcome import WelcomeService
 
@@ -43,6 +48,7 @@ class FakeMatrixClient:
         self.account_data: dict[tuple[str, str], dict[str, Any]] = {}
         self.room_state: dict[tuple[str, str], dict[str, Any]] = {}
         self.sent: list[tuple[str, str]] = []
+        self.formatted: list[str | None] = []
         self.created_dms = 0
         self.aliases: dict[str, str] = {}
         self.space_links: list[tuple[str, str]] = []
@@ -97,16 +103,21 @@ class FakeMatrixClient:
     ) -> None:
         self.room_state[(room_id, event_type)] = dict(content)
 
-    async def send_text_message(self, room_id: str, body: str) -> str:
+    async def send_text_message(self, room_id: str, body: str, *, formatted_body: str | None = None) -> str:
         # Yield to the loop, as a real HTTP round-trip does: any concurrent welcome for the same user
         # gets to run here, which is exactly where a duplicate would slip in.
         await asyncio.sleep(0)
         self.sent.append((room_id, body))
+        self.formatted.append(formatted_body)
         return f"$e{len(self.sent)}"
 
 
 def _config(
-    messages: list[str] | None, *, place_in_space: bool = False, force_join: bool = True
+    messages: list[str] | None,
+    *,
+    place_in_space: bool = False,
+    force_join: bool = True,
+    space_enabled: bool = True,
 ) -> OnbotConfig:
     return OnbotConfig(
         synapse_server=SynapseServer(
@@ -119,6 +130,7 @@ def _config(
         welcome_new_users_messages=messages,
         place_onboarding_rooms_in_space=place_in_space,
         force_join_onboarding_room=force_join,
+        create_matrix_rooms_in_a_matrix_space=CreateMatrixRoomsInAMatrixSpace(enabled=space_enabled),
     )
 
 
@@ -175,12 +187,12 @@ async def test_a_message_is_recorded_before_the_next_one_is_sent() -> None:
     sent_when_second_message_goes_out: list[int] = []
     original = client.send_text_message
 
-    async def _spy(room_id: str, body: str) -> str:
+    async def _spy(room_id: str, body: str, *, formatted_body: str | None = None) -> str:
         if body == "rules":
             sent_when_second_message_goes_out.append(
                 len(_direct_state(client, room_id)["welcome_messages_sent"])
             )
-        return await original(room_id, body)
+        return await original(room_id, body, formatted_body=formatted_body)
 
     client.send_text_message = _spy  # type: ignore[method-assign]
     await svc.welcome_user(ALICE)
@@ -308,6 +320,68 @@ async def test_hand_edited_power_levels_are_restored_on_the_next_welcome() -> No
 
     assert client.power_levels["!dm-1:matrix.test"] == notice_board_power_levels()
     assert client.power_level_writes == ["!dm-1:matrix.test"]
+
+
+async def test_a_markdown_message_is_sent_with_its_rendered_html() -> None:
+    client = FakeMatrixClient()
+    svc = WelcomeService(client, _config(["read the [guide](https://element.io/user-guide)"]))  # type: ignore[arg-type]
+
+    await svc.welcome_user(ALICE)
+
+    # body keeps the markdown source, for clients that render no HTML.
+    assert client.sent == [("!dm-1:matrix.test", "read the [guide](https://element.io/user-guide)")]
+    assert client.formatted == ['<p>read the <a href="https://element.io/user-guide">guide</a></p>']
+
+
+async def test_a_plain_message_is_sent_without_a_formatted_body() -> None:
+    client = FakeMatrixClient()
+    svc = WelcomeService(client, _config(["hi"]))  # type: ignore[arg-type]
+    await svc.welcome_user(ALICE)
+    assert client.formatted == [None]
+
+
+async def test_space_and_user_placeholders_are_filled_in() -> None:
+    client = FakeMatrixClient()
+    svc = WelcomeService(client, _config(["{user_id}: browse [{space_name}]({space_link})"]))  # type: ignore[arg-type]
+
+    await svc.welcome_user(ALICE)
+
+    body = client.sent[0][1]
+    assert body == "@alice:matrix.test: browse [OnBotSpace](https://matrix.to/#/%23OnBotSpace:matrix.test)"
+    assert client.formatted[0] == (
+        '<p>@alice:matrix.test: browse <a href="https://matrix.to/#/%23OnBotSpace:matrix.test">'
+        "OnBotSpace</a></p>"
+    )
+
+
+async def test_the_placeholder_key_is_the_configured_text_not_the_filled_in_one() -> None:
+    """Otherwise every user would look like a different message, and a rename would re-send it."""
+    client = FakeMatrixClient()
+    svc = WelcomeService(client, _config(["join {space_link}"]))  # type: ignore[arg-type]
+
+    await svc.welcome_user(ALICE)
+    await svc.welcome_user(ALICE)
+
+    assert len(client.sent) == 1
+
+
+async def test_a_message_needing_a_space_is_held_back_when_there_is_none() -> None:
+    client = FakeMatrixClient()
+    config = _config(["hi", "join {space_link}"], space_enabled=False)
+    svc = WelcomeService(client, config)  # type: ignore[arg-type]
+
+    await svc.welcome_user(ALICE)
+
+    # Sent with a hole in it would be worse than not sent; nothing is recorded for it either, so
+    # enabling the space later still gets it delivered.
+    assert [body for _, body in client.sent] == ["hi"]
+    assert len(_direct_state(client, "!dm-1:matrix.test")["welcome_messages_sent"]) == 1
+
+    config.create_matrix_rooms_in_a_matrix_space.enabled = True
+    svc = WelcomeService(client, config)  # type: ignore[arg-type]
+    await svc.welcome_user(ALICE)
+
+    assert client.sent[-1][1] == "join https://matrix.to/#/%23OnBotSpace:matrix.test"
 
 
 async def test_undrifted_power_levels_are_not_rewritten() -> None:

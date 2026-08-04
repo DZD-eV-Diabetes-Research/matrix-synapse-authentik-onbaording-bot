@@ -403,18 +403,34 @@ class ApiClientMatrix(BaseApiClient):
 
     # --- messaging -----------------------------------------------------------
 
-    async def send_text_message(self, room_id: str, body: str, *, msgtype: str = "m.text") -> str:
+    async def send_text_message(
+        self,
+        room_id: str,
+        body: str,
+        *,
+        msgtype: str = "m.text",
+        formatted_body: str | None = None,
+    ) -> str:
         """Send a textual message; returns the event id. Uses a unique transaction id.
 
         ``msgtype`` is ``m.text`` for a plain message and ``m.notice`` for one the client should not
         auto-reply to or notify on as loudly — the convention for bot-originated messages, used by
         the broadcast fan-out.
         https://spec.matrix.org/latest/client-server-api/#mnotice
+
+        ``formatted_body`` is the rendered HTML of ``body`` (see :mod:`onbot.formatting`). Clients
+        display it in place of ``body``, which stays as the fallback for those that do not render
+        HTML — so it must say the same thing, not more.
+        https://spec.matrix.org/latest/client-server-api/#mroommessage-msgtypes
         """
         txn = uuid.uuid4().hex
+        content: dict[str, Any] = {"msgtype": msgtype, "body": body}
+        if formatted_body is not None:
+            content["format"] = "org.matrix.custom.html"
+            content["formatted_body"] = formatted_body
         result = await self.put_json(
             f"v3/rooms/{room_id}/send/m.room.message/{txn}",
-            json_body={"msgtype": msgtype, "body": body},
+            json_body=content,
         )
         event_id: str = result["event_id"]
         return event_id
