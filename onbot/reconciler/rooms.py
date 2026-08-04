@@ -77,9 +77,19 @@ def compute_room_attributes(
     # Matrix room aliases keep things simple: drop dashes (legacy behaviour; preserves alias matching).
     alias = alias.replace("-", "")
 
+    # Like the alias above, the name falls back rather than staying empty: a group that has not been
+    # given the name attribute is named after the group itself. Without the fallback, adding the
+    # attribute later is the only thing that can ever name the room, and a group without it leaves the
+    # room nameless — while the engine, seeing no desired name, silently leaves the room alone.
     name = get_nested_dict_val_by_path(
         group, settings.matrix_name_from_authentik_attribute.split("."), fallback_val=None
     )
+    if not name:
+        name = group.get("name")
+    elif not isinstance(name, str):
+        # Authentik attributes are YAML, so `chatroom_name: 2024` arrives as an int; Matrix wants a
+        # string, and the prefix check below would raise on anything else.
+        name = str(name)
     if settings.name_prefix and name and not name.startswith(settings.name_prefix):
         name = f"{settings.name_prefix}{name}"
 

@@ -251,6 +251,30 @@ async def test_a_group_without_a_topic_leaves_the_rooms_topic_alone() -> None:
     assert effectors.topics == []
 
 
+class RenamedAuthentik(FakeAuthentik):
+    """The g1 group gained a `chatroom_name` after its room was created as "Team"."""
+
+    async def list_groups(self, **_: Any) -> list[dict[str, Any]]:
+        return [{**_GROUP_G1, "attributes": {**_GROUP_G1["attributes"], "chatroom_name": "Team Chat"}}]
+
+
+async def test_name_added_to_a_group_later_renames_the_existing_room() -> None:
+    config = OnbotConfig.model_validate(_BASE)  # default name attribute == "attributes.chatroom_name"
+    effectors = RecordingEffectors()
+    engine = ReconcilerEngine(config, RenamedAuthentik(), FakeAdmin(), effectors)  # type: ignore[arg-type]
+
+    await engine.reconcile_once()
+    assert effectors.names == [("!room1:company.org", "Team Chat")]
+
+
+async def test_a_group_without_the_name_attribute_keeps_the_group_name() -> None:
+    """The fallback must not fight the listing: the room is already named after the group."""
+    engine, _, effectors = _engine()  # _GROUP_G1 is named "Team", as is the room
+
+    await engine.reconcile_once()
+    assert effectors.names == []
+
+
 async def test_attributes_are_left_alone_when_keep_updating_is_off() -> None:
     config = OnbotConfig.model_validate(
         {**_BASE, "matrix_room_default_settings": {"keep_updating_matrix_attributes_from_authentik": False}}
@@ -579,6 +603,31 @@ async def test_lobby_avatar_follows_the_group_rooms_avatar() -> None:
     await engine.reconcile_once()
     assert len(effectors.uploads) == 2
     assert len(effectors.avatars) == 2
+
+
+async def test_lobby_name_and_topic_follow_the_group_room() -> None:
+    """A lobby's name/topic are derived from the group's, so a rename has to reach it too.
+
+    Otherwise the lobby keeps the name it was created with for the life of the room, and the pair
+    stops reading as one place in a client's room list.
+    """
+    effectors = RecordingEffectors()
+    engine = ReconcilerEngine(
+        _lobby_config(), RenamedAuthentik(), LobbyAdmin(with_lobby_room=True), effectors
+    )  # type: ignore[arg-type]
+
+    await engine.reconcile_once()
+
+    assert (_LOBBY_ID, "Team Chat (Lobby)") in effectors.names
+    assert ("!room1:company.org", "Team Chat") in effectors.names
+    assert [room for room, _ in effectors.topics] == [_LOBBY_ID]  # group has no topic; the lobby does
+
+    effectors.names.clear()
+    effectors.topics.clear()
+    # The listing still reports the old name (the fake admin is static), but the topic is now correct
+    # in room state, so a second pass must not rewrite it.
+    await engine.reconcile_once()
+    assert effectors.topics == []
 
 
 async def test_lobby_inject_disabled_seeds_nobody() -> None:

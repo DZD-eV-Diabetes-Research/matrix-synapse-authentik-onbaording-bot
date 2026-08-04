@@ -794,10 +794,15 @@ class MatrixDynamicRoomSettings(BaseModel):
         str,
         Field(
             title="Group attribute used as the room name",
-            description="Authentik group attribute (dotted path) used as the room's display name.",
-            examples=["name", "attributes.chatroom_name"],
+            description=inspect.cleandoc(
+                """Authentik group attribute (dotted path) used as the room's display name. When the
+                attribute is absent or empty the group's own `name` is used, so a group only needs
+                `chatroom_name` when it wants a room name that differs from the group name. Set this
+                to `name` to ignore the attribute entirely."""
+            ),
+            examples=["attributes.chatroom_name", "name"],
         ),
-    ] = "name"
+    ] = "attributes.chatroom_name"
     topic_prefix: Annotated[
         str | None,
         Field(

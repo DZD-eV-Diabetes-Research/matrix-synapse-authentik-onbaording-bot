@@ -386,8 +386,9 @@ without anyone editing rooms by hand.
 ### What an admin should know
 
 - **Name and topic have a source and an optional prefix.** The name comes from
-  `matrix_name_from_authentik_attribute` (the group name by default) with an optional `name_prefix`;
-  the topic comes from `matrix_topic_from_authentik_attribute` with an optional `topic_prefix`, and an
+  `matrix_name_from_authentik_attribute` (the group's `chatroom_name` attribute by default, falling
+  back to the group's own name when that attribute is absent) with an optional `name_prefix`; the
+  topic comes from `matrix_topic_from_authentik_attribute` with an optional `topic_prefix`, and an
   unset source simply leaves the topic blank.
 - **The icon is a URL held on the group.** `room_avatar_url_attribute` names a key inside the group's
   custom attributes that holds an HTTP(S) image URL; Onbot downloads and re-uploads it, and only when
@@ -395,9 +396,9 @@ without anyone editing rooms by hand.
   setting.) A group's [visitor lobby](#visitor-lobby) wears the same icon as its group room, from the
   same attribute: there is nothing extra to configure.
 - **Keeping in step is a switch.** `keep_updating_matrix_attributes_from_authentik` (on by default)
-  re-applies the name and topic every reconcile, overwriting any drift. Turn it off to let room
-  admins rename a room in their client and keep the change. Note this covers name and topic only — a
-  room's alias is fixed when it is created and never changes.
+  re-applies the name and topic every reconcile, to the group room and its lobby alike, overwriting
+  any drift. Turn it off to let room admins rename a room in their client and keep the change. Note
+  this covers name and topic only, a room's alias is fixed when it is created and never changes.
 
 **Settings:** the `matrix_name_from_authentik_attribute`, `matrix_topic_from_authentik_attribute`,
 `*_prefix` and `keep_updating_matrix_attributes_from_authentik` fields under

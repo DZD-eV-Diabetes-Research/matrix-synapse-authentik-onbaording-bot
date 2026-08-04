@@ -71,6 +71,33 @@ def test_room_avatar_disabled_when_attribute_unset() -> None:
     assert compute_room_attributes(group, cfg, "company.org").avatar_source_url is None
 
 
+def test_name_comes_from_the_chatroom_name_attribute() -> None:
+    cfg = _config()  # default matrix_name_from_authentik_attribute == "attributes.chatroom_name"
+    group = {"pk": "g1", "name": "Team", "attributes": {"chatroom_name": "Team Chat"}}
+    assert compute_room_attributes(group, cfg, "company.org").name == "Team Chat"
+
+
+def test_name_falls_back_to_the_group_name() -> None:
+    """A group without the attribute is named after itself, never left nameless."""
+    cfg = _config()
+    for attributes in ({}, {"chatroom_name": ""}, {"chatroom_name": None}):
+        group = {"pk": "g1", "name": "Team", "attributes": attributes}
+        assert compute_room_attributes(group, cfg, "company.org").name == "Team"
+
+
+def test_non_string_name_attribute_is_coerced() -> None:
+    """Authentik attributes are YAML: `chatroom_name: 2024` arrives as an int, Matrix wants text."""
+    cfg = _config(matrix_room_default_settings={"name_prefix": "DZD-"})
+    group = {"pk": "g1", "name": "Team", "attributes": {"chatroom_name": 2024}}
+    assert compute_room_attributes(group, cfg, "company.org").name == "DZD-2024"
+
+
+def test_name_attribute_is_ignored_when_the_source_is_repointed() -> None:
+    cfg = _config(matrix_room_default_settings={"matrix_name_from_authentik_attribute": "name"})
+    group = {"pk": "g1", "name": "Team", "attributes": {"chatroom_name": "Team Chat"}}
+    assert compute_room_attributes(group, cfg, "company.org").name == "Team"
+
+
 def test_name_prefix_applied_once() -> None:
     cfg = _config(matrix_room_default_settings={"name_prefix": "DZD-"})
     group = {"pk": "g1", "name": "Team", "attributes": {}}

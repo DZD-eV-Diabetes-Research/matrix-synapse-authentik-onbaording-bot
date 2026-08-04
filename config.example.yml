@@ -895,14 +895,17 @@ matrix_room_default_settings:
   # YAML-path:   matrix_room_default_settings.matrix_name_from_authentik_attribute
   # Type:        str
   # Required:    False
-  # Default:     "name"
+  # Default:     "attributes.chatroom_name"
   # Env-var:     'ONBOT_MATRIX_ROOM_DEFAULT_SETTINGS__MATRIX_NAME_FROM_AUTHENTIK_ATTRIBUTE'
-  # Description: Authentik group attribute (dotted path) used as the room's display name.
+  # Description: Authentik group attribute (dotted path) used as the room's display name. When the
+  #              attribute is absent or empty the group's own `name` is used, so a group only needs
+  #              `chatroom_name` when it wants a room name that differs from the group name. Set this
+  #              to `name` to ignore the attribute entirely.
   # Example No. 1:
-  #  >matrix_name_from_authentik_attribute: name
-  # Example No. 2:
   #  >matrix_name_from_authentik_attribute: attributes.chatroom_name
-  matrix_name_from_authentik_attribute: name
+  # Example No. 2:
+  #  >matrix_name_from_authentik_attribute: name
+  matrix_name_from_authentik_attribute: attributes.chatroom_name
 
   # ## topic_prefix - Room topic prefix ###
   # YAML-path:   matrix_room_default_settings.topic_prefix

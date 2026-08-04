@@ -59,12 +59,13 @@ These are the attributes Onbot reads off a group, with their default names:
 | `chat-systemwide-powerlevel` | integer 0 to 100 | Power level granted to this group's members | `sync_matrix_rooms_based_on_authentik_groups.authentik_group_attr_for_matrix_power_level` |
 | `chatroom_visitor_lobby` | boolean | Opens or suppresses a [visitor lobby](features.md#visitor-lobby) for this group | `matrix_room_default_settings.matrix_room_visitor_lobby_from_authentik_attribute` |
 | `chatroom_params` **(niche, rarely needed)** | **string** containing JSON | The Matrix [`POST /createRoom`](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3createroom) request body (preset, visibility, federation, history visibility), read once when the room is created. Only for a group that must be shaped differently from the rest of the deployment | `matrix_room_default_settings.matrix_room_create_params_from_authentik_attribute` |
-| `chatroom_name` (opt-in) | string | Room display name, if you point the name at an attribute instead of the group name | `matrix_room_default_settings.matrix_name_from_authentik_attribute` |
+| `chatroom_name` | string | Room display name. Optional: without it the room is named after the group | `matrix_room_default_settings.matrix_name_from_authentik_attribute` |
 | `chatroom_alias` (opt-in) | string | Room alias localpart, if you point the alias at an attribute instead of `pk` | `matrix_room_default_settings.matrix_alias_from_authentik_attribute` |
 
-Two of those are **not** attributes by default: the room's **name** comes from the group's `name`
-field and its **alias** comes from the group's `pk`. You only need `chatroom_name` / `chatroom_alias`
-if you deliberately repoint them (see Step 2).
+`chatroom_name` is a **fallback pair**, not a switch: set it and the room wears it, leave it off and
+the room is named after the group's `name` field. Adding or changing it later renames the existing
+room on the next reconcile. The **alias** is different: it comes from the group's `pk` and is not
+attribute-driven unless you deliberately repoint it (see Step 2).
 
 ### The path gotcha: when to write `attributes.`
 
@@ -74,7 +75,8 @@ common way to have an attribute silently ignored:
 **Paths from the group object's root**, so a custom attribute needs the `attributes.` prefix:
 
 - `matrix_topic_from_authentik_attribute` (default `attributes.chatroom_topic`)
-- `matrix_name_from_authentik_attribute` (default `name`, a built-in group field)
+- `matrix_name_from_authentik_attribute` (default `attributes.chatroom_name`, falling back to the
+  built-in `name` field when the attribute is missing)
 - `matrix_alias_from_authentik_attribute` (default `pk`, a built-in group field)
 - `matrix_room_create_params_from_authentik_attribute` (default `attributes.chatroom_params`)
 - `matrix_room_visitor_lobby_from_authentik_attribute` (default `attributes.chatroom_visitor_lobby`)
@@ -122,9 +124,10 @@ Notes:
 
 ## Step 2: name, alias, topic and icon
 
-**Name.** Comes from the group's `name` field. To take it from an attribute instead, set
-`matrix_name_from_authentik_attribute: attributes.chatroom_name` and give the group a
-`chatroom_name`. An optional `name_prefix` in the config is prepended.
+**Name.** Comes from the group's `chatroom_name` attribute, or from the group's `name` field when
+that attribute is absent or empty. An optional `name_prefix` in the config is prepended. Point
+`matrix_name_from_authentik_attribute` at `name` to ignore the attribute entirely, or at another
+attribute to rename it.
 
 **Alias.** Comes from the group's `pk`, deliberately: a Matrix alias **can never be changed after the
 room is created**, and a `pk` survives the group being renamed. Only repoint it at

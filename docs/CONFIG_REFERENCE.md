@@ -1672,13 +1672,16 @@ name_prefix: '[Chat] '
 
 *Group attribute used as the room name*
 
-Authentik group attribute (dotted path) used as the room's display name.
+Authentik group attribute (dotted path) used as the room's display name. When the
+attribute is absent or empty the group's own `name` is used, so a group only needs
+`chatroom_name` when it wants a room name that differs from the group name. Set this
+to `name` to ignore the attribute entirely.
 
 | Property | Value |
 |---|---|
 | Type | str |
 | Required | No |
-| Default | `"name"` |
+| Default | `"attributes.chatroom_name"` |
 | Environment variable | `ONBOT_MATRIX_ROOM_DEFAULT_SETTINGS__MATRIX_NAME_FROM_AUTHENTIK_ATTRIBUTE` |
 
 **Examples:**
@@ -1686,13 +1689,13 @@ Authentik group attribute (dotted path) used as the room's display name.
 *Example 1:*
 
 ```yaml
-matrix_name_from_authentik_attribute: name
+matrix_name_from_authentik_attribute: attributes.chatroom_name
 ```
 
 *Example 2:*
 
 ```yaml
-matrix_name_from_authentik_attribute: attributes.chatroom_name
+matrix_name_from_authentik_attribute: name
 ```
 
 ---
@@ -2142,13 +2145,16 @@ name_prefix: '[Chat] '
 
 *Group attribute used as the room name*
 
-Authentik group attribute (dotted path) used as the room's display name.
+Authentik group attribute (dotted path) used as the room's display name. When the
+attribute is absent or empty the group's own `name` is used, so a group only needs
+`chatroom_name` when it wants a room name that differs from the group name. Set this
+to `name` to ignore the attribute entirely.
 
 | Property | Value |
 |---|---|
 | Type | str |
 | Required | No |
-| Default | `"name"` |
+| Default | `"attributes.chatroom_name"` |
 | Environment variable | `ONBOT_PER_AUTHENTIK_GROUP_PK_MATRIX_ROOM_SETTINGS[*]__MATRIX_NAME_FROM_AUTHENTIK_ATTRIBUTE` |
 
 **Examples:**
@@ -2156,13 +2162,13 @@ Authentik group attribute (dotted path) used as the room's display name.
 *Example 1:*
 
 ```yaml
-matrix_name_from_authentik_attribute: name
+matrix_name_from_authentik_attribute: attributes.chatroom_name
 ```
 
 *Example 2:*
 
 ```yaml
-matrix_name_from_authentik_attribute: attributes.chatroom_name
+matrix_name_from_authentik_attribute: name
 ```
 
 ---

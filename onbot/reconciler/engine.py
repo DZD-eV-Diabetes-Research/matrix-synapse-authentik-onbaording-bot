@@ -27,7 +27,7 @@ from onbot.events import EventBus, Signal
 from onbot.identity import build_canonical, compute_mxid
 from onbot.lifecycle.accounts import AccountLifecycleManager
 from onbot.logging import get_logger
-from onbot.models import GroupRoomMap, MappedUser, MatrixRoom
+from onbot.models import GroupRoomMap, MappedUser, MatrixRoom, RoomCreateAttributes
 from onbot.reconciler.effectors import DryRunEffectors, MatrixEffectors
 from onbot.reconciler.global_admins import GlobalRoomAdminResolver
 from onbot.reconciler.join_rules import desired_join_rules, join_rules_change
@@ -468,10 +468,12 @@ class ReconcilerEngine:
                 )
 
             await self._converge_power_levels(room_id, gm.group_pk, users, pl_groups, room_cfg)
-            await self._converge_room_attributes(gm)
+            await self._converge_room_attributes(gm.room, gm.desired)
 
             if gm.lobby is not None:
                 await self._converge_lobby_membership_and_join_rules(gm, users, space)
+                assert gm.lobby_desired is not None  # a lobby only exists where one was computed
+                await self._converge_room_attributes(gm.lobby, gm.lobby_desired)
 
     async def _converge_lobby_membership_and_join_rules(
         self, gm: GroupRoomMap, users: list[MappedUser], space: MatrixRoom | None
@@ -588,8 +590,12 @@ class ReconcilerEngine:
             state.global_admins = sorted(global_admins)
             await self.effectors.put_room_state(room_id, event_type, dump_room_state(state))
 
-    async def _converge_room_attributes(self, gm: GroupRoomMap) -> None:
-        """Repair a group room's name and topic when they drift from Authentik (G6.*).
+    async def _converge_room_attributes(self, room: MatrixRoom, desired: RoomCreateAttributes) -> None:
+        """Repair a room's name and topic when they drift from Authentik (G6.*).
+
+        Runs for a group room and for its visitor lobby alike: a lobby's name and topic are derived
+        from the group room's (see :func:`~onbot.reconciler.rooms.compute_lobby_attributes`), so a
+        group renamed in Authentik has to carry through to both or the pair stops reading as one place.
 
         The name comes free with the room listing, but the **topic does not**: the admin List Room API
         returns ``name`` and ``canonical_alias`` and no topic at all (only the per-room Room Details
@@ -599,14 +605,13 @@ class ReconcilerEngine:
         """
         if not self.config.matrix_room_default_settings.keep_updating_matrix_attributes_from_authentik:
             return
-        assert gm.room is not None
-        if gm.desired.name is not None and gm.room.name != gm.desired.name:
-            await self.effectors.set_room_name(gm.room.room_id, gm.desired.name)
-        if gm.desired.topic is None:  # no topic wanted: leave whatever the room carries alone
+        if desired.name is not None and room.name != desired.name:
+            await self.effectors.set_room_name(room.room_id, desired.name)
+        if desired.topic is None:  # no topic wanted: leave whatever the room carries alone
             return
-        current = await self.effectors.get_room_state(gm.room.room_id, TOPIC_EVENT_TYPE) or {}
-        if current.get("topic") != gm.desired.topic:
-            await self.effectors.set_room_topic(gm.room.room_id, gm.desired.topic)
+        current = await self.effectors.get_room_state(room.room_id, TOPIC_EVENT_TYPE) or {}
+        if current.get("topic") != desired.topic:
+            await self.effectors.set_room_topic(room.room_id, desired.topic)
 
     # --- lifecycle (AD-5, G9.*): quarantined, invoked only from the reconcile result ---
 
