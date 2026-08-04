@@ -2477,6 +2477,61 @@ matrix_room_visitor_lobby_from_authentik_attribute: attributes.chatroom_visitor_
 
 ---
 
+## `global_room_admins`
+
+*Global room admins*
+
+Authentik usernames that are seeded into **every** group room and visitor lobby the
+bot manages, and into the parent space, regardless of their Authentik group
+membership. Each one is held at power level 100 (room admin) in those rooms, so they
+can read, moderate and repair any room without being a member of the group behind it.
+
+Matched against the raw `username` field, exactly like `authentik_user_ignore_list`,
+not against `authentik_username_mapping_attribute` (that attribute is still what maps
+the account to its Matrix ID once the user is found).
+
+These accounts are never kicked by the membership sync, so they stay put even with
+`kick_matrix_room_members_not_in_mapped_authentik_group_anymore` enabled. They are
+*not* granted the right to command the bot: that is a separate allowlist,
+`admin_room.admin_user_ids`.
+
+Four kinds of entry are dropped rather than obeyed, each with a warning, because a
+room admin everywhere is too much power to hand out on a guess: a username that does
+not exist in Authentik, one whose account is inactive, one that is also on
+`authentik_user_ignore_list`, and one with no Matrix account yet (the bot never
+creates accounts, so an admin who has not logged in once cannot be joined anywhere).
+A disabled Authentik account listed here is still offboarded normally by
+`deactivate_disabled_authentik_users_in_matrix`, being named here does not exempt it.
+
+**This bypasses the group model.** Every private room becomes readable by these
+accounts, including rooms whose members expect the group to be the boundary. Leave it
+empty unless somebody genuinely needs that.
+
+| Property | Value |
+|---|---|
+| Type | List of str |
+| Required | No |
+| Environment variable | `ONBOT_GLOBAL_ROOM_ADMINS` |
+
+**Examples:**
+
+*Example 1:*
+
+```yaml
+global_room_admins:
+- alex.mueller
+```
+
+*Example 2:*
+
+```yaml
+global_room_admins:
+- ops-lead
+- compliance
+```
+
+---
+
 ## `matrix_user_ignore_list`
 
 *Ignored Matrix users*

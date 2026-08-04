@@ -19,9 +19,20 @@ class MembershipDiff:
     to_kick: list[str] = field(default_factory=list)
 
 
-def desired_room_members(group_pk: str, mapped_users: Iterable[MappedUser]) -> set[str]:
-    """MXIDs that should be in the room mapped to ``group_pk`` (members of that Authentik group)."""
-    return {u.mxid for u in mapped_users if group_pk in u.group_pks}
+def desired_room_members(
+    group_pk: str,
+    mapped_users: Iterable[MappedUser],
+    *,
+    always_members: Iterable[str] = (),
+) -> set[str]:
+    """MXIDs that should be in the room mapped to ``group_pk`` (members of that Authentik group).
+
+    ``always_members`` (the resolved ``global_room_admins``) are added irrespective of ``group_pk``,
+    which is the whole point of that list: they belong in every managed room. They must also be
+    passed as ``protected_ids`` to :func:`diff_room_membership`, otherwise the very next pass reads
+    them back as members of a group they are not in and kicks them straight out again.
+    """
+    return {u.mxid for u in mapped_users if group_pk in u.group_pks} | set(always_members)
 
 
 def diff_room_membership(
@@ -46,9 +57,16 @@ def diff_room_membership(
 
 
 def diff_space_membership(
-    mapped_users: Iterable[MappedUser], actual_member_ids: Iterable[str]
+    mapped_users: Iterable[MappedUser],
+    actual_member_ids: Iterable[str],
+    *,
+    always_members: Iterable[str] = (),
 ) -> MembershipDiff:
-    """All synced users should be in the parent space (G1.3); we only ever add, never kick."""
-    desired = {u.mxid for u in mapped_users}
+    """All synced users should be in the parent space (G1.3); we only ever add, never kick.
+
+    ``always_members`` covers a global room admin who is not a synced user at all: without it their
+    rooms would sit outside the space tree in their client.
+    """
+    desired = {u.mxid for u in mapped_users} | set(always_members)
     to_add = sorted(desired - set(actual_member_ids))
     return MembershipDiff(to_add=to_add)

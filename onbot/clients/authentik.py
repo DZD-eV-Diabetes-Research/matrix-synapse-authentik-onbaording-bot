@@ -39,11 +39,18 @@ class ApiClientAuthentik(BaseApiClient):
         filter_groups_by_name: str | Sequence[str] | None = None,
         filter_groups_by_pk: str | Sequence[str] | None = None,
         filter_by_path: str | None = None,
+        filter_by_username: str | None = None,
         filter_by_attribute: str | dict[str, Any] | None = None,
         filter_is_superuser: bool | None = None,
         filter_is_active: bool | None = True,
     ) -> list[dict[str, Any]]:
-        """List users (https://<authentik>/api/v3/#get-/core/users/), following all pages."""
+        """List users (https://<authentik>/api/v3/#get-/core/users/), following all pages.
+
+        ``filter_by_username`` is an exact match, and is only ever a *narrowing* hint: an Authentik
+        that does not recognise the parameter drops it and answers with every user instead of none.
+        Callers who act on the result (see :mod:`onbot.reconciler.global_admins`) must therefore
+        re-check ``username`` themselves rather than trusting the server to have filtered.
+        """
         if isinstance(filter_by_attribute, dict):
             filter_by_attribute = json.dumps(filter_by_attribute)
         params = {
@@ -53,6 +60,7 @@ class ApiClientAuthentik(BaseApiClient):
             "is_superuser": filter_is_superuser,
             "is_active": filter_is_active,
             "path": filter_by_path,
+            "username": filter_by_username,
             "page_size": _DEFAULT_PAGE_SIZE,
         }
         return await self.paginate_collect(

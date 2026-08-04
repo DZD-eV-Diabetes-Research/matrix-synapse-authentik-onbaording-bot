@@ -5,6 +5,7 @@ from typing import Any
 from onbot.models import MappedUser
 from onbot.reconciler.power_levels import (
     PowerLevelGroup,
+    apply_global_room_admins,
     compute_desired_user_levels,
     extract_power_level_groups,
     legacy_user_matches_or_outranks_creator,
@@ -93,3 +94,26 @@ def test_legacy_room_where_user_is_below_the_bot_is_healthy() -> None:
 def test_legacy_room_reads_an_unlisted_user_at_users_default() -> None:
     legacy = {"users": {BOT: 50}, "users_default": 100}
     assert legacy_user_matches_or_outranks_creator(legacy, USER, BOT) is True
+
+
+def test_global_admins_override_their_group_level() -> None:
+    # Not a max(): a global admin in a level-50 group is still an admin, and would silently drop to
+    # 50 if this merged the two the way multiple power-level groups are merged.
+    members = [_user("u1", "@a:x")]
+    groups = [PowerLevelGroup(member_pks={"u1"}, level=50)]
+    desired = compute_desired_user_levels(members, groups, make_superusers_admin=False)
+    assert apply_global_room_admins(desired, ["@a:x"]) == {"@a:x": 100}
+
+
+def test_global_admins_get_a_level_without_being_group_members() -> None:
+    assert apply_global_room_admins({}, ["@admin:x"]) == {"@admin:x": 100}
+    assert apply_global_room_admins({"@a:x": 50}, []) == {"@a:x": 50}
+
+
+def test_removed_global_admin_is_withdrawn_when_still_managed() -> None:
+    # The state event keeps the previous admin in `managed` for exactly one pass, which is what lets
+    # the level be taken away again. Without it there is no desired entry and no managed entry, so
+    # the 100 would sit there forever.
+    current = {"@admin:x": 100, "@a:x": 50}
+    merged = merge_power_levels(current, apply_global_room_admins({"@a:x": 50}, []), {"@admin:x", "@a:x"})
+    assert merged == {"@a:x": 50}

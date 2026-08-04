@@ -40,6 +40,13 @@ class _OnbotRoomState(BaseModel):
     schema_version: int = SCHEMA_VERSION
     authentik_server: str | None = None
     avatar_source_url: str | None = None
+    # The `global_room_admins` the bot last seated at PL 100 in this room. Recorded because the
+    # power-level pass can only withdraw a level it knows it granted: a global admin is usually not a
+    # member of the room's Authentik group, so once their name leaves the config there is nothing
+    # left to derive them from, and their PL 100 entry would outlive their membership forever. That
+    # matters most in a visitor lobby, which anyone in the space may join: a stale entry there is a
+    # standing invitation to walk back in as a room admin.
+    global_admins: list[str] = Field(default_factory=list)
 
 
 class SpaceRoomState(_OnbotRoomState):

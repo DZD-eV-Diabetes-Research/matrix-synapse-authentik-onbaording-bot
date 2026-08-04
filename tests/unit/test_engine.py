@@ -616,3 +616,93 @@ async def test_lobby_taken_down_with_its_group_when_group_disappears() -> None:
     engine = ReconcilerEngine(config, FakeAuthentik(), admin, effectors)  # type: ignore[arg-type]
     await engine.reconcile_once()
     assert (_ORPHAN_LOBBY, True) in admin.blocked_changes
+
+
+# --- global room admins ---
+
+_GROUP_EVENT = "org.company.onbot.group_room"
+
+
+def _global_admin_config(*names: str) -> OnbotConfig:
+    return OnbotConfig.model_validate({**_BASE, "global_room_admins": list(names)})
+
+
+async def test_global_admin_is_seeded_into_a_room_of_a_group_they_are_not_in() -> None:
+    # carol is in g2; !room1 is the g1 room, so nothing about her group membership puts her there.
+    admin = FakeAdmin()
+    effectors = RecordingEffectors()
+    engine = ReconcilerEngine(_global_admin_config("carol"), FakeAuthentik(), admin, effectors)  # type: ignore[arg-type]
+    await engine.reconcile_once()
+
+    assert ("!room1:company.org", "@carol:company.org") in admin.added
+    assert ("!space:company.org", "@carol:company.org") in admin.added
+    # PL 100 for carol, alongside the group-derived 50 for alice.
+    assert effectors.power_levels == [
+        ("!room1:company.org", {"users": {"@alice:company.org": 50, "@carol:company.org": 100}})
+    ]
+    # ...and recorded in room state so a later pass can take it away again.
+    assert effectors.state_store[("!room1:company.org", _GROUP_EVENT)]["global_admins"] == [
+        "@carol:company.org"
+    ]
+
+
+async def test_global_admin_is_never_kicked_from_a_room_they_do_not_belong_to() -> None:
+    class AdminAlreadyInRoom(FakeAdmin):
+        async def list_room_members(self, room_id: str) -> list[str]:
+            if room_id == "!space:company.org":
+                return ["@alice:company.org"]
+            return ["@alice:company.org", "@carol:company.org", "@stale:company.org", "@bot:company.org"]
+
+    admin = AdminAlreadyInRoom()
+    effectors = RecordingEffectors()
+    engine = ReconcilerEngine(_global_admin_config("carol"), FakeAuthentik(), admin, effectors)  # type: ignore[arg-type]
+    await engine.reconcile_once()
+
+    # The kick pass runs (it evicts @stale) but leaves the global admin alone.
+    assert effectors.kicks == [("!room1:company.org", "@stale:company.org")]
+
+
+async def test_global_admin_level_is_withdrawn_after_the_name_leaves_the_config() -> None:
+    effectors = RecordingEffectors()
+    engine = ReconcilerEngine(_global_admin_config("carol"), FakeAuthentik(), FakeAdmin(), effectors)  # type: ignore[arg-type]
+    await engine.reconcile_once()
+    assert effectors.state_store[("!room1:company.org", _GROUP_EVENT)]["global_admins"] == [
+        "@carol:company.org"
+    ]
+
+    # A second bot run with carol removed, reading the room state the first one left behind. Carol
+    # is in no g1 group and in no config list, so this record is the only thing that still knows she
+    # was ever granted 100 — without it the entry would outlive her membership forever.
+    class CarolAtAdmin(RecordingEffectors):
+        async def get_room_power_levels(self, room_id: str) -> dict[str, Any]:
+            return {"users": {"@alice:company.org": 50, "@carol:company.org": 100}}
+
+    second = CarolAtAdmin()
+    second.state_store = effectors.state_store
+    engine2 = ReconcilerEngine(_global_admin_config(), FakeAuthentik(), FakeAdmin(), second)  # type: ignore[arg-type]
+    await engine2.reconcile_once()
+
+    assert second.power_levels == [("!room1:company.org", {"users": {"@alice:company.org": 50}})]
+    assert second.state_store[("!room1:company.org", _GROUP_EVENT)]["global_admins"] == []
+
+
+async def test_global_admin_is_seeded_into_the_lobby_at_full_power() -> None:
+    config = _lobby_config()
+    config.global_room_admins = ["carol"]
+    admin = LobbyAdmin(with_lobby_room=True)
+    effectors = RecordingEffectors()
+    engine = ReconcilerEngine(config, FakeAuthentik(), admin, effectors)  # type: ignore[arg-type]
+    await engine.reconcile_once()
+
+    assert (_LOBBY_ID, "@carol:company.org") in admin.added
+    assert (_LOBBY_ID, {"users": {"@carol:company.org": 100}}) in effectors.power_levels
+    # The lobby stays add-only: seeding an admin must not turn the kick pass on for visitors.
+    assert not any(room == _LOBBY_ID for room, _ in effectors.kicks)
+
+
+async def test_lobby_gets_no_power_level_write_without_global_admins() -> None:
+    # Regression guard: the new lobby PL pass must stay a no-op in the default configuration.
+    effectors = RecordingEffectors()
+    engine = ReconcilerEngine(_lobby_config(), FakeAuthentik(), LobbyAdmin(with_lobby_room=True), effectors)  # type: ignore[arg-type]
+    await engine.reconcile_once()
+    assert not any(room == _LOBBY_ID for room, _ in effectors.power_levels)

@@ -28,6 +28,7 @@ from onbot.lifecycle.accounts import AccountLifecycleManager
 from onbot.logging import get_logger
 from onbot.models import GroupRoomMap, MappedUser, MatrixRoom
 from onbot.reconciler.effectors import DryRunEffectors, MatrixEffectors
+from onbot.reconciler.global_admins import GlobalRoomAdminResolver
 from onbot.reconciler.join_rules import desired_join_rules, join_rules_change
 from onbot.reconciler.membership import (
     desired_room_members,
@@ -36,6 +37,7 @@ from onbot.reconciler.membership import (
 )
 from onbot.reconciler.power_levels import (
     PowerLevelGroup,
+    apply_global_room_admins,
     compute_desired_user_levels,
     extract_power_level_groups,
     merge_power_levels,
@@ -79,6 +81,7 @@ class ReconcilerEngine:
         self.events = events or EventBus()
         self.lifecycle = lifecycle
         self.server_name = config.synapse_server.server_name
+        self.global_admins = GlobalRoomAdminResolver(authentik, config)
         # Unix timestamp of the last pass that ran to completion; reported by the admin room's
         # `!status` command. ``None`` until the first pass finishes.
         self.last_reconcile_at: float | None = None
@@ -130,6 +133,9 @@ class ReconcilerEngine:
         log.info("reconcile: gathering desired (Authentik) and actual (Synapse) state")
         matrix_users = await self.admin.list_users()
         users = await self._gather_mapped_users(matrix_users)
+        # Before any membership or power-level decision: every one of them consults this set, and an
+        # admin that resolves halfway through would land in some rooms and not others.
+        await self.global_admins.resolve(users, {u["name"] for u in matrix_users})
         space = await self._resolve_space()
         rooms = await self._gather_group_rooms()
         group_maps = await self._gather_group_room_maps(rooms)
@@ -400,7 +406,7 @@ class ReconcilerEngine:
 
     async def _converge_space_membership(self, space: MatrixRoom, users: list[MappedUser]) -> None:
         members = await self.admin.list_room_members(space.room_id)
-        diff = diff_space_membership(users, members)
+        diff = diff_space_membership(users, members, always_members=self.global_admins.mxids)
         for mxid in diff.to_add:
             await self.admin.add_user_to_room(space.room_id, mxid)
 
@@ -418,18 +424,19 @@ class ReconcilerEngine:
             room_cfg.authentik_group_attr_for_matrix_power_level,
         )
 
+        global_admins = self.global_admins.mxids
         for gm in group_maps:
             if gm.room is None:  # freshly created in dry-run with synthetic id is still set; guard anyway
                 continue
             room_id = gm.room.room_id
             actual_members = await self.admin.list_room_members(room_id)
-            desired_mxids = desired_room_members(gm.group_pk, users)
+            desired_mxids = desired_room_members(gm.group_pk, users, always_members=global_admins)
 
             mdiff = diff_room_membership(
                 desired_mxids,
                 actual_members,
                 kick_enabled=sync_cfg.kick_matrix_room_members_not_in_mapped_authentik_group_anymore,
-                protected_ids=[bot_id],
+                protected_ids=[bot_id, *global_admins],
             )
             for mxid in mdiff.to_add:
                 await self.admin.add_user_to_room(room_id, mxid)
@@ -454,7 +461,8 @@ class ReconcilerEngine:
         A lobby is **add-only**: ``kick_enabled=False``, so nobody is ever removed — a user kicked
         from the group room keeps their seat here, and visitors who joined on purpose stay. When
         ``visitor_lobby_inject_group_members`` is set (the default) the group's members are seeded in;
-        visitors are never injected anywhere.
+        visitors are never injected anywhere. Global room admins are seeded regardless of that switch:
+        it governs whether the *group* is mirrored here, and they are not seeded as group members.
 
         The join-rule pass runs over existing lobbies as well as new ones, so an operator can *close* a
         lobby again by editing the room — the pass rewrites the rule only on a difference (a no-op tick
@@ -466,15 +474,28 @@ class ReconcilerEngine:
         bot_id = self.config.synapse_server.bot_user_id
         settings = resolve_room_settings(gm.group_pk, self.config)
 
-        desired_mxids = (
-            desired_room_members(gm.group_pk, users) if settings.visitor_lobby_inject_group_members else set()
+        global_admins = self.global_admins.mxids
+        desired_mxids = desired_room_members(
+            gm.group_pk,
+            users if settings.visitor_lobby_inject_group_members else [],
+            always_members=global_admins,
         )
         actual_members = await self.admin.list_room_members(room_id)
         mdiff = diff_room_membership(
-            desired_mxids, actual_members, kick_enabled=False, protected_ids=[bot_id]
+            desired_mxids, actual_members, kick_enabled=False, protected_ids=[bot_id, *global_admins]
         )
         for mxid in mdiff.to_add:
             await self.admin.add_user_to_room(room_id, mxid)
+
+        # Only the global admins get a level here: a lobby is not a projection of the group, so the
+        # group's power-level attributes deliberately do not reach into it.
+        await self._write_power_levels(
+            room_id,
+            OnbotRoomType.visitor_lobby,
+            VisitorLobbyRoomState(group_id=gm.group_pk, authentik_server=self.config.authentik_server.url),
+            desired={},
+            managed=set(),
+        )
 
         if space is None:  # cannot express `restricted` without a space to restrict to
             return
@@ -497,20 +518,55 @@ class ReconcilerEngine:
         room_cfg: SyncMatrixRoomsBasedOnAuthentikGroups,
     ) -> None:
         members_in_room = [u for u in users if group_pk in u.group_pks]
-        managed = {u.mxid for u in members_in_room}
-        if not managed:
-            return
         desired = compute_desired_user_levels(
             members_in_room,
             pl_groups,
             make_superusers_admin=room_cfg.make_authentik_superusers_matrix_room_admin,
         )
+        await self._write_power_levels(
+            room_id,
+            OnbotRoomType.group_room,
+            GroupRoomState(group_id=group_pk, authentik_server=self.config.authentik_server.url),
+            desired=desired,
+            managed={u.mxid for u in members_in_room},
+        )
+
+    async def _write_power_levels(
+        self,
+        room_id: str,
+        room_type: OnbotRoomType,
+        fresh_state: AnyRoomState,
+        *,
+        desired: dict[str, int],
+        managed: set[str],
+    ) -> None:
+        """Apply ``desired`` levels for ``managed`` users, plus the global room admins at PL 100.
+
+        Global admins join ``managed`` so :func:`merge_power_levels` actually writes them, and so do
+        the admins recorded in the room's onbot state event by an earlier pass: those are the ones a
+        removed config entry has to be withdrawn from, since nothing else in this pass derives them
+        any more (see :class:`~onbot.reconciler.state._OnbotRoomState`). The record is rewritten only
+        when the set changed, so a steady state costs one state read and no writes.
+        """
+        global_admins = self.global_admins.mxids
+        event_type = event_type_name(self.server_name, room_type)
+        raw = await self.effectors.get_room_state(room_id, event_type)
+        state = parse_room_state(room_type, raw) if raw else fresh_state
+        recorded = frozenset(state.global_admins)
+
+        managed = set(managed) | global_admins | recorded
+        if not managed:
+            return
+        desired = apply_global_room_admins(desired, global_admins)
         current = await self.effectors.get_room_power_levels(room_id)
         current_users = dict(current.get("users", {}))
         merged = merge_power_levels(current_users, desired, managed)
         if merged != current_users:
-            new_levels = {**current, "users": merged}
-            await self.effectors.set_room_power_levels(room_id, new_levels)
+            await self.effectors.set_room_power_levels(room_id, {**current, "users": merged})
+
+        if recorded != global_admins:
+            state.global_admins = sorted(global_admins)
+            await self.effectors.put_room_state(room_id, event_type, dump_room_state(state))
 
     async def _converge_room_attributes(self, gm: GroupRoomMap) -> None:
         """Repair a group room's name and topic when they drift from Authentik (G6.*).

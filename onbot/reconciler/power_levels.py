@@ -77,6 +77,26 @@ def compute_desired_user_levels(
     return desired
 
 
+def apply_global_room_admins(
+    desired: dict[str, int],
+    global_admin_mxids: Iterable[str],
+    *,
+    level: int = ROOM_ADMIN_LEVEL,
+) -> dict[str, int]:
+    """Seat every global room admin at ``level``, overriding whatever their groups computed.
+
+    Deliberately an override and not a ``max``: the point of ``global_room_admins`` is that the
+    level does not depend on group membership, so a global admin who is *also* in a power-level
+    group carrying 50 still ends up at 100 rather than at the group's number.
+
+    The returned mxids must be added to ``managed_mxids`` for :func:`merge_power_levels`, otherwise
+    the entries are computed and then dropped on the floor. Removing a name from the config
+    withdraws the level on the next pass by the same route: it is no longer desired, but it is still
+    managed while it remains in the room.
+    """
+    return {**desired, **dict.fromkeys(global_admin_mxids, level)}
+
+
 def merge_power_levels(
     current_users: dict[str, int],
     desired: dict[str, int],
