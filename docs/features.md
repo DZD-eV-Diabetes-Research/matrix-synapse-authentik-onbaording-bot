@@ -8,7 +8,9 @@ This page explains, in plain language, what Onbot can do for you. It is written 
   to find the exact settings.
 
 Every feature is optional unless noted, and each links to its settings in the
-[configuration reference](CONFIG_REFERENCE.md). Onbot's guiding idea: **Authentik is the source of
+[configuration reference](CONFIG_REFERENCE.md). For the practical "what do I type into an Authentik
+group to get a room with this topic, icon and lobby" version, see
+[Configuring Authentik groups](authentik-groups.md). Onbot's guiding idea: **Authentik is the source of
 truth, and Onbot mirrors it into Matrix** — groups become rooms, membership becomes room membership,
 roles become power levels. You manage people in Authentik; the chat follows.
 
@@ -143,7 +145,9 @@ in, so your identity directory and your chat rooms need not be the same list.
   `per_authentik_group_pk_matrix_room_settings`.
 
 **Settings:** [`sync_matrix_rooms_based_on_authentik_groups`](CONFIG_REFERENCE.md) chooses which
-groups become rooms; [`matrix_room_default_settings`](CONFIG_REFERENCE.md) shapes each room.
+groups become rooms; [`matrix_room_default_settings`](CONFIG_REFERENCE.md) shapes each room. For the
+Authentik side of this, every attribute you can set on a group and what it does, see
+[Configuring Authentik groups](authentik-groups.md).
 
 ---
 

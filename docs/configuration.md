@@ -8,6 +8,10 @@ environment variable.
 Start from the [Minimal config](../README.md#minimal-config) in the README, then reach here when you
 need the full set of options.
 
+> Looking for what to put on an **Authentik group** so it becomes a room (topic, icon, power level,
+> lobby)? That is the other half of the setup and lives in
+> [authentik-groups.md](authentik-groups.md).
+
 ## Where config comes from
 
 Onbot reads its config from the path in `ONBOT_CONFIG_FILE_PATH` (the Docker image defaults this to

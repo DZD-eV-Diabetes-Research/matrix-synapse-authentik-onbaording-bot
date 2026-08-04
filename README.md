@@ -94,8 +94,19 @@ for example `ONBOT_SYNAPSE_SERVER__BOT_ACCESS_TOKEN=syt_…`.
 For the full picture (bot credential options, the MAS auth topology, and every field), see the docs
 below.
 
+## Turning Authentik groups into rooms
+
+The config above connects the bot. What actually creates rooms is your Authentik groups: which ones
+are opted in, and what you put in each group's **Attributes** box (topic, icon, power level, lobby).
+
+**[docs/authentik-groups.md](docs/authentik-groups.md) is the single page for that**, written from the
+Authentik side, with every group attribute Onbot reads, its legal values, and the config field that
+renames it.
+
 ## Documentation
 
+- [docs/authentik-groups.md](docs/authentik-groups.md) is the group-to-room guide: how to opt a group
+  in and every attribute you can set on it in Authentik.
 - [docs/features.md](docs/features.md) explains, in plain language, what each Onbot feature does —
   for both users and admins.
 - [docs/configuration.md](docs/configuration.md) walks through every config block, the bot

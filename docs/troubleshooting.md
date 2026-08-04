@@ -3,6 +3,10 @@
 | Symptom | Likely cause |
 |---|---|
 | Users never get added to rooms | The MXID localpart contract is broken. `authentik_username_mapping_attribute` does not match MAS's localpart template, so computed MXIDs do not exist. See [configuration.md](configuration.md#the-mxid-localpart-contract). |
+| A group did not become a room | It failed a filter, or is on `authentik_group_id_ignore_list` (which wins over everything). Walk the checklist in [authentik-groups.md](authentik-groups.md#checking-your-work). |
+| A group attribute (topic, lobby, power level) is ignored | Most often the `attributes.` prefix: topic, lobby and create-params config values need it, `authentik_group_attr_for_matrix_power_level` and `room_avatar_url_attribute` must omit it. See [authentik-groups.md](authentik-groups.md#the-path-gotcha-when-to-write-attributes). |
+| A moderator stays at power level 0 | The group's power-level attribute is not a real integer (a quoted `"50"` or a boolean is skipped silently), or the user is not a member of that room. |
+| `invalid room-create-params JSON` in the log | `chatroom_params` was written as a YAML mapping. It must be a *string* containing JSON. That attribute is a niche escape hatch most deployments should not set at all, so also ask whether the group needs it. See [authentik-groups.md](authentik-groups.md#the-yamljson-trap). |
 | Disabled users keep their Matrix access | `mas_admin` is not configured (the Synapse admin API cannot revoke a MAS session), or the lifecycle `dry_run` is still `true` (the default). |
 | Nothing destructive ever happens | Expected by default. The lifecycle is quarantined (`dry_run: true`) and only logs to the `onbot.lifecycle.audit` channel until you opt in. |
 | Welcome DM send fails with a 500 | The bot device is not registered yet. Onbot registers it on startup (`ensure_device_registered`); check the startup logs. |

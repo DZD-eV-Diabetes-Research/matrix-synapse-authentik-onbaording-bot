@@ -846,9 +846,17 @@ class MatrixDynamicRoomSettings(BaseModel):
         Field(
             title="Group attribute holding extra creation parameters",
             description=inspect.cleandoc(
-                """Authentik group attribute (dotted path) holding a mapping of extra `createRoom`
-                parameters, merged over `default_room_create_params` for that group. `null` disables
-                per-group overrides."""
+                """Authentik group attribute (dotted path) holding extra `createRoom` parameters,
+                merged over `default_room_create_params` for that group. The attribute's value must be
+                a *string* containing JSON, because Authentik stores attributes as YAML and a mapping
+                written there is rejected with a warning. `null` disables per-group overrides.
+
+                **Niche.** This is a raw escape hatch into the Matrix API and most deployments never
+                set the attribute on a single group. Shape every room with
+                `default_room_create_params` instead, and reach for this only when exactly one group
+                must differ from the rest. The values are unvalidated, read once at room creation and
+                never again, and some of them (federation, encryption, room version) cannot be undone
+                for the life of that room. See docs/authentik-groups.md."""
             ),
             examples=["attributes.chatroom_params"],
         ),
