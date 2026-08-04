@@ -607,11 +607,13 @@ class ReconcilerEngine:
             return
         if desired.name is not None and room.name != desired.name:
             await self.effectors.set_room_name(room.room_id, desired.name)
+            log.info("renamed %s: %r -> %r", room.room_id, room.name, desired.name)
         if desired.topic is None:  # no topic wanted: leave whatever the room carries alone
             return
         current = await self.effectors.get_room_state(room.room_id, TOPIC_EVENT_TYPE) or {}
         if current.get("topic") != desired.topic:
             await self.effectors.set_room_topic(room.room_id, desired.topic)
+            log.info("set topic of %s from Authentik", room.room_id)
 
     # --- lifecycle (AD-5, G9.*): quarantined, invoked only from the reconcile result ---
 
