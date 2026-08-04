@@ -489,6 +489,30 @@ async def test_lobby_join_rule_is_a_noop_when_already_restricted() -> None:
     assert not any(evt == _JOIN_RULES for _room, evt, _content in effectors.state_writes)
 
 
+async def test_lobby_avatar_follows_the_group_rooms_avatar() -> None:
+    admin = LobbyAdmin(with_lobby_room=True)
+    effectors = RecordingEffectors()
+    # AvatarAuthentik serves g1 with a chatroom_avatar_url attribute.
+    engine = ReconcilerEngine(_lobby_config(), AvatarAuthentik(), admin, effectors)  # type: ignore[arg-type]
+
+    await engine.reconcile_once()
+    # Group room and lobby both get the icon, from the one source URL on the group. (Both go through
+    # the same MediaUploader in production, whose per-URL cache turns this into a single fetch; this
+    # fake effector has no such cache, hence the repeated entry here.)
+    assert effectors.uploads == ["https://cdn/t.png", "https://cdn/t.png"]
+    assert effectors.avatars == [
+        ("!room1:company.org", "mxc://company.org/1"),
+        (_LOBBY_ID, "mxc://company.org/2"),
+    ]
+    # The lobby's recorded source URL lives on its own visitor_lobby state event, not group_room.
+    assert effectors.state_store[(_LOBBY_ID, _LOBBY_EVENT)]["avatar_source_url"] == "https://cdn/t.png"
+
+    # Second pass: URL unchanged -> neither room re-uploads or re-sets.
+    await engine.reconcile_once()
+    assert len(effectors.uploads) == 2
+    assert len(effectors.avatars) == 2
+
+
 async def test_lobby_inject_disabled_seeds_nobody() -> None:
     config = _lobby_config()
     config.matrix_room_default_settings.visitor_lobby_inject_group_members = False

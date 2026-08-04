@@ -35,6 +35,12 @@ leak) and which every member of the parent space may find and join of their own 
   and `state_default` 100 so only the bot rewrites room state. Group members are seeded in by default
   (`visitor_lobby_inject_group_members`) — an empty lobby is a dead lobby — but this is a social bet
   the operator can decline.
+* **The lobby inherits the group room's avatar**, from the same `room_avatar_url_attribute` on the
+  Authentik group, with no second setting. Name and topic are suffixed so the two rooms are told
+  apart by words; the icon is what makes them read as one place in a client's room list, and a
+  visitor who has never seen the private room recognises the group by it. It converges through the
+  same `_converge_avatar` path as the group room, recorded on the lobby's own `visitor_lobby` state
+  event, so a changed URL updates both rooms and an unchanged one costs no upload.
 
 ## The carve-out from ADR-0002, and why it needs no new state
 

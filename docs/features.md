@@ -69,7 +69,8 @@ leak. The group's real working room is left untouched; the lobby sits next to it
 
 The lobby is named after the group with a suffix, so it is obvious which room is which:
 *Düsseldorf* is the working room, *Düsseldorf (Lobby)* is the front door. Its topic spells out the
-arrangement, so a visitor is never confused about where they have landed.
+arrangement, so a visitor is never confused about where they have landed, and it wears the same
+[icon](#room-names-topics-and-icons) as the group room, so the pair reads as one place in the room list.
 
 ### What an admin should know
 
@@ -343,7 +344,8 @@ without anyone editing rooms by hand.
 - **The icon is a URL held on the group.** `room_avatar_url_attribute` names a key inside the group's
   custom attributes that holds an HTTP(S) image URL; Onbot downloads and re-uploads it, and only when
   the URL changes, so it also updates rooms that already exist. (The parent space has its own icon
-  setting.)
+  setting.) A group's [visitor lobby](#visitor-lobby) wears the same icon as its group room, from the
+  same attribute: there is nothing extra to configure.
 - **Keeping in step is a switch.** `keep_updating_matrix_attributes_from_authentik` (on by default)
   re-applies the name and topic every reconcile, overwriting any drift. Turn it off to let room
   admins rename a room in their client and keep the change. Note this covers name and topic only — a

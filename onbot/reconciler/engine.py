@@ -290,6 +290,17 @@ class ReconcilerEngine:
 
             if gm.lobby_desired is not None:
                 await self._converge_lobby_creation(gm, parent_space_id)
+                if gm.lobby is not None:
+                    # Same source URL as the group room above, so the uploader's per-URL cache makes
+                    # this a state read and a set, not a second fetch+upload.
+                    await self._converge_avatar(
+                        gm.lobby.room_id,
+                        OnbotRoomType.visitor_lobby,
+                        gm.lobby_desired.avatar_source_url,
+                        VisitorLobbyRoomState(
+                            group_id=gm.group_pk, authentik_server=self.config.authentik_server.url
+                        ),
+                    )
 
     async def _converge_lobby_creation(self, gm: GroupRoomMap, parent_space_id: str | None) -> None:
         """Create the group's visitor lobby if it does not exist yet, and stamp it (ADR-0012).

@@ -164,9 +164,10 @@ def compute_lobby_attributes(
     """Compute a lobby's desired attributes from its group room's attributes (ADR-0012).
 
     The lobby alias is the group alias plus ``visitor_lobby_alias_suffix`` — appended *after* the
-    dash-stripping in :func:`compute_room_attributes`, so a ``-lobby`` suffix survives. The lobby's
-    join rule is not set here (it is resolved from the runtime space id in
-    :mod:`onbot.reconciler.join_rules`).
+    dash-stripping in :func:`compute_room_attributes`, so a ``-lobby`` suffix survives. The lobby
+    wears the group room's avatar (same source URL, so the uploader fetches it once for both), which
+    is what makes the pair read as one place in a client's room list. The lobby's join rule is not
+    set here (it is resolved from the runtime space id in :mod:`onbot.reconciler.join_rules`).
     """
     alias = f"{group_attrs.alias}{settings.visitor_lobby_alias_suffix}"
     group_name = group_attrs.name or group_attrs.alias
@@ -188,7 +189,7 @@ def compute_lobby_attributes(
         topic=topic,
         room_params=room_params,
         encrypted=settings.visitor_lobby_end2end_encryption_enabled,
-        avatar_source_url=None,
+        avatar_source_url=group_attrs.avatar_source_url,
     )
 
 

@@ -165,6 +165,26 @@ def test_lobby_alias_survives_a_dashed_group_alias() -> None:
     assert lobby.alias == "abcdef-lobby"
 
 
+def test_lobby_wears_the_group_rooms_avatar() -> None:
+    # The lobby is the same place seen from outside, so it carries the group's icon — one source URL
+    # for both rooms, which the media uploader's per-URL cache turns into a single fetch+upload.
+    cfg = _config(matrix_room_default_settings={"visitor_lobby_enabled": True})
+    group_attrs = compute_room_attributes(
+        {"pk": "g1", "name": "Team", "attributes": {"chatroom_avatar_url": "https://cdn/team.png"}},
+        cfg,
+        "company.org",
+    )
+    lobby = compute_lobby_attributes(group_attrs, cfg.matrix_room_default_settings, "company.org")
+    assert lobby.avatar_source_url == "https://cdn/team.png"
+
+
+def test_lobby_has_no_avatar_when_the_group_has_none() -> None:
+    cfg = _config(matrix_room_default_settings={"visitor_lobby_enabled": True})
+    group_attrs = compute_room_attributes({"pk": "g1", "name": "Team", "attributes": {}}, cfg, "company.org")
+    lobby = compute_lobby_attributes(group_attrs, cfg.matrix_room_default_settings, "company.org")
+    assert lobby.avatar_source_url is None
+
+
 def test_lobby_enable_defaults_to_config_flag() -> None:
     settings_on = _config(matrix_room_default_settings={"visitor_lobby_enabled": True})
     settings_off = _config()
