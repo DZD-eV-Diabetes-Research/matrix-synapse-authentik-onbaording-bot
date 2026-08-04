@@ -20,6 +20,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from onbot.clients.authentik import ApiClientAuthentik
+from onbot.clients.base import ApiError
 from onbot.clients.synapse_admin import ApiClientSynapseAdmin
 from onbot.config import OnbotConfig, SyncMatrixRoomsBasedOnAuthentikGroups
 from onbot.events import EventBus, Signal
@@ -355,6 +356,10 @@ class ReconcilerEngine:
         did: a room whose alias changed, or one created earlier in this very pass, must not read as
         obsolete. Rooms with neither of our state events are never touched, so unrelated and
         onboarding rooms are structurally out of reach.
+
+        ``rooms`` is the *server-wide* admin room list, so it includes rooms the bot has never
+        joined: anything a user created for themselves. Reading state in one of those answers 403,
+        not 404, and that 403 is an answer rather than a fault (see the handler below).
         """
         settings = self.config.sync_matrix_rooms_based_on_authentik_groups
         if not settings.enabled or not settings.disable_rooms_when_mapped_authentik_group_disappears:
@@ -368,9 +373,24 @@ class ReconcilerEngine:
             if room.room_id in mapped_room_ids:
                 continue  # backed by a live group (room or lobby); skip the state read
             for room_type in managed_types:
-                raw = await self.effectors.get_room_state(
-                    room.room_id, event_type_name(self.server_name, room_type)
-                )
+                try:
+                    raw = await self.effectors.get_room_state(
+                        room.room_id, event_type_name(self.server_name, room_type)
+                    )
+                except ApiError as exc:
+                    if exc.status_code != 403:
+                        raise
+                    # "Not in room, and room previews are disabled." The bot creates every room it
+                    # manages and never leaves one, so a room whose state it may not read is by
+                    # construction not a room this pass is about: skip it exactly like a room with
+                    # no onbot state event.
+                    #
+                    # This must not escape. It is raised on the first user-created private room the
+                    # server has, and it used to abort the whole reconcile from here — before the
+                    # space-membership and room-membership passes that run after it, so users
+                    # silently stopped being added to any room while the log showed only one 403.
+                    log.debug("bot is not in room %s; not an onbot-managed room, skipping", room.room_id)
+                    break
                 if not raw:
                     continue  # not this kind of managed room
                 try:

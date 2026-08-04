@@ -5,6 +5,7 @@ from typing import Any
 
 import pytest
 
+from onbot.clients.base import ApiError
 from onbot.config import OnbotConfig
 from onbot.events import EventBus, Signal
 from onbot.reconciler.effectors import DryRunEffectors
@@ -706,3 +707,75 @@ async def test_lobby_gets_no_power_level_write_without_global_admins() -> None:
     engine = ReconcilerEngine(_lobby_config(), FakeAuthentik(), LobbyAdmin(with_lobby_room=True), effectors)  # type: ignore[arg-type]
     await engine.reconcile_once()
     assert not any(room == _LOBBY_ID for room, _ in effectors.power_levels)
+
+
+# --- server-wide room list: rooms the bot is not in ---
+
+
+def _teardown_config() -> OnbotConfig:
+    """Obsolete-room teardown on, as production has it: that is the pass that reads foreign rooms."""
+    config = OnbotConfig.model_validate(_BASE)
+    room_cfg = config.sync_matrix_rooms_based_on_authentik_groups
+    room_cfg.disable_rooms_when_mapped_authentik_group_disappears = True
+    return config
+
+
+class ForeignRoomAdmin(FakeAdmin):
+    """The admin room list is server-wide, so it also returns a user's own private room."""
+
+    async def list_non_space_rooms(self) -> list[dict[str, Any]]:
+        return [
+            *await super().list_non_space_rooms(),
+            {"room_id": "!private:company.org", "canonical_alias": None, "name": "Alice's room"},
+        ]
+
+
+class ForbiddenStateEffectors(RecordingEffectors):
+    async def get_room_state(
+        self, room_id: str, event_type: str, state_key: str = ""
+    ) -> dict[str, Any] | None:
+        if room_id == "!private:company.org":
+            raise ApiError(
+                "GET",
+                f"http://synapse/_matrix/client/v3/rooms/{room_id}/state/{event_type}",
+                403,
+                {"errcode": "M_FORBIDDEN", "error": "User @bot:company.org not in room ..."},
+            )
+        return await super().get_room_state(room_id, event_type, state_key)
+
+
+async def test_a_room_the_bot_is_not_in_does_not_abort_the_pass() -> None:
+    """Regression: one user-created private room used to kill every reconcile.
+
+    The 403 escaped `_converge_obsolete_rooms`, which runs *before* the space- and room-membership
+    passes, so nobody was added to anything for as long as that room existed. The symptom was
+    invisible in the logs beyond a single traceback: onboarding still worked (a different code
+    path), so users got their welcome room and no rooms.
+    """
+    admin = ForeignRoomAdmin()
+    effectors = ForbiddenStateEffectors()
+    engine = ReconcilerEngine(_teardown_config(), FakeAuthentik(), admin, effectors)  # type: ignore[arg-type]
+
+    await engine.reconcile_once()
+
+    # The pass ran to completion: membership converged and the timestamp was set.
+    assert engine.last_reconcile_at is not None
+    assert ("!space:company.org", "@bob:company.org") in admin.added
+    assert ("!room1:company.org", "@bob:company.org") in admin.added
+    # ...and the unreadable room was left completely alone: never blocked, never deleted.
+    assert admin.blocked_changes == []
+    assert admin.deleted == []
+
+
+async def test_a_non_403_state_error_still_fails_the_pass() -> None:
+    """The 403 handler is narrow on purpose: a 500 from Synapse is still a real fault."""
+
+    class BrokenStateEffectors(RecordingEffectors):
+        async def get_room_state(
+            self, room_id: str, event_type: str, state_key: str = ""
+        ) -> dict[str, Any] | None:
+            raise ApiError("GET", "http://synapse/whatever", 500, {"errcode": "M_UNKNOWN"})
+
+    engine = ReconcilerEngine(_teardown_config(), FakeAuthentik(), ForeignRoomAdmin(), BrokenStateEffectors())  # type: ignore[arg-type]
+    with pytest.raises(ApiError):
+        await engine.reconcile_once()
