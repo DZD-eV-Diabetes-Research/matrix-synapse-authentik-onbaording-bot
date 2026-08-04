@@ -55,6 +55,7 @@ from onbot.reconciler.state import (
 log = get_logger(__name__)
 
 JOIN_RULES_EVENT_TYPE = "m.room.join_rules"
+TOPIC_EVENT_TYPE = "m.room.topic"
 
 
 class ConfigurationError(RuntimeError):
@@ -512,12 +513,23 @@ class ReconcilerEngine:
             await self.effectors.set_room_power_levels(room_id, new_levels)
 
     async def _converge_room_attributes(self, gm: GroupRoomMap) -> None:
+        """Repair a group room's name and topic when they drift from Authentik (G6.*).
+
+        The name comes free with the room listing, but the **topic does not**: the admin List Room API
+        returns ``name`` and ``canonical_alias`` and no topic at all (only the per-room Room Details
+        API carries one). So the topic is read from room state before writing, the same way the admin
+        control room repairs its own — otherwise it is compared against a field that is always
+        ``None``, and every tick rewrites every topic.
+        """
         if not self.config.matrix_room_default_settings.keep_updating_matrix_attributes_from_authentik:
             return
         assert gm.room is not None
         if gm.desired.name is not None and gm.room.name != gm.desired.name:
             await self.effectors.set_room_name(gm.room.room_id, gm.desired.name)
-        if gm.desired.topic is not None and gm.room.topic != gm.desired.topic:
+        if gm.desired.topic is None:  # no topic wanted: leave whatever the room carries alone
+            return
+        current = await self.effectors.get_room_state(gm.room.room_id, TOPIC_EVENT_TYPE) or {}
+        if current.get("topic") != gm.desired.topic:
             await self.effectors.set_room_topic(gm.room.room_id, gm.desired.topic)
 
     # --- lifecycle (AD-5, G9.*): quarantined, invoked only from the reconcile result ---

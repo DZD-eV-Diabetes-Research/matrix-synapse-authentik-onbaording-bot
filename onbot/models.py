@@ -26,12 +26,18 @@ class RoomCreateAttributes:
 
 @dataclass(slots=True)
 class MatrixRoom:
-    """Actual room as seen via the Synapse admin API."""
+    """Actual room as seen via the Synapse admin API.
+
+    Carries only what the admin *List Room* API actually returns, because that is where every
+    instance comes from. Notably there is **no topic**: the list response has ``name`` and
+    ``canonical_alias`` but no topic (only the per-room Room Details API has one), so a ``topic``
+    field here would read ``None`` for every room and silently break any comparison against it. Code
+    that needs the topic reads ``m.room.topic`` from room state.
+    """
 
     room_id: str
     canonical_alias: str | None = None
     name: str | None = None
-    topic: str | None = None
     is_space: bool = False
 
     @classmethod
@@ -40,7 +46,6 @@ class MatrixRoom:
             room_id=obj["room_id"],
             canonical_alias=obj.get("canonical_alias"),
             name=obj.get("name"),
-            topic=obj.get("topic"),
             is_space=is_space,
         )
 

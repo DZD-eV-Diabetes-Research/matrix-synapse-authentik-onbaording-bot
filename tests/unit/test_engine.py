@@ -83,9 +83,18 @@ class RecordingEffectors(DryRunEffectors):
         self.state_store: dict[tuple[str, str], dict[str, Any]] = {}
         self.lobbies_created: list[tuple[str, str, dict[str, Any]]] = []
         self.state_writes: list[tuple[str, str, dict[str, Any]]] = []
+        self.names: list[tuple[str, str]] = []
+        self.topics: list[tuple[str, str]] = []
 
     async def kick_user(self, room_id: str, user_id: str, reason: str | None = None) -> None:
         self.kicks.append((room_id, user_id))
+
+    async def set_room_name(self, room_id: str, name: str) -> None:
+        self.names.append((room_id, name))
+
+    async def set_room_topic(self, room_id: str, topic: str) -> None:
+        self.topics.append((room_id, topic))
+        self.state_store[(room_id, "m.room.topic")] = {"topic": topic}
 
     async def create_lobby_room(
         self, attrs: Any, parent_space_id: str, join_rules_content: dict[str, Any]
@@ -193,6 +202,64 @@ async def test_group_room_avatar_set_and_deduplicated() -> None:
     await engine.reconcile_once()
     assert effectors.uploads == ["https://cdn/t.png"]
     assert len(effectors.avatars) == 1
+
+
+# --- room name + topic convergence -------------------------------------------------
+
+
+class TopicAuthentik(FakeAuthentik):
+    async def list_groups(self, **_: Any) -> list[dict[str, Any]]:
+        return [{**_GROUP_G1, "attributes": {**_GROUP_G1["attributes"], "chatroom_topic": "Low traffic."}}]
+
+
+def _topic_engine() -> tuple[ReconcilerEngine, RecordingEffectors]:
+    config = OnbotConfig.model_validate(_BASE)  # default topic attribute == "attributes.chatroom_topic"
+    effectors = RecordingEffectors()
+    engine = ReconcilerEngine(config, TopicAuthentik(), FakeAdmin(), effectors)  # type: ignore[arg-type]
+    return engine, effectors
+
+
+async def test_topic_is_set_on_a_room_that_was_created_without_one_and_then_left_alone() -> None:
+    """A group that gains `chatroom_topic` later gets it applied, exactly once.
+
+    The room's actual topic lives in room state: the admin List Room API never returns one, so a
+    pass that trusted the listing rewrote the topic on every tick.
+    """
+    engine, effectors = _topic_engine()
+
+    await engine.reconcile_once()
+    assert effectors.topics == [("!room1:company.org", "Low traffic.")]
+
+    await engine.reconcile_once()
+    assert effectors.topics == [("!room1:company.org", "Low traffic.")]  # already correct; no rewrite
+
+
+async def test_topic_drift_is_repaired() -> None:
+    engine, effectors = _topic_engine()
+    effectors.state_store[("!room1:company.org", "m.room.topic")] = {"topic": "somebody changed this"}
+
+    await engine.reconcile_once()
+    assert effectors.topics == [("!room1:company.org", "Low traffic.")]
+
+
+async def test_a_group_without_a_topic_leaves_the_rooms_topic_alone() -> None:
+    engine, _, effectors = _engine()  # _GROUP_G1 carries no chatroom_topic
+    effectors.state_store[("!room1:company.org", "m.room.topic")] = {"topic": "set by hand"}
+
+    await engine.reconcile_once()
+    assert effectors.topics == []
+
+
+async def test_attributes_are_left_alone_when_keep_updating_is_off() -> None:
+    config = OnbotConfig.model_validate(
+        {**_BASE, "matrix_room_default_settings": {"keep_updating_matrix_attributes_from_authentik": False}}
+    )
+    effectors = RecordingEffectors()
+    engine = ReconcilerEngine(config, TopicAuthentik(), FakeAdmin(), effectors)  # type: ignore[arg-type]
+
+    await engine.reconcile_once()
+    assert effectors.topics == []
+    assert effectors.names == []
 
 
 # --- obsolete room teardown (disable_rooms_when_mapped_authentik_group_disappears) ---

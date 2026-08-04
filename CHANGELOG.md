@@ -59,6 +59,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `mas_admin` requirement for lifecycle enforcement, Docker/compose deploy, the config reference, and
   troubleshooting.
 
+### Fixed
+- **Group room topics were rewritten on every reconcile pass.** The pass compared the desired topic
+  against `MatrixRoom.topic`, which the Synapse admin *List Room* API never populates (it returns the
+  room's name and canonical alias, but no topic), so the comparison always found a difference. The
+  current topic is now read from `m.room.topic` room state, the way the admin control room already
+  repaired its own, and the topic field is gone from `MatrixRoom` so nothing can compare against it
+  again. Adding `chatroom_topic` to a group whose room already exists still applies on the next pass;
+  what stops is the redundant state write per room per tick.
+
 ### Removed
 - Dropped the vestigial `storage_dir` and `storage_encryption_key` config fields — they backed the
   libolm key store removed in ADR-0009 and were unused. **Breaking for existing config files:** the
