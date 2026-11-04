@@ -23,6 +23,10 @@ def configure_logging(level: str | int | None = None) -> None:
         level = os.environ.get("ONBOT_LOG_LEVEL", "INFO")
     if isinstance(level, str):
         level = logging.getLevelName(level.upper())
+    if not isinstance(level, int):
+        # An unknown ONBOT_LOG_LEVEL: log at INFO until the config is loaded, whose validation then
+        # reports the bad value properly instead of basicConfig crashing with a traceback (MNT-03).
+        level = logging.INFO
     logging.basicConfig(level=level, format=_DEFAULT_FORMAT, force=True)
 
 

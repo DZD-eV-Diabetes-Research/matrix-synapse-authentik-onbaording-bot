@@ -167,3 +167,15 @@ def test_cli_accepts_the_standard_log_levels(level: str) -> None:
 def test_cli_rejects_an_unknown_log_level() -> None:
     with pytest.raises(SystemExit):
         cli.build_parser().parse_args(["--log-level", "VERBOSE", "reconcile-once"])
+
+
+def test_unknown_log_level_in_the_environment_is_a_config_error(tmp_path: Path) -> None:
+    """ONBOT_LOG_LEVEL used to crash logging setup with a traceback before the config was read."""
+    path = tmp_path / "config.yml"
+    path.write_text(BAD_CONFIG)
+
+    result = _run_onbot(path, "reconcile-once", extra_env={"ONBOT_LOG_LEVEL": "VERBOSE"})
+
+    assert result.returncode == 2
+    assert "Traceback" not in result.stderr
+    assert "  log_level: Input should be 'DEBUG', 'INFO', 'WARNING', 'ERROR' or 'CRITICAL'" in result.stderr
