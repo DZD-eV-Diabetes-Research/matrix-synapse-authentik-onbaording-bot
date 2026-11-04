@@ -584,6 +584,8 @@ class ReconcilerEngine:
 
     async def _converge_space(self, space: MatrixRoom, users: list[MappedUser]) -> None:
         await self._converge_space_avatar(space)
+        if not self.config.sync_authentik_users_with_matrix_rooms.enabled:
+            return  # user sync off: membership is not managed anywhere (REC-02)
         problems: list[str] = []
         members = await self.admin.list_room_members(space.room_id)
         diff = diff_space_membership(users, members, always_members=self.global_admins.mxids)
@@ -615,40 +617,78 @@ class ReconcilerEngine:
         report: PassReport,
     ) -> None:
         room_cfg = self.config.sync_matrix_rooms_based_on_authentik_groups
-
-        pl_groups = extract_power_level_groups(
-            await self.authentik.list_groups(
-                filter_has_non_empty_attributes=[room_cfg.authentik_group_attr_for_matrix_power_level]
-            ),
-            room_cfg.authentik_group_attr_for_matrix_power_level,
-        )
+        # `enabled: false` means "do not manage membership", never "everyone is unwanted" (REC-02,
+        # MNT-01): with user sync off the mapped set is empty by construction, and projecting it would
+        # kick every member of every room. Rooms themselves (name, topic, lobby join rule) still converge.
+        manage_members = self.config.sync_authentik_users_with_matrix_rooms.enabled
+        pl_groups: list[PowerLevelGroup] = []
+        kick_enabled = False
+        if manage_members:
+            pl_groups = extract_power_level_groups(
+                await self.authentik.list_groups(
+                    filter_has_non_empty_attributes=[room_cfg.authentik_group_attr_for_matrix_power_level]
+                ),
+                room_cfg.authentik_group_attr_for_matrix_power_level,
+            )
+            kick_enabled = await self._kicks_allowed(group_maps, users)
+        else:
+            log.info("reconcile: user sync is disabled; room membership and power levels are left alone")
 
         for gm in group_maps:
             if gm.room is None:  # its creation failed this pass (already reported)
                 continue
             room = gm.room
-            steps: list[tuple[str, Awaitable[None]]] = [
-                ("membership", self._converge_group_room_membership(gm, room, users)),
-                (
-                    "power levels",
-                    self._converge_power_levels(room.room_id, gm.group_pk, users, pl_groups, room_cfg),
-                ),
-                ("name and topic", self._converge_room_attributes(room, gm.desired, gm.group_pk)),
-            ]
+            steps: list[tuple[str, Awaitable[None]]] = []
+            if manage_members:
+                steps.append(
+                    ("membership", self._converge_group_room_membership(gm, room, users, kick_enabled))
+                )
+                steps.append(
+                    (
+                        "power levels",
+                        self._converge_power_levels(room.room_id, gm.group_pk, users, pl_groups, room_cfg),
+                    )
+                )
+            steps.append(("name and topic", self._converge_room_attributes(room, gm.desired, gm.group_pk)))
             await self._run_room_steps(report, OnbotRoomType.group_room, room.room_id, gm.group_pk, steps)
 
             if gm.lobby is not None:
                 lobby = gm.lobby
                 assert gm.lobby_desired is not None  # a lobby only exists where one was computed
-                lobby_steps: list[tuple[str, Awaitable[None]]] = [
-                    ("membership", self._converge_lobby_membership(gm, lobby, users)),
-                    ("power levels", self._converge_lobby_power_levels(gm, lobby)),
-                    ("join rule", self._converge_lobby_join_rules(lobby, space)),
-                    ("name and topic", self._converge_room_attributes(lobby, gm.lobby_desired, gm.group_pk)),
-                ]
+                lobby_steps: list[tuple[str, Awaitable[None]]] = []
+                if manage_members:
+                    lobby_steps.append(("membership", self._converge_lobby_membership(gm, lobby, users)))
+                    lobby_steps.append(("power levels", self._converge_lobby_power_levels(gm, lobby)))
+                lobby_steps.append(("join rule", self._converge_lobby_join_rules(lobby, space)))
+                lobby_steps.append(
+                    ("name and topic", self._converge_room_attributes(lobby, gm.lobby_desired, gm.group_pk))
+                )
                 await self._run_room_steps(
                     report, OnbotRoomType.visitor_lobby, lobby.room_id, gm.group_pk, lobby_steps
                 )
+
+    async def _kicks_allowed(self, group_maps: list[GroupRoomMap], users: list[MappedUser]) -> bool:
+        """Whether this pass may kick from group rooms at all.
+
+        A minimal plausibility check (the full guard of D4 layers 1 and 2 is separate work): when not a
+        single group room has a single desired member, the Authentik answer has almost certainly
+        collapsed (a narrowed API token answers 200 with an empty list, a user filter matches nobody),
+        and projecting it would empty every room. Additions are unaffected.
+        """
+        sync_cfg = self.config.sync_authentik_users_with_matrix_rooms
+        if not sync_cfg.kick_matrix_room_members_not_in_mapped_authentik_group_anymore:
+            return False
+        rooms = [gm for gm in group_maps if gm.room is not None]
+        if not rooms or any(desired_room_members(gm.group_pk, users) for gm in rooms):
+            return True
+        reason = f"none of the {len(rooms)} managed group rooms has a single desired member"
+        log.warning(
+            "reconcile: guard: skipping every kick this pass: %s (an empty or narrowed Authentik "
+            "answer looks exactly like this)",
+            reason,
+        )
+        await self.events.emit(Signal.destructive_actions_suppressed, action="kick", reason=reason)
+        return False
 
     async def _run_room_steps(
         self,
@@ -665,9 +705,8 @@ class ReconcilerEngine:
             )
 
     async def _converge_group_room_membership(
-        self, gm: GroupRoomMap, room: MatrixRoom, users: list[MappedUser]
+        self, gm: GroupRoomMap, room: MatrixRoom, users: list[MappedUser], kick_enabled: bool
     ) -> None:
-        sync_cfg = self.config.sync_authentik_users_with_matrix_rooms
         bot_id = self.config.synapse_server.bot_user_id
         global_admins = self.global_admins.mxids
         actual_members = await self.admin.list_room_members(room.room_id)
@@ -676,7 +715,7 @@ class ReconcilerEngine:
         mdiff = diff_room_membership(
             desired_mxids,
             actual_members,
-            kick_enabled=sync_cfg.kick_matrix_room_members_not_in_mapped_authentik_group_anymore,
+            kick_enabled=kick_enabled,
             # `matrix_user_ignore_list` promises these accounts are never touched: server admins,
             # bridges and other bots that sit in group rooms without an Authentik counterpart (REC-07).
             protected_ids=[bot_id, *global_admins, *self.config.matrix_user_ignore_list],

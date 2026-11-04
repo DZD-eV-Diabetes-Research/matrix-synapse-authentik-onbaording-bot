@@ -279,7 +279,8 @@ class OrphansAdmin(TwoRoomAdmin):
 
 def _teardown_config() -> OnbotConfig:
     config = OnbotConfig.model_validate(_BASE)
-    config.sync_matrix_rooms_based_on_authentik_groups.disable_rooms_when_mapped_authentik_group_disappears = True
+    room_cfg = config.sync_matrix_rooms_based_on_authentik_groups
+    room_cfg.disable_rooms_when_mapped_authentik_group_disappears = True
     return config
 
 
@@ -321,6 +322,62 @@ async def test_a_refused_kick_while_disabling_a_room_does_not_stop_the_other_kic
     assert (_ORPHAN_A, "@y:company.org") in effectors.kicks
     orphan_reports = [e.payload for e in reported if e.payload["room_id"] == _ORPHAN_A]
     assert orphan_reports and orphan_reports[0]["group_pk"] == "g-gone"
+
+
+# --- REC-02 / MNT-01: switching user sync off, or an empty answer, never kicks ---
+
+
+async def test_user_sync_disabled_does_not_manage_membership_or_power_levels() -> None:
+    config = OnbotConfig.model_validate(
+        {**_BASE, "sync_authentik_users_with_matrix_rooms": {"enabled": False}}
+    )
+    admin = TwoRoomAdmin()
+    admin.refuse = set()
+    engine, admin, effectors, _ = _engine(admin=admin, config=config, authentik=RenamedTwoGroupAuthentik())
+    await engine.reconcile_once()
+
+    assert effectors.kicks == []
+    assert admin.added == []
+    assert effectors.power_levels == []
+    # Rooms themselves are still kept in step with their groups.
+    assert (_ROOM1, "Team renamed") in effectors.names
+
+
+class NobodyActiveAuthentik(TwoGroupAuthentik):
+    """Authentik answers 200 with an empty user list (a narrowed RBAC token, 08 check 3)."""
+
+    async def list_users(self, **kwargs: Any) -> list[dict[str, Any]]:
+        if kwargs.get("filter_is_active") is False:
+            return await super().list_users(**kwargs)
+        return []
+
+
+async def test_an_empty_desired_set_in_every_room_kicks_nobody() -> None:
+    engine, _, effectors, bus = _engine(authentik=NobodyActiveAuthentik())
+    suppressed = _collect(bus, Signal.destructive_actions_suppressed)
+    await engine.reconcile_once()
+
+    assert effectors.kicks == []
+    assert len(suppressed) == 1
+    assert suppressed[0].payload["action"] == "kick"
+
+
+class OnlyCarolAuthentik(TwoGroupAuthentik):
+    async def list_users(self, **kwargs: Any) -> list[dict[str, Any]]:
+        users = await super().list_users(**kwargs)
+        if kwargs.get("filter_is_active") is False:
+            return users
+        return [u for u in users if u["username"] == "carol"]
+
+
+async def test_kicks_still_run_when_some_room_has_desired_members() -> None:
+    """The minimal guard is about a collapsed answer, not about one legitimately emptied group."""
+    engine, _, effectors, bus = _engine(authentik=OnlyCarolAuthentik())
+    suppressed = _collect(bus, Signal.destructive_actions_suppressed)
+    await engine.reconcile_once()
+
+    assert (_ROOM1, "@alice:company.org") in effectors.kicks
+    assert suppressed == []
 
 
 # --- issues.md entry 2 / MNT-04: keep_updating_matrix_attributes_from_authentik per group ---
