@@ -76,7 +76,7 @@ class FakeAdmin:
 
     async def get_room_details(self, room_id: str) -> dict[str, Any]:
         # Every fake room is a v12 room the bot created, so the bot is an infinite creator there.
-        return {"room_id": room_id, "room_version": "12", "creator": "@bot:company.org"}
+        return {"room_id": room_id, "version": "12", "creator": "@bot:company.org"}
 
 
 class RecordingEffectors(DryRunEffectors):

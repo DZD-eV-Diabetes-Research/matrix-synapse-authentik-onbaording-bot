@@ -935,7 +935,8 @@ class ReconcilerEngine:
         room_version, creator = room.room_version, room.creator
         if room_version is None or creator is None:
             details = await self.admin.get_room_details(room.room_id)
-            room_version = room_version or details.get("room_version")
+            version = details.get("version")
+            room_version = room_version or (str(version) if version is not None else None)
             creator = creator or details.get("creator")
         creators: set[str] = {creator} if creator else set()
         if creators_are_privileged(room_version):
