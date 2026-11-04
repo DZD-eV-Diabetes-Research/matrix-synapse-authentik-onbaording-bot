@@ -1,0 +1,22 @@
+# gitleaks configuration, used by the pre-commit hook and the CI `secrets` job.
+#
+# All default rules stay active. The only exception is a narrow path allowlist for the throwaway
+# integration stack: it ships fixed, public test-only keys and client secrets on purpose so the
+# stack boots hermetically (see tests/README.md). Never put a real credential in these files.
+#
+# Historic leaks in old commits (review finding SUP-01, already invalid) are not allowlisted here.
+# CI scans only the pushed or PR commit range plus the current tree, so they do not fail every run,
+# while a full-history scan (`gitleaks git .`) still reports them until the history scrub.
+
+title = "onbot"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Integration-stack fixtures: test-only MAS keys, MAS and Synapse client secrets"
+paths = [
+    '''(^|/)tests/integration/stack/mas/config\.yaml$''',
+    '''(^|/)tests/integration/stack/synapse/homeserver\.yaml$''',
+    '''(^|/)tests/integration/stack_api\.py$''',
+]
