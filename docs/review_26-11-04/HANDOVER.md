@@ -13,7 +13,7 @@ Local `main` (not pushed) contains the review docs and five merged sessions:
 | S0 Tooling baseline | e3282ef | pdm only, gitleaks in CI, pre-commit works, hermetic tests, parallel integration stacks (`ONBOT_ITEST_INSTANCE`) |
 | S10 Runtime lifecycle | 9db28b1 | startup steps retry, sync pump recovers from `M_UNKNOWN_POS`, heartbeat healthcheck (`--deep` for upstreams), tini, clean `docker stop` |
 | S1 Offboarding fails open | ab73206 | never unlocks unless positively active and in scope, deleted users offboarded, out-of-scope frozen (D9), per-user ledger save |
-| S13 Security hardening and config validation | see `git log --merges` | strict config validation, `SecretStr`, config errors without values (exit 2), SSRF-safe avatar fetch (D11) |
+| S13 Security hardening and config validation | b063fe4 | strict config validation, `SecretStr`, config errors without values (exit 2), SSRF-safe avatar fetch (D11) |
 | S2 Reconciler pass robustness | 44cdf95 | per-room isolation, lifecycle always runs, max PL 99 in pre-v12 rooms, D10 withdrawal of bot-granted levels, `enabled: false` no longer kicks |
 
 After the S2 merge: 595 unit and contract tests green, all pre-commit hooks green. CHANGELOG
