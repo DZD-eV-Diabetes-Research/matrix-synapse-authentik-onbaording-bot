@@ -321,3 +321,32 @@ async def test_a_refused_kick_while_disabling_a_room_does_not_stop_the_other_kic
     assert (_ORPHAN_A, "@y:company.org") in effectors.kicks
     orphan_reports = [e.payload for e in reported if e.payload["room_id"] == _ORPHAN_A]
     assert orphan_reports and orphan_reports[0]["group_pk"] == "g-gone"
+
+
+# --- issues.md entry 2 / MNT-04: keep_updating_matrix_attributes_from_authentik per group ---
+
+
+class RenamedTwoGroupAuthentik(TwoGroupAuthentik):
+    async def list_groups(self, **_: Any) -> list[dict[str, Any]]:
+        return [
+            {**_GROUP_G1, "attributes": {**_GROUP_G1["attributes"], "chatroom_name": "Team renamed"}},
+            {**_GROUP_G2, "attributes": {"chatroom_name": "Other renamed"}},
+        ]
+
+
+async def test_a_per_group_keep_updating_override_is_honoured() -> None:
+    config = OnbotConfig.model_validate(
+        {
+            **_BASE,
+            "per_authentik_group_pk_matrix_room_settings": {
+                "g1": {"keep_updating_matrix_attributes_from_authentik": False}
+            },
+        }
+    )
+    admin = TwoRoomAdmin()
+    admin.refuse = set()
+    engine, _, effectors, _ = _engine(admin=admin, config=config, authentik=RenamedTwoGroupAuthentik())
+    await engine.reconcile_once()
+
+    # Only g2 follows Authentik; g1 opted out per group and keeps its name.
+    assert effectors.names == [(_ROOM2, "Other renamed")]

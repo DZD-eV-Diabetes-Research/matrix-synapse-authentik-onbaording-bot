@@ -817,8 +817,11 @@ class ReconcilerEngine:
         API carries one). So the topic is read from room state before writing, the same way the admin
         control room repairs its own — otherwise it is compared against a field that is always
         ``None``, and every tick rewrites every topic.
+
+        The switch is read per group, through :func:`resolve_room_settings` like every other field of
+        ``MatrixDynamicRoomSettings``, so a group override applies to the group room and its lobby.
         """
-        if not self.config.matrix_room_default_settings.keep_updating_matrix_attributes_from_authentik:
+        if not resolve_room_settings(group_pk, self.config).keep_updating_matrix_attributes_from_authentik:
             return
         if desired.name is not None and room.name != desired.name:
             await self.effectors.set_room_name(room.room_id, desired.name)
