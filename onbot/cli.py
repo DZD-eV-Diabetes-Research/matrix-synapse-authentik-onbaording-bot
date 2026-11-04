@@ -25,16 +25,26 @@ from onbot.logging import configure_logging, get_logger
 log = get_logger(__name__)
 
 
+_LOG_LEVEL_HELP = "Override log level (e.g. DEBUG, INFO)."
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="onbot", description="Authentik → Matrix sync & onboarding bot.")
     parser.add_argument("--version", action="version", version=f"onbot {__version__}")
-    parser.add_argument("--log-level", default=None, help="Override log level (e.g. DEBUG, INFO).")
+    parser.add_argument("--log-level", default=None, help=_LOG_LEVEL_HELP)
+
+    # `--log-level` is accepted after the subcommand too (`onbot reconcile-once --log-level DEBUG`).
+    # SUPPRESS keeps a subparser that did not get the flag from resetting a value given before the
+    # subcommand back to None.
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--log-level", default=argparse.SUPPRESS, help=_LOG_LEVEL_HELP)
 
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("run", help="Run the bot service (reconcile loop + onboarding).")
-    sub.add_parser("reconcile-once", help="Run a single reconcile pass and exit.")
+    sub.add_parser("run", parents=[common], help="Run the bot service (reconcile loop + onboarding).")
+    sub.add_parser("reconcile-once", parents=[common], help="Run a single reconcile pass and exit.")
     bcast = sub.add_parser(
         "broadcast",
+        parents=[common],
         help="Send a message to every user's onboarding room.",
         description=(
             "Send one message, as a notice, into the read-only onboarding room of every user the "
@@ -42,9 +52,11 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     bcast.add_argument("message", help="The message to send, e.g. 'Maintenance at 22:00 UTC'.")
-    gen = sub.add_parser("generate-config", help="Write a documented example configuration file.")
+    gen = sub.add_parser(
+        "generate-config", parents=[common], help="Write a documented example configuration file."
+    )
     gen.add_argument("-o", "--output", default=None, help="Write to this path instead of stdout.")
-    sub.add_parser("healthcheck", help="Check connectivity to required services.")
+    sub.add_parser("healthcheck", parents=[common], help="Check connectivity to required services.")
     return parser
 
 

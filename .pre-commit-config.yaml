@@ -1,26 +1,57 @@
 # Pre-commit hooks. Install with: pdm run pre-commit install
 # Run on demand with: pdm run pre-commit run --all-files
+
+# legacy/ is the frozen pre-rewrite bot, kept for reference only (ruff and mypy skip it too).
+exclude: ^legacy/
+
 repos:
-  # --- Secret scanning (Phase 1: no secrets ever re-enter the repo) ---
+  # --- Secret scanning (no secrets ever re-enter the repo) ---
+  # Reads .gitleaks.toml (integration-stack fixtures are allowlisted by path there).
   - repo: https://github.com/gitleaks/gitleaks
-    rev: v8.21.2
+    rev: v8.30.1
     hooks:
       - id: gitleaks
 
-  # --- Lint & format (Phase 2 tooling) ---
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.8.4
+  # --- Lint, format, type check, config docs ---
+  # Local hooks run the tools from the PDM environment, so their versions come from pdm.lock and
+  # match CI exactly (a pinned ruff-pre-commit rev drifted behind and could not parse py314).
+  # They need `pdm install` to have been run once.
+  - repo: local
     hooks:
       - id: ruff
-        args: [--fix]
+        name: ruff check
+        entry: pdm run ruff check --fix --force-exclude
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
       - id: ruff-format
+        name: ruff format
+        entry: pdm run ruff format --force-exclude
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
+      - id: mypy
+        name: mypy onbot
+        entry: pdm run mypy onbot
+        language: system
+        files: ^onbot/
+        types: [python]
+        pass_filenames: false
+      - id: check-config-docs
+        name: config docs in sync with the model
+        entry: pdm run check-config-docs
+        language: system
+        files: ^(onbot/config\.py|scripts/gen_config_docs\.py|docs/CONFIG_REFERENCE\.md|config\.example\.yml)$
+        pass_filenames: false
 
   # --- Hygiene ---
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v5.0.0
+    rev: v6.0.0
     hooks:
       - id: trailing-whitespace
       - id: end-of-file-fixer
       - id: check-yaml
+        # Authentik blueprints use custom tags (!Find, !KeyOf) that a plain YAML loader rejects.
+        exclude: ^tests/integration/stack/authentik/blueprints/
       - id: check-added-large-files
       - id: check-merge-conflict

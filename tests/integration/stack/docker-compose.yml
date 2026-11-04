@@ -1,9 +1,15 @@
 # Phase 7b live integration stack: Synapse + MAS + Postgres + Authentik (ADR-0006 topology).
 # Brought up by tests/integration/conftest.py via testcontainers. Images are pinned by digest.
-# Host ports are fixed (8008/8080/9000) so the in-network issuer string (`mas:8080`,
-# `authentik-server:9000`) and the host-side test login helper can agree on one identity (the
-# helper rewrites those hostnames to localhost on browser hops).
-name: onbot-itest
+#
+# Parallel instances: the project name and every published host port come from ONBOT_ITEST_*
+# variables (defaults below are instance 0). The harness derives them from ONBOT_ITEST_INSTANCE in
+# tests/integration/stack_instance.py and passes them in with --env-file; see tests/README.md.
+# Container ports and in-network URLs (`mas:8080`, `authentik-server:9000`, `synapse:8008`) never
+# change, so the issuer strings in mas/config.yaml and synapse/homeserver.yaml stay valid for every
+# instance; the host-side login helper rewrites those hostnames to localhost:<host port> on browser
+# hops. Two values in synapse/homeserver.yaml (public_baseurl, account_management_url) name the
+# instance 0 host ports; Synapse only advertises them to clients and the harness never follows them.
+name: ${ONBOT_ITEST_PROJECT:-onbot-itest}
 
 services:
   postgres:
@@ -50,7 +56,7 @@ services:
     volumes:
       - ./authentik/blueprints/onbot.yaml:/blueprints/onbot.yaml:ro
     ports:
-      - "9000:9000"
+      - "${ONBOT_ITEST_AUTHENTIK_PORT:-9000}:9000"
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
@@ -85,7 +91,7 @@ services:
     volumes:
       - ./mas/config.yaml:/config/config.yaml:ro
     ports:
-      - "8080:8080"
+      - "${ONBOT_ITEST_MAS_PORT:-8080}:8080"
     depends_on:
       postgres: {condition: service_healthy}
 
@@ -109,7 +115,7 @@ services:
     tmpfs:
       - /data
     ports:
-      - "8008:8008"
+      - "${ONBOT_ITEST_SYNAPSE_PORT:-8008}:8008"
     depends_on:
       postgres: {condition: service_healthy}
       mas: {condition: service_started}

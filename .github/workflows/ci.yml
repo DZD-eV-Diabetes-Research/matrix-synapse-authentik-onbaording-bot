@@ -29,8 +29,13 @@ jobs:
           python-version: "3.14"
           cache: true
 
+      # pdm.lock is the only lockfile. Fail when it no longer matches pyproject.toml instead of
+      # silently re-resolving, so CI tests exactly what the image exports.
+      - name: Lockfile in sync with pyproject.toml
+        run: pdm lock --check
+
       - name: Install dependencies
-        run: pdm install --dev
+        run: pdm install --dev --frozen-lockfile
 
       - name: Ruff lint
         run: pdm run ruff check .
@@ -54,6 +59,57 @@ jobs:
       - name: Pytest (unit + contract — fast, coverage reported but not gated)
         run: pdm run pytest -m "not integration" --cov --cov-report=term-missing --cov-fail-under=0
 
+  secrets:
+    name: secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      GITLEAKS_VERSION: "8.30.1"
+      # sha256 of gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz from the release's checksums.txt.
+      GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # the commit range below needs the history
+
+      # The gitleaks CLI directly: gitleaks-action needs a paid license for organisation repos.
+      - name: Install gitleaks
+        run: |
+          curl -sSfL -o gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf gitleaks.tar.gz -C "$RUNNER_TEMP" gitleaks
+          rm gitleaks.tar.gz
+          "$RUNNER_TEMP/gitleaks" version
+
+      # Every file in the checked-out tree. .gitleaks.toml allowlists only the integration-stack
+      # fixtures, by path.
+      - name: Scan the current tree
+        run: '"$RUNNER_TEMP/gitleaks" dir . --redact --no-banner --verbose'
+
+      # The commits this PR or push adds. Not the full history: it still holds two old, already
+      # invalid tokens (review finding SUP-01) until the history scrub, and they must not fail
+      # every run.
+      - name: Scan the new commits
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.sha }}
+        run: |
+          if [ "$EVENT" = "pull_request" ]; then
+            range="${PR_BASE}..${PR_HEAD}"
+          elif [ -n "$PUSH_BEFORE" ] && git cat-file -e "${PUSH_BEFORE}^{commit}" 2>/dev/null; then
+            range="${PUSH_BEFORE}..${PUSH_AFTER}"
+          else
+            # New branch or rewritten history: the old tip is unknown, scan the pushed commit only.
+            range="-1 ${PUSH_AFTER}"
+          fi
+          echo "Scanning commit range: ${range}"
+          "$RUNNER_TEMP/gitleaks" git . --redact --no-banner --verbose --log-opts="${range}"
+
   integration:
     name: integration (live Synapse · MAS · Authentik)
     runs-on: ubuntu-latest
@@ -68,7 +124,7 @@ jobs:
           cache: true
 
       - name: Install dependencies
-        run: pdm install --dev
+        run: pdm install --dev --frozen-lockfile
 
       # The full suite (incl. integration) — the testcontainers fixture brings up the stack. This is
       # the authoritative coverage gate: app.py + __main__.py are exercised end-to-end here.

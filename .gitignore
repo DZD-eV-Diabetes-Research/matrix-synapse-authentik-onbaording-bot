@@ -161,6 +161,8 @@ cython_debug/
 # PDM — commit pdm.lock, ignore the local interpreter pin & build artifacts.
 .pdm-python
 .pdm-build/
+# pdm.lock is the only lockfile. A uv.lock would drift from it unnoticed.
+uv.lock
 
 # Secrets & local-only configs — never commit real credentials.
 # Only config.example.yml is tracked; all other config*.yml are local.

@@ -60,6 +60,35 @@ def test_cli_log_level_overrides_config(monkeypatch: pytest.MonkeyPatch) -> None
     assert _run_healthcheck_with(monkeypatch, "DEBUG", ["--log-level", "INFO", "healthcheck"]) == logging.INFO
 
 
+def test_cli_log_level_after_the_subcommand_overrides_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Regression (MNT-11): the documented `onbot reconcile-once --log-level DEBUG` used to fail with
+    # "unrecognized arguments", because the flag only existed on the root parser.
+    assert (
+        _run_healthcheck_with(monkeypatch, "INFO", ["healthcheck", "--log-level", "DEBUG"]) == logging.DEBUG
+    )
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["run", "--log-level", "DEBUG"],
+        ["reconcile-once", "--log-level", "DEBUG"],
+        ["broadcast", "hello", "--log-level", "DEBUG"],
+        ["generate-config", "--log-level", "DEBUG"],
+        ["healthcheck", "--log-level", "DEBUG"],
+        ["--log-level", "DEBUG", "reconcile-once"],
+        # Both positions: the more specific one, after the subcommand, wins.
+        ["--log-level", "INFO", "reconcile-once", "--log-level", "DEBUG"],
+    ],
+)
+def test_log_level_is_accepted_before_and_after_every_subcommand(argv: list[str]) -> None:
+    assert cli.build_parser().parse_args(argv).log_level == "DEBUG"
+
+
+def test_log_level_defaults_to_none_so_the_config_value_applies() -> None:
+    assert cli.build_parser().parse_args(["reconcile-once"]).log_level is None
+
+
 def test_unknown_command_is_rejected() -> None:
     with pytest.raises(SystemExit):
         cli.main(["does-not-exist"])

@@ -6,6 +6,12 @@ via ``testcontainers`` (compose). On top of it sit the bot's MAS-issued credenti
 groups/users) is created with unique names so tests share the stack without colliding.
 
 Set ``ONBOT_ITEST_KEEP=1`` to leave the stack running after the session (fast local iteration).
+Set ``ONBOT_ITEST_INSTANCE=<n>`` to run an isolated stack instance next to others (own compose project
+and host ports, see :mod:`tests.integration.stack_instance` and tests/README.md).
+
+A stack that cannot start fails the run; it is never turned into a skip, so a green run always means
+the live suite ran (review finding LIV-01). Machines without Docker opt out explicitly with
+``ONBOT_ITEST_SKIP=1``.
 """
 
 from __future__ import annotations
@@ -13,7 +19,6 @@ from __future__ import annotations
 import contextlib
 import os
 import re
-import shutil
 import time
 from collections.abc import AsyncIterator, Callable, Iterator
 from pathlib import Path
@@ -33,6 +38,7 @@ from onbot.config import (
     SynapseServer,
 )
 from tests.integration import stack_api as S
+from tests.integration.stack_instance import SKIP_VAR, StackUnavailable, skip_requested, start_stack
 
 pytestmark = pytest.mark.integration
 
@@ -61,7 +67,9 @@ def _wait_ready() -> None:
         if pending:
             time.sleep(3.0)
     if pending:
-        raise RuntimeError(f"stack not ready: {list(pending)} (last errors: {last_err})")
+        raise RuntimeError(
+            f"stack not ready ({S.STACK.describe()}): {list(pending)} (last errors: {last_err})"
+        )
 
     # The endpoint checks above can all pass while Authentik still answers 404 on
     # /application/o/authorize/, so a login started here would fail. Gate on the chain itself.
@@ -69,18 +77,33 @@ def _wait_ready() -> None:
         if S.login_chain_ready():
             return
         time.sleep(3.0)
-    raise RuntimeError("stack not ready: MAS -> Authentik login chain never reached the flow interface")
+    raise RuntimeError(
+        f"stack not ready ({S.STACK.describe()}): "
+        "MAS -> Authentik login chain never reached the flow interface"
+    )
 
 
 @pytest.fixture(scope="session")
-def compose_stack() -> Iterator[DockerCompose]:
-    if shutil.which("docker") is None:
-        pytest.skip("docker not available; integration suite needs the live stack")
-    compose = DockerCompose(str(STACK_DIR), compose_file_name="docker-compose.yml", pull=False, wait=False)
+def compose_stack(tmp_path_factory: pytest.TempPathFactory) -> Iterator[DockerCompose]:
+    if skip_requested(os.environ):
+        pytest.skip(f"{SKIP_VAR}=1: integration stack explicitly skipped")
+    # The project name and host ports of this instance reach compose through an env file, so every
+    # compose call testcontainers makes (up, exec, down) targets the same project.
+    env_file = S.STACK.write_env_file(tmp_path_factory.mktemp("itest-stack") / "stack.env")
+    compose = DockerCompose(
+        str(STACK_DIR),
+        compose_file_name="docker-compose.yml",
+        env_file=str(env_file),
+        pull=False,
+        wait=False,
+    )
     try:
-        compose.start()
-    except Exception as exc:
-        pytest.skip(f"could not start the integration stack: {exc}")
+        start_stack(compose, S.STACK)
+    except StackUnavailable as exc:
+        if os.environ.get("ONBOT_ITEST_KEEP") != "1":
+            with contextlib.suppress(Exception):  # remove half-started containers
+                compose.stop(down=True)
+        pytest.fail(str(exc), pytrace=False)
     try:
         _wait_ready()
         yield compose

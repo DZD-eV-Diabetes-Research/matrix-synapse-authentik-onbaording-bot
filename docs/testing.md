@@ -35,11 +35,20 @@ pdm run pytest
 This is the authoritative coverage gate. It runs the whole suite, so the composition root
 (`onbot/app.py`), only reachable end-to-end, is exercised and counted.
 
+If the stack cannot start, the run fails with a non-zero exit code; the integration tests are never
+silently skipped. On a machine without Docker, run the fast suite, or set `ONBOT_ITEST_SKIP=1` to
+skip the integration tests of a plain `pdm run pytest` explicitly.
+
 Useful knobs:
 
 - `ONBOT_ITEST_KEEP=1` leaves the stack running after the run, for fast local iteration.
+- `ONBOT_ITEST_INSTANCE=<n>` runs an isolated stack instance with its own compose project and host
+  ports, so several checkouts (for example git worktrees) can run the suite at the same time. See
+  [tests/README.md](../tests/README.md#several-stacks-in-parallel-one-per-worktree).
 - `--dev` stops at the first failure with full output.
 - Other arguments pass through to pytest, for example `./run_integration_tests.sh -k lifecycle`.
+
+The tests never read your local `config.yml` or `ONBOT_*` variables: a suite-wide fixture hides them.
 
 ## The localpart-contract test
 
