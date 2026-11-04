@@ -56,6 +56,10 @@ one machine at the same time. One variable selects everything:
 | `2` | `onbot-itest-2` | 8028 | 8100 | 9020 |
 | `n` | `onbot-itest-n` | 8008 + 10n | 8080 + 10n | 9000 + 10n |
 
+Every published port binds to `127.0.0.1` only, so the stack (with its fixed, public admin
+credentials) is not reachable from the network while it runs. The harness talks to it on
+`localhost`.
+
 Give each worktree its own number and set it for every test command in that worktree:
 
 ```bash
@@ -91,3 +95,5 @@ avoid that; in one checkout, give the second run its own `COVERAGE_FILE=.coverag
 `stack/mas/config.yaml`, `stack/synapse/homeserver.yaml` and `stack_api.py` hold fixed, public
 test-only keys and client secrets so the stack boots without setup. They are allowlisted by path in
 `.gitleaks.toml`. Never reuse them anywhere else, and never put a real credential into these files.
+The sdist leaves out `tests/` entirely (`[tool.pdm.build] excludes` in `pyproject.toml`), so these
+files are not published to PyPI.
