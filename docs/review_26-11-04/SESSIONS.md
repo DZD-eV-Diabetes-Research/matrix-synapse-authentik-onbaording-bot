@@ -12,9 +12,11 @@ Start a session by pointing Claude at this file and the session ID, for example:
   gone, so rebuild what you need as real tests.
 - Every fixed finding gets a regression test that fails before the fix. Destructive paths also get an
   integration test where the stack can express them.
-- Keep `uv run pytest tests/unit tests/contract -q`, `ruff check`, `ruff format --check` and
-  `mypy onbot` green. Run `./run_integration_tests.sh` (or a `-k` subset) for sessions that touch
-  Matrix, MAS or Authentik behaviour; since S0 a skipped stack fails the run.
+- Use `pdm run` (pdm is the only tool since S0). Keep `pdm run pre-commit run --all-files` and
+  `pdm run pytest tests/unit tests/contract -q` green (pre-commit covers ruff, ruff format and mypy). Run `./run_integration_tests.sh` (or a `-k` subset) for sessions that touch
+  Matrix, MAS or Authentik behaviour; since S0 a skipped stack fails the run. Use your own stack
+  instance with `export ONBOT_ITEST_INSTANCE=<n>` (see `tests/README.md`) and tear it down at the end
+  with `docker compose -f tests/integration/stack/docker-compose.yml -p onbot-itest-<n> down -v`.
 - Update `CHANGELOG.md` (Unreleased) and the user docs the change affects. Behaviour changes to
   destructive features must be called out under a "Changed" or "Security" heading.
 - At the end, mark the session done in the status table below and note anything left over.
@@ -26,7 +28,7 @@ Start a session by pointing Claude at this file and the session ID, for example:
 
 | Order | Session | Topic | Size | Depends on | Status |
 |---|---|---|---|---|---|
-| 1 | S0 | Tooling baseline | S | | open |
+| 1 | S0 | Tooling baseline | S | | done (e3282ef) |
 | 2 | S1 | Offboarding fails open (critical hotfix) | M | S0 | open |
 | 3 | S2 | Reconciler pass robustness | M | S0 | open |
 | 4 | S3 | Guard layers 1 and 2, reconciler dry-run | M | S2 | open |

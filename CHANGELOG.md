@@ -48,6 +48,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   This `CHANGELOG.md`.
 
 ### Changed
+- **Development tooling (review S0):** `pdm.lock` is the only lockfile and CI fails when it is stale;
+  the gitleaks secret scan runs in CI again (tree plus new commits); the pre-commit hooks run again and
+  take ruff, mypy and the config-docs check from the pdm environment.
+- **Tests (review S0):** the suite ignores a local `config.yml` and `ONBOT_*` variables; an integration
+  stack that cannot start fails the run instead of skipping it; `ONBOT_ITEST_INSTANCE=<n>` runs an
+  isolated stack so several checkouts can run the integration suite at the same time.
 - **The sliding-sync loop moved out of the onboarding listener** into `onbot/sync.py` as `SyncPump`,
   which owns the stream position and fans each slice out to registered handlers. Onboarding and the
   admin control room now share one sync connection instead of opening two. No behaviour change.
@@ -60,6 +66,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   troubleshooting.
 
 ### Fixed
+- **`--log-level` after the subcommand** (`onbot reconcile-once --log-level DEBUG`) failed with an
+  argparse error. It is now accepted before and after the subcommand.
 - **Group room topics were rewritten on every reconcile pass.** The pass compared the desired topic
   against `MatrixRoom.topic`, which the Synapse admin *List Room* API never populates (it returns the
   room's name and canonical alias, but no topic), so the comparison always found a difference. The
