@@ -29,8 +29,13 @@ jobs:
           python-version: "3.14"
           cache: true
 
+      # pdm.lock is the only lockfile. Fail when it no longer matches pyproject.toml instead of
+      # silently re-resolving, so CI tests exactly what the image exports.
+      - name: Lockfile in sync with pyproject.toml
+        run: pdm lock --check
+
       - name: Install dependencies
-        run: pdm install --dev
+        run: pdm install --dev --frozen-lockfile
 
       - name: Ruff lint
         run: pdm run ruff check .
@@ -68,7 +73,7 @@ jobs:
           cache: true
 
       - name: Install dependencies
-        run: pdm install --dev
+        run: pdm install --dev --frozen-lockfile
 
       # The full suite (incl. integration) — the testcontainers fixture brings up the stack. This is
       # the authoritative coverage gate: app.py + __main__.py are exercised end-to-end here.

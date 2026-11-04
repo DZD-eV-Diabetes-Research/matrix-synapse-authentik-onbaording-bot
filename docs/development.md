@@ -15,6 +15,11 @@ pdm install                 # create the venv and install deps (incl. dev + docs
 pdm run pre-commit install  # enable lint + secret-scan hooks
 ```
 
+PDM is the only supported project tool, and `pdm.lock` is the only lockfile (CI, the Dockerfile and
+the release workflow all read it). After changing dependencies in `pyproject.toml`, run `pdm lock`
+and commit the result: CI runs `pdm lock --check` and fails on a stale lockfile. Do not commit a
+`uv.lock` or any other lockfile; `uv.lock` is gitignored.
+
 ## Run locally
 
 ```bash
