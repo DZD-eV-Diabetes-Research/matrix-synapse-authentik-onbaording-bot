@@ -463,6 +463,30 @@ class ApiClientMatrix(BaseApiClient):
     async def set_account_data(self, user_id: str, data_type: str, content: Mapping[str, Any]) -> None:
         await self.put_json(f"v3/user/{user_id}/account_data/{data_type}", json_body=dict(content))
 
+    async def get_room_account_data(self, user_id: str, room_id: str, data_type: str) -> dict[str, Any]:
+        """The user's private per-room account data of ``data_type``, ``{}`` when unset.
+
+        Only the user can read or write it; no room member can, whatever their power level. That makes
+        it the place for bookkeeping that must not be editable from inside the room.
+        https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3useruseridroomsroomidaccount_datatype
+        """
+        try:
+            data: dict[str, Any] = await self.get_json(
+                f"v3/user/{user_id}/rooms/{room_id}/account_data/{data_type}"
+            )
+        except ApiError as exc:
+            if exc.status_code == 404:
+                return {}
+            raise
+        return data
+
+    async def set_room_account_data(
+        self, user_id: str, room_id: str, data_type: str, content: Mapping[str, Any]
+    ) -> None:
+        await self.put_json(
+            f"v3/user/{user_id}/rooms/{room_id}/account_data/{data_type}", json_body=dict(content)
+        )
+
     # --- sync stream (Simplified Sliding Sync, MSC4186) ----------------------
 
     async def sliding_sync(self, pos: str | None = None, *, timeout_ms: int = 30000) -> SyncResult:
@@ -598,3 +622,13 @@ class CSApiEffectors:
 
     async def put_room_state(self, room_id: str, event_type: str, content: dict[str, Any]) -> None:
         await self.client.put_room_state_event(room_id, event_type, content)
+
+    async def get_room_account_data(
+        self, user_id: str, room_id: str, data_type: str
+    ) -> dict[str, Any] | None:
+        return await self.client.get_room_account_data(user_id, room_id, data_type) or None
+
+    async def put_room_account_data(
+        self, user_id: str, room_id: str, data_type: str, content: dict[str, Any]
+    ) -> None:
+        await self.client.set_room_account_data(user_id, room_id, data_type, content)

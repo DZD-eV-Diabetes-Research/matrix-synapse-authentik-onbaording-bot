@@ -75,6 +75,10 @@ class FakeAdmin:
         self.deleted.append(room_id)
         return {}
 
+    async def get_room_details(self, room_id: str) -> dict[str, Any]:
+        # Every fake room is a v12 room the bot created, so the bot is an infinite creator there.
+        return {"room_id": room_id, "version": "12", "creator": "@bot:company.org"}
+
 
 class RecordingEffectors(DryRunEffectors):
     def __init__(self) -> None:
@@ -87,6 +91,7 @@ class RecordingEffectors(DryRunEffectors):
         self.state_writes: list[tuple[str, str, dict[str, Any]]] = []
         self.names: list[tuple[str, str]] = []
         self.topics: list[tuple[str, str]] = []
+        self.account_data: dict[tuple[str, str], dict[str, Any]] = {}
 
     async def kick_user(self, room_id: str, user_id: str, reason: str | None = None) -> None:
         self.kicks.append((room_id, user_id))
@@ -122,6 +127,16 @@ class RecordingEffectors(DryRunEffectors):
     async def put_room_state(self, room_id: str, event_type: str, content: dict[str, Any]) -> None:
         self.state_store[(room_id, event_type)] = content
         self.state_writes.append((room_id, event_type, content))
+
+    async def get_room_account_data(
+        self, user_id: str, room_id: str, data_type: str
+    ) -> dict[str, Any] | None:
+        return self.account_data.get((room_id, data_type))
+
+    async def put_room_account_data(
+        self, user_id: str, room_id: str, data_type: str, content: dict[str, Any]
+    ) -> None:
+        self.account_data[(room_id, data_type)] = content
 
 
 def _engine(events: EventBus | None = None) -> tuple[ReconcilerEngine, FakeAdmin, RecordingEffectors]:
@@ -922,8 +937,12 @@ async def test_a_room_the_bot_is_not_in_does_not_abort_the_pass() -> None:
     assert admin.deleted == []
 
 
-async def test_a_non_403_state_error_still_fails_the_pass() -> None:
-    """The 403 handler is narrow on purpose: a 500 from Synapse is still a real fault."""
+async def test_a_non_403_state_error_is_reported_not_skipped() -> None:
+    """The 403 handler is narrow on purpose: a 500 from Synapse is still a real fault.
+
+    Since S2 a fault no longer aborts the pass (REC-03), but it must not be mistaken for "not a
+    managed room" either: the room is reported as not converged, which a 403 never is.
+    """
 
     class BrokenStateEffectors(RecordingEffectors):
         async def get_room_state(
@@ -931,6 +950,15 @@ async def test_a_non_403_state_error_still_fails_the_pass() -> None:
         ) -> dict[str, Any] | None:
             raise ApiError("GET", "http://synapse/whatever", 500, {"errcode": "M_UNKNOWN"})
 
-    engine = ReconcilerEngine(_teardown_config(), FakeAuthentik(), ForeignRoomAdmin(), BrokenStateEffectors())  # type: ignore[arg-type]
-    with pytest.raises(ApiError):
-        await engine.reconcile_once()
+    bus = EventBus()
+    reported: list[str] = []
+
+    async def handler(event: Any) -> None:
+        reported.append(event.payload["room_id"])
+
+    bus.subscribe(Signal.room_not_converged, handler)
+    engine = ReconcilerEngine(
+        _teardown_config(), FakeAuthentik(), ForeignRoomAdmin(), BrokenStateEffectors(), bus
+    )  # type: ignore[arg-type]
+    await engine.reconcile_once()
+    assert "!private:company.org" in reported

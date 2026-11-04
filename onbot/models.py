@@ -39,14 +39,21 @@ class MatrixRoom:
     canonical_alias: str | None = None
     name: str | None = None
     is_space: bool = False
+    # Both come with the listing (``version``, ``creator``) and decide what the bot may change in the
+    # room's power levels: room version 12 makes creators infinite (ADR-0011, REC-05).
+    room_version: str | None = None
+    creator: str | None = None
 
     @classmethod
     def from_admin_api(cls, obj: dict[str, Any], *, is_space: bool = False) -> MatrixRoom:
+        version = obj.get("version")
         return cls(
             room_id=obj["room_id"],
             canonical_alias=obj.get("canonical_alias"),
             name=obj.get("name"),
             is_space=is_space,
+            room_version=str(version) if version is not None else None,
+            creator=obj.get("creator"),
         )
 
 

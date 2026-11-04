@@ -29,6 +29,13 @@ class Signal(StrEnum):
     # aborted on an implausible Authentik answer. Payload: ``mxid`` (None for an abort), ``action``,
     # ``detail``. Meant for the admin room; nothing routes it there yet, the lifecycle also logs it.
     lifecycle_attention = "lifecycle_attention"
+    # A managed room (or the space) the pass could not fully converge: emitted once per room per pass,
+    # with ``room_kind``, ``room_id``, ``group_pk`` and ``problems`` (a list of one-line strings).
+    # Meant for the admin room; nothing subscribes yet.
+    room_not_converged = "room_not_converged"
+    # The pass skipped a destructive action class because its input looked implausible, with
+    # ``action`` (e.g. "kick") and ``reason``. Meant for the admin room; nothing subscribes yet.
+    destructive_actions_suppressed = "destructive_actions_suppressed"
 
 
 @dataclass(frozen=True, slots=True)

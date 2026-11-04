@@ -37,34 +37,13 @@ pass.
 
 ---
 
-## 2. A per-group `keep_updating_matrix_attributes_from_authentik` override is ignored
-
-**Symptom:** `keep_updating_matrix_attributes_from_authentik` is documented as part of
-`MatrixDynamicRoomSettings`, which the config reference presents as overridable per group via
-`per_authentik_group_pk_matrix_room_settings`. Setting it to `false` for a single group has no effect:
-that group's name and topic keep being rewritten from Authentik. Setting it in
-`matrix_room_default_settings` does work, so the flag looks half-broken rather than absent.
-
-**Where:** [`onbot/reconciler/engine.py`](onbot/reconciler/engine.py) line 524.
-`_converge_room_attributes` reads
-`self.config.matrix_room_default_settings.keep_updating_matrix_attributes_from_authentik` directly
-instead of going through `resolve_room_settings(gm.group_pk, self.config)`, which is what every other
-per-group setting is read through (see `_converge_lobby_membership_and_join_rules`, which resolves
-settings properly for `visitor_lobby_inject_group_members`).
-
-**Fix sketch:** resolve the settings for the group and read the flag off that. `resolve_room_settings`
-already merges only the keys an operator actually set, so the global default still applies to every
-group that does not override it. One test: two groups, one with the override off, assert only the
-other one's name and topic are rewritten.
-
-It is a two-line change, and the only deployments whose behaviour changes are ones that already set
-the override and are not getting what the docs promise.
-
----
-
 ## Fixed
 
 - ~~Group room topics were rewritten on every reconcile pass~~ (the desired topic was compared against
   `MatrixRoom.topic`, which the admin List Room API never populates). Fixed: the topic is read from
   `m.room.topic` state before writing, and the field is gone from `MatrixRoom`. See the `Fixed`
   section of [`CHANGELOG.md`](CHANGELOG.md).
+- ~~A per-group `keep_updating_matrix_attributes_from_authentik` override was ignored~~ (the engine read
+  the flag from `matrix_room_default_settings` only). Fixed: it is resolved per group through
+  `resolve_room_settings`, like every other field of `MatrixDynamicRoomSettings`, and applies to the
+  group room and its lobby.

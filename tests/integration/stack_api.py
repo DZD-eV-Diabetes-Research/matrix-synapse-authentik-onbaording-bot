@@ -155,6 +155,11 @@ class AuthentikAdmin:
         r = self._http.post(f"/core/groups/{gpk}/add_user/", json={"pk": pk})
         r.raise_for_status()
 
+    def delete_group(self, group_pk: str) -> None:
+        r = self._http.delete(f"/core/groups/{group_pk}/")
+        if r.status_code != 404:
+            r.raise_for_status()
+
     def add_user_to_group(self, group_pk: str, user_pk: int) -> None:
         r = self._http.post(f"/core/groups/{group_pk}/add_user/", json={"pk": user_pk})
         r.raise_for_status()
@@ -354,6 +359,17 @@ def send_message_status(access_token: str, room_id: str, body: str) -> int:
         json={"msgtype": "m.text", "body": body},
         timeout=15.0,
     ).status_code
+
+
+def ban_user(access_token: str, room_id: str, user_id: str) -> None:
+    """Ban ``user_id`` from ``room_id`` as the token's owner (a room moderator in the scenarios)."""
+    r = httpx.post(
+        f"{SYNAPSE_URL}/_matrix/client/v3/rooms/{quote(room_id, safe='')}/ban",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json={"user_id": user_id, "reason": "integration test"},
+        timeout=30.0,
+    )
+    r.raise_for_status()
 
 
 def join_room_status(access_token: str, room_id_or_alias: str) -> int:

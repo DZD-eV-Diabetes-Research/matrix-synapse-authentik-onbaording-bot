@@ -461,6 +461,34 @@ async def test_set_account_data_puts_content() -> None:
 
 
 @respx.mock
+async def test_room_account_data_round_trip() -> None:
+    url = "https://matrix.test/_matrix/client/v3/user/@bot:x/rooms/!r:x/account_data/x.onbot.granted"
+    put = respx.put(url).mock(return_value=httpx.Response(200, json={}))
+    respx.get(url).mock(return_value=httpx.Response(200, json={"users": {"@a:x": 50}}))
+    client = _client()
+    try:
+        await client.set_room_account_data("@bot:x", "!r:x", "x.onbot.granted", {"users": {"@a:x": 50}})
+        assert await client.get_room_account_data("@bot:x", "!r:x", "x.onbot.granted") == {
+            "users": {"@a:x": 50}
+        }
+    finally:
+        await client.aclose()
+    assert json.loads(put.calls[0].request.content) == {"users": {"@a:x": 50}}
+
+
+@respx.mock
+async def test_room_account_data_missing_is_empty() -> None:
+    respx.get("https://matrix.test/_matrix/client/v3/user/@bot:x/rooms/!r:x/account_data/t").mock(
+        return_value=httpx.Response(404, json={"errcode": "M_NOT_FOUND"})
+    )
+    client = _client()
+    try:
+        assert await client.get_room_account_data("@bot:x", "!r:x", "t") == {}
+    finally:
+        await client.aclose()
+
+
+@respx.mock
 async def test_get_account_data_reraises_non_404() -> None:
     respx.get("https://matrix.test/_matrix/client/v3/user/@bot:x/account_data/m.direct").mock(
         return_value=httpx.Response(500, json={"errcode": "M_UNKNOWN"})

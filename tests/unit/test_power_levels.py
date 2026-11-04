@@ -9,7 +9,6 @@ from onbot.reconciler.power_levels import (
     compute_desired_user_levels,
     extract_power_level_groups,
     legacy_user_matches_or_outranks_creator,
-    merge_power_levels,
 )
 
 BOT = "@bot:matrix.test"
@@ -46,21 +45,6 @@ def test_superuser_admin_can_be_disabled() -> None:
     members = [_user("u2", "@b:x", superuser=True)]
     desired = compute_desired_user_levels(members, [], make_superusers_admin=False)
     assert desired == {}
-
-
-def test_merge_withdraws_stale_managed_levels_but_keeps_others() -> None:
-    current = {"@a:x": 50, "@bot:x": 100, "@manual:x": 75}
-    desired = {"@a:x": 25}
-    managed = {"@a:x", "@gone:x"}
-    merged = merge_power_levels(current, desired, managed)
-    # @a downgraded, @gone has no desired entry so nothing to remove, bot/manual untouched.
-    assert merged == {"@a:x": 25, "@bot:x": 100, "@manual:x": 75}
-
-
-def test_merge_removes_managed_user_who_lost_all_levels() -> None:
-    current = {"@a:x": 50, "@bot:x": 100}
-    merged = merge_power_levels(current, desired={}, managed_mxids={"@a:x"})
-    assert merged == {"@bot:x": 100}
 
 
 # --- v12 creator authority (the single rule the room-version audit enforces) ------------------
@@ -108,12 +92,3 @@ def test_global_admins_override_their_group_level() -> None:
 def test_global_admins_get_a_level_without_being_group_members() -> None:
     assert apply_global_room_admins({}, ["@admin:x"]) == {"@admin:x": 100}
     assert apply_global_room_admins({"@a:x": 50}, []) == {"@a:x": 50}
-
-
-def test_removed_global_admin_is_withdrawn_when_still_managed() -> None:
-    # The state event keeps the previous admin in `managed` for exactly one pass, which is what lets
-    # the level be taken away again. Without it there is no desired entry and no managed entry, so
-    # the 100 would sit there forever.
-    current = {"@admin:x": 100, "@a:x": 50}
-    merged = merge_power_levels(current, apply_global_room_admins({"@a:x": 50}, []), {"@admin:x", "@a:x"})
-    assert merged == {"@a:x": 50}

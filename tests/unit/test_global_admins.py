@@ -127,6 +127,38 @@ async def test_authentik_failure_drops_only_the_unresolvable_name() -> None:
     assert result == frozenset({"@alice:company.org"})
 
 
+async def test_a_failed_lookup_keeps_the_previous_resolution_of_that_name() -> None:
+    """REC-06: one Authentik 503 must not kick and demote a global admin in every room."""
+    api = FakeAuthentik([{"username": "bob", "pk": "bob-pk"}])
+    resolver = GlobalRoomAdminResolver(api, _config(global_room_admins=["bob"]))  # type: ignore[arg-type]
+    assert await resolver.resolve([], ALL_MATRIX) == frozenset({"@bob:company.org"})
+
+    api.fail = True
+    assert await resolver.resolve([], ALL_MATRIX) == frozenset({"@bob:company.org"})
+
+
+async def test_a_failed_lookup_does_not_keep_a_name_that_left_the_config() -> None:
+    api = FakeAuthentik([{"username": "bob", "pk": "bob-pk"}])
+    config = _config(global_room_admins=["bob"])
+    resolver = GlobalRoomAdminResolver(api, config)  # type: ignore[arg-type]
+    await resolver.resolve([], ALL_MATRIX)
+
+    config.global_room_admins = ["carol"]
+    api.fail = True
+    assert await resolver.resolve([], ALL_MATRIX) == frozenset()
+
+
+async def test_a_name_that_resolved_to_nothing_is_not_revived_by_a_later_failure() -> None:
+    """Only a transient failure keeps the old answer; a real "not found" is an answer too."""
+    api = FakeAuthentik([{"username": "bob", "pk": "bob-pk"}])
+    resolver = GlobalRoomAdminResolver(api, _config(global_room_admins=["bob"]))  # type: ignore[arg-type]
+    await resolver.resolve([], ALL_MATRIX)
+    api.users = []  # bob was disabled or deleted upstream
+    assert await resolver.resolve([], ALL_MATRIX) == frozenset()
+    api.fail = True
+    assert await resolver.resolve([], ALL_MATRIX) == frozenset()
+
+
 async def test_mxids_property_exposes_the_last_resolved_set() -> None:
     api = FakeAuthentik()
     resolver = GlobalRoomAdminResolver(api, _config(global_room_admins=["alice"]))  # type: ignore[arg-type]

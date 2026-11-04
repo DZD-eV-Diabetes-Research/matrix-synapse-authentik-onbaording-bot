@@ -27,9 +27,10 @@ as a reason to abort the pass. Concretely, a name is dropped when it
   same end state without the error storm, and the admin is picked up automatically once they log in.
 
 A lookup failure against Authentik is different in kind from a name that resolved to nothing: it is
-transient and says nothing about the operator's intent. It leaves the *previously resolved* set in
-place (like :class:`~onbot.admin.admins.AdminResolver`) rather than collapsing to empty, which would
-otherwise strip the admins out of the power-level map on one bad tick and put them back on the next.
+transient and says nothing about the operator's intent. It keeps that name's *previous* resolution
+(like :class:`~onbot.admin.admins.AdminResolver`) rather than dropping it, which would otherwise kick
+the admin from every room they are not a group member of and strip their power level on one bad
+tick, then put both back on the next (REC-06). A name that never resolved before stays unresolved.
 """
 
 from __future__ import annotations
@@ -46,6 +47,10 @@ from onbot.models import MappedUser
 log = get_logger(__name__)
 
 
+class _LookupFailed(Exception):
+    """Authentik could not be asked about one global admin (transient, not "no such user")."""
+
+
 class GlobalRoomAdminResolver:
     """Resolves ``global_room_admins`` usernames to MXIDs, once per reconcile pass."""
 
@@ -53,6 +58,8 @@ class GlobalRoomAdminResolver:
         self.authentik = authentik
         self.config = config
         self._mxids: frozenset[str] = frozenset()
+        # name -> MXID of the last pass that resolved it; what a transient lookup failure falls back to.
+        self._previous: dict[str, str] = {}
 
     @property
     def mxids(self) -> frozenset[str]:
@@ -70,12 +77,14 @@ class GlobalRoomAdminResolver:
         names = self.config.global_room_admins
         if not names:
             self._mxids = frozenset()
+            self._previous = {}
             return self._mxids
 
         known: dict[str, dict[str, Any]] = {
             str(u.authentik_obj.get("username")): u.authentik_obj for u in mapped_users
         }
         resolved: set[str] = set()
+        by_name: dict[str, str] = {}
         for name in names:
             if name in self.config.authentik_user_ignore_list:
                 log.warning(
@@ -86,7 +95,20 @@ class GlobalRoomAdminResolver:
                 continue
             user = known.get(name)
             if user is None:
-                user = await self._lookup(name)
+                try:
+                    user = await self._lookup(name)
+                except _LookupFailed:
+                    previous = self._previous.get(name)
+                    if previous is not None and previous in matrix_mxids:
+                        log.warning(
+                            "could not look up global room admin %r in Authentik; keeping %s from the "
+                            "previous pass",
+                            name,
+                            previous,
+                        )
+                        resolved.add(previous)
+                        by_name[name] = previous
+                    continue
             if user is None:
                 continue
             mxid = self._mxid_for(user, name)
@@ -104,20 +126,25 @@ class GlobalRoomAdminResolver:
                 )
                 continue
             resolved.add(mxid)
+            by_name[name] = mxid
 
         self._mxids = frozenset(resolved)
+        self._previous = by_name
         if len(resolved) < len(names):
             log.info("resolved %d of %d configured global room admins", len(resolved), len(names))
         return self._mxids
 
     async def _lookup(self, name: str) -> dict[str, Any] | None:
-        """Fetch one active Authentik user by exact username, or ``None``."""
+        """Fetch one active Authentik user by exact username, or ``None`` when there is none.
+
+        Raises :class:`_LookupFailed` when Authentik could not be asked at all: that is not an answer
+        about the user, and the caller falls back to the previous pass for this name.
+        """
         try:
             candidates = await self.authentik.list_users(filter_by_username=name, filter_is_active=True)
-        except Exception:
-            # Transient: say so and grant nothing *this* name, rather than failing the whole pass.
+        except Exception as exc:
             log.warning("could not look up global room admin %r in Authentik", name, exc_info=True)
-            return None
+            raise _LookupFailed(name) from exc
         # Re-check the username locally: `username` is a narrowing hint the server is free to ignore,
         # and a server that ignored it answers with every user. Matching the first result blindly
         # would then make an arbitrary account a room admin everywhere.
