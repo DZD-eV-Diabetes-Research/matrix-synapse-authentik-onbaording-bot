@@ -1,0 +1,49 @@
+# Dependabot version updates (decision D12; review findings SUP-04, SUP-07).
+#
+# What each entry covers, and what it does not (details: docs/development.md, "Dependency updates"):
+#   * github-actions: every action in .github/workflows is pinned to a commit SHA with the release in
+#     a comment; Dependabot bumps SHA and comment together.
+#   * docker: the python base image in the Dockerfile (pinned by tag and digest, both stages). Only
+#     patch releases of Python (3.14.x) are proposed; a new Python minor version is a deliberate
+#     change (requires-python, CI, classifiers), so it is ignored here. The images of the integration
+#     stack (tests/integration/stack) are pinned by digest only, without a tag, so Dependabot cannot
+#     follow them; they are updated by hand.
+#   * pip: Dependabot has no PDM support and does not read pdm.lock. It reads the PEP 621
+#     dependencies in pyproject.toml and proposes a PR when a new release falls outside the declared
+#     range (in practice: a new major beyond the caps, see the version policy in pyproject.toml).
+#     Such a PR changes pyproject.toml only, so CI's `pdm lock --check` fails on it until someone
+#     runs `pdm lock` on the branch and pushes the result. Patch and minor updates inside the ranges
+#     (the versions pinned in pdm.lock) are NOT proposed: run `pdm outdated` and `pdm update`
+#     regularly, at least before each release.
+
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: ci
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    ignore:
+      - dependency-name: python
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+    commit-message:
+      prefix: docker
+
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      python:
+        patterns: ["*"]
+    commit-message:
+      prefix: deps

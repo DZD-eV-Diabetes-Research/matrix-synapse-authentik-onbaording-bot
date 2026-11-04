@@ -1,120 +1,198 @@
 name: Release
 
-# Build & publish artifacts when a GitHub Release is published.
+# Build and publish the Docker image (dzdde/onbot) and the PyPI package (onbot) when a GitHub Release
+# is published. Full flow and the maintainer checklist: docs/development.md, "Releasing".
 #
-# Two channels, driven by the release's "This is a pre-release" checkbox
-# (github.event.release.prerelease), mirroring the DZDMedLog pipeline:
+#   1. version   derives ONE version from the tag (scripts/release_version.py): validates it as a
+#                PEP 440 release, normalises it (0.1.0-beta.1 becomes 0.1.0b1), checks that the
+#                release's "pre-release" checkbox agrees with it, and that the tagged commit is on
+#                main. Both artifacts get exactly this version (review finding SUP-06).
+#   2. ci        runs the complete CI workflow (lint, types, unit, secret scan, image smoke test,
+#                integration suite) on the tagged commit. Nothing is published unless it passes
+#                (SUP-02).
+#   3. build-dist builds sdist and wheel without any secret in reach and checks their names and
+#                that the sdist ships no test fixtures.
+#   4. publish-pypi and publish-image run in the `release` environment, the only place that holds the
+#                publish credentials (maintainer action: protect it with a required reviewer).
 #
-#   • Pre-release  → DockerHub image tagged `beta` + the version (e.g. 1.2.0-beta.1)
-#                    → PyPI upload of the (PEP 440 pre-release) version
-#   • Full release → DockerHub image tagged `latest` + version, major.minor, major
-#                    → PyPI upload of the stable version
+# Channels, by version (the checkbox must match):
+#   * pre-release (0.2.0b1, 0.2.0rc1): image tags <version> and `beta`; PyPI pre-release, installed
+#     only with `pip install --pre`.
+#   * stable (0.2.0, 0.2.0.post1): image tags <version>, <major>.<minor>, <major> and `latest`;
+#     PyPI stable.
 #
-# On PyPI the beta/latest distinction is intrinsic to the version string: a
-# PEP 440 pre-release (1.2.0b1, 1.2.0rc1, …) is not installed by `pip install`
-# unless `--pre` is passed, so it behaves like the `beta` container tag.
-#
-# The package version is derived from the git tag (pdm-backend SCM, see pyproject.toml) — there is
-# NO version to hand-edit. The tag is the single source of truth: PyPI builds it from the checked-out
-# tag; the Docker image gets it passed in via PDM_BUILD_SCM_VERSION (its build context has no .git).
-#
-# Version / tag flow (see CHANGELOG.md):
-#   1. Update CHANGELOG.md: move "Unreleased" entries under `## [X.Y.Z] - DATE`.
-#   2. Push a PEP 440 tag (a pre-release like 1.2.0b1 for betas, e.g. 1.2.0 for a full release)
-#      and create a GitHub Release from it — tick "pre-release" for a beta, leave it unticked
-#      for a stable release. The tick drives the container beta/latest tag; the tag string drives
-#      the published version everywhere.
-#
-# Secrets: DockerHub uses the org-wide DOCKERHUB_DZD_USERNAME / DOCKERHUB_DZD_PASSWORD;
-# PyPI uses the org-wide PYPI_API_TOKEN. Kept separate from ci.yml (quality +
-# integration) on purpose.
-#
-# ⚠️ The Phase 1 security hand-off (rotate leaked credentials + scrub git history,
-#    BATTLE_PLAN §5) must be complete before the first real release. See README.md.
+# Hardening (SUP-04): read-only token by default, each job asks only for what it needs; actions
+# pinned by commit SHA; no GitHub Actions cache anywhere in a release; credentials only in the two
+# publish jobs. PyPI: the job is ready for Trusted Publishing (`id-token: write`, environment
+# `release`). While the repository secret PYPI_API_TOKEN exists it is used; once the maintainer has
+# configured the Trusted Publisher on PyPI and deleted that secret, the publish action falls back to
+# Trusted Publishing on its own (and then also uploads PEP 740 attestations).
 
 on:
   release:
     types: [published]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   IMAGE_NAME: dzdde/onbot
+  PDM_VERSION: "2.27.0"
 
 jobs:
-  publish-image:
-    name: build & push image (DockerHub)
+  version:
+    name: derive version
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.derive.outputs.version }}
+      prerelease: ${{ steps.derive.outputs.prerelease }}
+      docker-tags: ${{ steps.derive.outputs.docker-tags }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0  # all branches, for the "is on main" check
+          persist-credentials: false
+
+      - name: Tagged commit is on main
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::tag ${TAG} points at ${GITHUB_SHA}, which is not on main. Release from main only."
+            exit 1
+          fi
+
+      - name: Set up PDM (Python 3.14)
+        uses: pdm-project/setup-pdm@544d7237314ee09c256785bd360f6b30add38b37 # v4.6
+        with:
+          python-version: "3.14"
+          version: ${{ env.PDM_VERSION }}
+          cache: false
+
+      # Only the `build` group (packaging, pdm-backend), exactly as locked.
+      - name: Install release tooling
+        run: pdm install --frozen-lockfile --no-self --no-default --group build
+
+      - name: Derive version
+        id: derive
+        env:
+          TAG: ${{ github.ref_name }}
+          PRERELEASE: ${{ github.event.release.prerelease }}
+        run: >-
+          pdm run python scripts/release_version.py derive "$TAG"
+          --prerelease-flag "$PRERELEASE"
+          --image "$IMAGE_NAME"
+          --github-output "$GITHUB_OUTPUT"
+
+  ci:
+    name: ci
+    needs: version
     permissions:
       contents: read
-      id-token: write  # for build provenance attestation
-    steps:
-      - uses: actions/checkout@v4
+    uses: ./.github/workflows/ci.yml
 
-      - name: Log in to DockerHub
-        uses: docker/login-action@v3
+  build-dist:
+    name: build sdist + wheel
+    needs: [version, ci]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up PDM (Python 3.14)
+        uses: pdm-project/setup-pdm@544d7237314ee09c256785bd360f6b30add38b37 # v4.6
+        with:
+          python-version: "3.14"
+          version: ${{ env.PDM_VERSION }}
+          cache: false
+
+      - name: Install release tooling
+        run: pdm install --frozen-lockfile --no-self --no-default --group build
+
+      # --no-isolation: build with the locked, hash-verified pdm-backend from the `build` group
+      # instead of downloading whatever pdm-backend is newest. The version comes from the version
+      # job, the same value the image gets.
+      - name: Build
+        env:
+          PDM_BUILD_SCM_VERSION: ${{ needs.version.outputs.version }}
+        run: pdm build --no-isolation
+
+      - name: Check the artifacts
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: pdm run python scripts/release_version.py check-dist "$VERSION" dist
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-pypi:
+    name: publish (PyPI)
+    needs: [version, ci, build-dist]
+    runs-on: ubuntu-latest
+    environment:
+      name: release
+      url: https://pypi.org/project/onbot/${{ needs.version.outputs.version }}/
+    permissions:
+      contents: read
+      id-token: write  # PyPI Trusted Publishing (used once PYPI_API_TOKEN is gone, see header)
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist/
+
+      # skip-existing keeps a re-run from failing when a file of this version is already on PyPI.
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+        with:
+          packages-dir: dist/
+          password: ${{ secrets.PYPI_API_TOKEN }}
+          skip-existing: true
+
+  publish-image:
+    name: publish image (Docker Hub)
+    needs: [version, ci]
+    runs-on: ubuntu-latest
+    environment:
+      name: release
+      url: https://hub.docker.com/r/dzdde/onbot/tags
+    permissions:
+      contents: read
+    steps:
+      - name: Log in to Docker Hub
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           username: ${{ secrets.DOCKERHUB_DZD_USERNAME }}
           password: ${{ secrets.DOCKERHUB_DZD_PASSWORD }}
 
-      - name: Derive image tags & labels
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.IMAGE_NAME }}
-          # Pre-releases get `beta` + the full version only; full releases get the
-          # full version plus the rolling major.minor / major tags and `latest`.
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}},enable=${{ !github.event.release.prerelease }}
-            type=semver,pattern={{major}},enable=${{ !github.event.release.prerelease }}
-            type=raw,value=beta,enable=${{ github.event.release.prerelease }}
-          flavor: |
-            latest=${{ !github.event.release.prerelease }}
-
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
+      # Built from a git context of the tagged commit (no checkout): BuildKit fetches exactly the
+      # tracked files of that commit, so nothing untracked can enter the image (SUP-17). No cache:
+      # every release image is built from scratch.
       - name: Build and push
-        id: build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
-          context: .
+          context: ${{ github.server_url }}/${{ github.repository }}.git#${{ github.sha }}
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          # Feed the release version into pdm-backend inside the image (no .git in the build context).
+          pull: true
+          no-cache: true
+          tags: ${{ needs.version.outputs.docker-tags }}
+          labels: |
+            org.opencontainers.image.version=${{ needs.version.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
           build-args: |
-            PDM_BUILD_SCM_VERSION=${{ steps.meta.outputs.version }}
-          provenance: true
+            PDM_BUILD_SCM_VERSION=${{ needs.version.outputs.version }}
+          # BuildKit provenance (mode=max) and SBOM attestations, attached to the image index.
+          provenance: mode=max
           sbom: true
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-  publish-pypi:
-    name: build & publish (PyPI)
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write  # for PyPI trusted publishing / provenance
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0  # need the full tag history so pdm-backend can derive the version from SCM
-
-      - name: Set up PDM (Python 3.14)
-        uses: pdm-project/setup-pdm@v4
-        with:
-          python-version: "3.14"
-          cache: true
-
-      - name: Build sdist + wheel
-        run: pdm build
-
-      # Version comes from the git tag (dynamic SCM). A pre-release tag (1.2.0b1) is uploaded as a
-      # PEP 440 pre-release, so pip treats it as beta (opt-in via --pre). skip-existing keeps a re-run
-      # from hard-failing if a file for this version is already on PyPI.
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          packages-dir: ./dist
-          password: ${{ secrets.PYPI_API_TOKEN }}
-          skip-existing: true

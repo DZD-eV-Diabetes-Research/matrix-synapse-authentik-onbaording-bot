@@ -9,6 +9,11 @@
 # instance; the host-side login helper rewrites those hostnames to localhost:<host port> on browser
 # hops. Two values in synapse/homeserver.yaml (public_baseurl, account_management_url) name the
 # instance 0 host ports; Synapse only advertises them to clients and the harness never follows them.
+#
+# Every published port binds to 127.0.0.1 only (review finding SUP-15). The stack runs with fixed,
+# public admin credentials (Authentik bootstrap password and token, MAS admin client secret), and
+# Docker's port publishing bypasses host firewalls, so on 0.0.0.0 anyone on the same network could
+# log in as admin while the stack is up.
 name: ${ONBOT_ITEST_PROJECT:-onbot-itest}
 
 services:
@@ -56,7 +61,7 @@ services:
     volumes:
       - ./authentik/blueprints/onbot.yaml:/blueprints/onbot.yaml:ro
     ports:
-      - "${ONBOT_ITEST_AUTHENTIK_PORT:-9000}:9000"
+      - "127.0.0.1:${ONBOT_ITEST_AUTHENTIK_PORT:-9000}:9000"
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
@@ -91,7 +96,7 @@ services:
     volumes:
       - ./mas/config.yaml:/config/config.yaml:ro
     ports:
-      - "${ONBOT_ITEST_MAS_PORT:-8080}:8080"
+      - "127.0.0.1:${ONBOT_ITEST_MAS_PORT:-8080}:8080"
     depends_on:
       postgres: {condition: service_healthy}
 
@@ -115,7 +120,7 @@ services:
     tmpfs:
       - /data
     ports:
-      - "${ONBOT_ITEST_SYNAPSE_PORT:-8008}:8008"
+      - "127.0.0.1:${ONBOT_ITEST_SYNAPSE_PORT:-8008}:8008"
     depends_on:
       postgres: {condition: service_healthy}
       mas: {condition: service_started}

@@ -1,33 +1,59 @@
 name: CI
 
+# Runs on pushes to main and on pull requests, and as the first stage of every release:
+# release.yml calls this workflow (workflow_call) on the tagged commit and publishes nothing unless
+# every job here passes.
+#
+# Hardening (review findings SUP-02, SUP-04, SUP-05):
+#   * The token is read-only for every job (top-level `permissions`), and checkout does not keep it
+#     in .git/config (`persist-credentials: false`), so code that runs in a job (a test, a plugin,
+#     a compromised dependency) cannot push.
+#   * Every action is pinned to a full commit SHA; the comment names the release. Dependabot keeps
+#     them current (.github/dependabot.yml).
+#   * Pull requests are tested at their head commit (`github.event.pull_request.head.sha`), which is
+#     also the commit the status is reported on. Never `github.head_ref`: that is a branch name in
+#     the base repository and checks out the wrong code for fork PRs.
+#   * Formatting is checked, not fixed: CI never commits.
+#   * The GitHub Actions cache is used on push and PR runs only, never when a release runs this
+#     workflow, so nothing a branch run wrote can feed a release.
+
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # Keyed on the workflow too, so a release run (which calls this workflow) never shares a group
+  # with the release workflow itself.
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'release' }}
+
+env:
+  # The commit every job tests: the PR head for pull requests, otherwise the pushed or tagged commit.
+  TEST_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+  PDM_VERSION: "2.27.0"
+  USE_CACHE: ${{ github.event_name != 'release' }}
 
 jobs:
   quality:
     name: lint · type · test
     runs-on: ubuntu-latest
-    permissions:
-      contents: write  # so the auto-format step can push the fix commit back
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # Check out the PR's source branch (not the detached merge ref) so an
-          # auto-format commit can be pushed back to it. Empty on push events,
-          # where checkout falls back to the pushed ref — also correct.
-          ref: ${{ github.head_ref }}
+          ref: ${{ env.TEST_SHA }}
+          persist-credentials: false
 
       - name: Set up PDM (Python 3.14)
-        uses: pdm-project/setup-pdm@v4
+        uses: pdm-project/setup-pdm@544d7237314ee09c256785bd360f6b30add38b37 # v4.6
         with:
           python-version: "3.14"
-          cache: true
+          version: ${{ env.PDM_VERSION }}
+          cache: ${{ env.USE_CACHE }}
 
       # pdm.lock is the only lockfile. Fail when it no longer matches pyproject.toml instead of
       # silently re-resolving, so CI tests exactly what the image exports.
@@ -40,15 +66,10 @@ jobs:
       - name: Ruff lint
         run: pdm run ruff check .
 
-      # Formatting is mechanical, so we auto-apply it instead of failing the build.
-      # If ruff changed anything, the next step commits it back to the branch.
+      # Formatting is checked, never auto-committed (decision D12). Fix locally with
+      # `pdm run ruff format .`; the pre-commit hook does it on every commit.
       - name: Ruff format
-        run: pdm run ruff format .
-
-      - name: Commit formatting fixes (if any)
-        uses: stefanzweifel/git-auto-commit-action@v5
-        with:
-          commit_message: "style: auto-format with ruff"
+        run: pdm run ruff format --check .
 
       - name: Mypy
         run: pdm run mypy onbot
@@ -56,22 +77,22 @@ jobs:
       - name: Config docs in sync with the model
         run: pdm run check-config-docs
 
-      - name: Pytest (unit + contract — fast, coverage reported but not gated)
+      - name: Pytest (unit + contract, fast, coverage reported but not gated)
         run: pdm run pytest -m "not integration" --cov --cov-report=term-missing --cov-fail-under=0
 
   secrets:
     name: secret scan (gitleaks)
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
     env:
       GITLEAKS_VERSION: "8.30.1"
       # sha256 of gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz from the release's checksums.txt.
       GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ env.TEST_SHA }}
           fetch-depth: 0  # the commit range below needs the history
+          persist-credentials: false
 
       # The gitleaks CLI directly: gitleaks-action needs a paid license for organisation repos.
       - name: Install gitleaks
@@ -88,9 +109,9 @@ jobs:
       - name: Scan the current tree
         run: '"$RUNNER_TEMP/gitleaks" dir . --redact --no-banner --verbose'
 
-      # The commits this PR or push adds. Not the full history: it still holds two old, already
-      # invalid tokens (review finding SUP-01) until the history scrub, and they must not fail
-      # every run.
+      # The commits this PR or push adds (a release run scans the tagged commit). Not the full
+      # history: it still holds two old, already invalid tokens (review finding SUP-01) until the
+      # history scrub, and they must not fail every run.
       - name: Scan the new commits
         env:
           EVENT: ${{ github.event_name }}
@@ -104,29 +125,56 @@ jobs:
           elif [ -n "$PUSH_BEFORE" ] && git cat-file -e "${PUSH_BEFORE}^{commit}" 2>/dev/null; then
             range="${PUSH_BEFORE}..${PUSH_AFTER}"
           else
-            # New branch or rewritten history: the old tip is unknown, scan the pushed commit only.
+            # New branch, rewritten history or a release: scan the commit itself only.
             range="-1 ${PUSH_AFTER}"
           fi
           echo "Scanning commit range: ${range}"
           "$RUNNER_TEMP/gitleaks" git . --redact --no-banner --verbose --log-opts="${range}"
 
+  image:
+    name: image build · smoke test
+    runs-on: ubuntu-latest
+    # The Dockerfile is only exercised here before a release pushes it. Plain `docker build`, no
+    # registry, no credentials. The release builds the same Dockerfile again from a git context.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.TEST_SHA }}
+          persist-credentials: false
+
+      - name: Build
+        run: docker build --build-arg PDM_BUILD_SCM_VERSION=0.0.0rc0 -t onbot:ci .
+
+      - name: Smoke test
+        run: |
+          docker run --rm onbot:ci --version | tee version.txt
+          grep -qx "onbot 0.0.0rc0" version.txt
+          docker run --rm onbot:ci healthcheck --help >/dev/null
+          # The runtime venv holds the locked runtime packages and onbot, and no pip.
+          docker run --rm --entrypoint /opt/venv/bin/python onbot:ci -c \
+            "import importlib.util as u, sys; sys.exit(u.find_spec('pip') is not None)"
+
   integration:
     name: integration (live Synapse · MAS · Authentik)
     runs-on: ubuntu-latest
-    # Slow (boots a 6-container stack) and needs Docker — kept separate from the fast quality job.
+    # Slow (boots a 6-container stack) and needs Docker, so it is kept apart from the fast quality job.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.TEST_SHA }}
+          persist-credentials: false
 
       - name: Set up PDM (Python 3.14)
-        uses: pdm-project/setup-pdm@v4
+        uses: pdm-project/setup-pdm@544d7237314ee09c256785bd360f6b30add38b37 # v4.6
         with:
           python-version: "3.14"
-          cache: true
+          version: ${{ env.PDM_VERSION }}
+          cache: ${{ env.USE_CACHE }}
 
       - name: Install dependencies
         run: pdm install --dev --frozen-lockfile
 
-      # The full suite (incl. integration) — the testcontainers fixture brings up the stack. This is
+      # The full suite (incl. integration); the testcontainers fixture brings up the stack. This is
       # the authoritative coverage gate: app.py + __main__.py are exercised end-to-end here.
       - name: Pytest (full suite + coverage gate)
         run: pdm run pytest --cov --cov-report=term-missing
