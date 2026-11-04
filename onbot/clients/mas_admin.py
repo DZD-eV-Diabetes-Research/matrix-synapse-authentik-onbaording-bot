@@ -5,7 +5,8 @@ integration experiment (§7 Q1) proved that the Synapse admin API cannot revoke 
 deleting devices or deactivating the account leaves the MAS-issued token valid. Effective lockout
 must go through MAS itself. This client wraps the MAS admin API operations the lifecycle module needs:
 
-* lock / unlock a user (reversible session revocation — the cooldown ``logout`` stage),
+* lock / unlock a user (the cooldown ``logout`` stage; a lock suspends sessions and blocks logins,
+  an unlock brings the same sessions back),
 * deactivate a user (irreversible — the ``erase`` stage).
 
 Auth is an OAuth2 ``client_credentials`` token carrying the ``urn:mas:admin`` scope (the bot's MAS
@@ -33,6 +34,11 @@ def mxid_localpart(mxid: str) -> str:
     return mxid.removeprefix("@").split(":", 1)[0]
 
 
+def _is_mas_error_body(payload: Any) -> bool:
+    """Whether a response body is a MAS admin API error document (``{"errors": [{"title": ...}]}``)."""
+    return isinstance(payload, dict) and isinstance(payload.get("errors"), list)
+
+
 class ApiClientMasAdmin(BaseApiClient):
     """The subset of the MAS admin API onbot's lifecycle module uses."""
 
@@ -48,18 +54,27 @@ class ApiClientMasAdmin(BaseApiClient):
         super().__init__(base_url=base, auth_token=access_token, token_provider=token_provider, **kwargs)
 
     async def get_user_id_by_username(self, username: str) -> str | None:
-        """Resolve a MAS user ULID from its username (localpart), or ``None`` if unknown."""
+        """Resolve a MAS user ULID from its username (localpart), or ``None`` if MAS has no such user.
+
+        Only MAS's own JSON "not found" answer (``{"errors": [...]}``) means "no such user". Any other
+        404 (the listener does not mount the ``adminapi`` resource, or a reverse proxy does not route
+        ``/api/admin``) is a deployment error and raises, so it can never pass for "nothing to do"
+        (LIF-10).
+        """
         try:
             result = await self.get_json(f"users/by-username/{username}")
         except ApiError as exc:
-            if exc.status_code == 404:
+            if exc.status_code == 404 and _is_mas_error_body(exc.payload):
                 return None
             raise
         user_id: str = result["data"]["id"]
         return user_id
 
     async def lock_user(self, user_id: str) -> None:
-        """Lock the user: revokes active sessions and blocks new logins (reversible)."""
+        """Lock the user: suspends active sessions and blocks new logins (reversible).
+
+        Per the MAS admin API a lock does not end sessions: they work again after :meth:`unlock_user`.
+        """
         await self.post_json(f"users/{user_id}/lock")
 
     async def unlock_user(self, user_id: str) -> None:

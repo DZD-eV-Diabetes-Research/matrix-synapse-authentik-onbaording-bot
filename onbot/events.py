@@ -25,6 +25,10 @@ class Signal(StrEnum):
     # Emitted at the end of every reconcile pass, so state that must converge on the tick but is not
     # the reconciler's business can ride along (the admin room's invites, ADR-0010).
     reconcile_completed = "reconcile_completed"
+    # The offboarding step needs a human: a user was frozen (D9), a step failed, or the step was
+    # aborted on an implausible Authentik answer. Payload: ``mxid`` (None for an abort), ``action``,
+    # ``detail``. Meant for the admin room; nothing routes it there yet, the lifecycle also logs it.
+    lifecycle_attention = "lifecycle_attention"
 
 
 @dataclass(frozen=True, slots=True)

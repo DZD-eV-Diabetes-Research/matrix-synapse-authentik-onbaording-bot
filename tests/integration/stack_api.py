@@ -137,6 +137,14 @@ class AuthentikAdmin:
         r = self._http.patch(f"/core/users/{pk}/", json={"is_active": active})
         r.raise_for_status()
 
+    def set_attributes(self, pk: int, attributes: dict[str, Any]) -> None:
+        r = self._http.patch(f"/core/users/{pk}/", json={"attributes": attributes})
+        r.raise_for_status()
+
+    def delete_user(self, pk: int) -> None:
+        r = self._http.delete(f"/core/users/{pk}/")
+        r.raise_for_status()
+
     def set_superuser(self, pk: int, value: bool) -> None:
         # Superuser status in Authentik comes from group membership; create/join a superuser group.
         grp = self._http.post(
@@ -393,6 +401,40 @@ def wait_revoked(access_token: str, *, timeout: float = 150.0) -> bool:
             return True
         time.sleep(0.5)
     return whoami_status(access_token) == 401
+
+
+def wait_whoami_ok(access_token: str, *, timeout: float = 150.0) -> bool:
+    """Poll until Synapse accepts the token again (200), for example after a MAS unlock.
+
+    The mirror image of :func:`wait_revoked`: Synapse's introspection cache also delays the way back.
+    """
+    import time
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if whoami_status(access_token) == 200:
+            return True
+        time.sleep(0.5)
+    return whoami_status(access_token) == 200
+
+
+def mas_user(username: str) -> dict[str, Any]:
+    """The MAS admin API view of a user (``locked_at``, ``deactivated_at``, ...), read as the bot's
+    admin client. The authoritative answer to "is this account locked", without the Synapse cache."""
+    with httpx.Client(timeout=15.0) as c:
+        tok = c.post(
+            f"{MAS_URL}/oauth2/token",
+            data={"grant_type": "client_credentials", "scope": "urn:mas:admin"},
+            auth=(MAS_ADMIN_CLIENT_ID, MAS_ADMIN_CLIENT_SECRET),
+        )
+        tok.raise_for_status()
+        r = c.get(
+            f"{MAS_URL}/api/admin/v1/users/by-username/{quote(username, safe='')}",
+            headers={"Authorization": f"Bearer {tok.json()['access_token']}"},
+        )
+        r.raise_for_status()
+        attributes: dict[str, Any] = r.json()["data"]["attributes"]
+        return attributes
 
 
 def provision(

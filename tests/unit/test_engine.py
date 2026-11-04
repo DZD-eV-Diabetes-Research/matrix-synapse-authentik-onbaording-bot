@@ -8,6 +8,7 @@ import pytest
 from onbot.clients.base import ApiError
 from onbot.config import OnbotConfig
 from onbot.events import EventBus, Signal
+from onbot.lifecycle.accounts import DirectorySnapshot, DirectoryUser
 from onbot.reconciler.effectors import DryRunEffectors
 from onbot.reconciler.engine import ReconcilerEngine
 
@@ -421,43 +422,148 @@ async def _async(value: Any) -> Any:
 
 
 class FakeLifecycle:
-    """Captures the orphaned set the engine feeds the lifecycle manager."""
+    """Captures the directory snapshot the engine feeds the lifecycle manager."""
 
-    def __init__(self) -> None:
-        self.calls: list[set[str]] = []
+    def __init__(self, outcomes: list[Any] | None = None) -> None:
+        self.calls: list[DirectorySnapshot] = []
+        self.outcomes = outcomes or []
 
-    async def reconcile_accounts(self, orphaned_mxids: set[str]) -> list[Any]:
-        self.calls.append(set(orphaned_mxids))
-        return []
+    async def reconcile_accounts(self, snapshot: DirectorySnapshot) -> list[Any]:
+        self.calls.append(snapshot)
+        return self.outcomes
+
+
+_DISABLED = [
+    {"username": "dave", "pk": "dave-pk", "is_active": False},  # disabled, has a Matrix account
+    {"username": "eve", "pk": "eve-pk", "is_active": False},  # disabled, no Matrix account
+]
 
 
 class LifecycleAuthentik(FakeAuthentik):
-    """Returns active users for is_active=True and one disabled user otherwise."""
+    """Active users from :class:`FakeAuthentik` plus two disabled ones, honouring ``filter_is_active``."""
 
     async def list_users(self, **kwargs: Any) -> list[dict[str, Any]]:
-        if kwargs.get("filter_is_active") is False:
-            return [
-                {"username": "dave", "pk": "dave-pk"},  # disabled, has a Matrix account → orphan
-                {"username": "eve", "pk": "eve-pk"},  # disabled, but no Matrix account → ignored
-            ]
-        return await super().list_users(**kwargs)
+        active = [dict(u, is_active=True) for u in await super().list_users(**kwargs)]
+        flag = kwargs.get("filter_is_active", True)
+        if flag is True:
+            return active
+        if flag is False:
+            return list(_DISABLED)
+        return active + list(_DISABLED)
 
 
-def _lifecycle_engine(config: OnbotConfig, admin: FakeAdmin, lifecycle: FakeLifecycle) -> ReconcilerEngine:
-    return ReconcilerEngine(config, LifecycleAuthentik(), admin, RecordingEffectors(), lifecycle=lifecycle)  # type: ignore[arg-type]
+def _lifecycle_engine(
+    config: OnbotConfig, admin: FakeAdmin, lifecycle: FakeLifecycle, authentik: Any = None
+) -> ReconcilerEngine:
+    return ReconcilerEngine(
+        config,
+        authentik or LifecycleAuthentik(),
+        admin,  # type: ignore[arg-type]
+        RecordingEffectors(),
+        lifecycle=lifecycle,  # type: ignore[arg-type]
+    )
 
 
-async def test_lifecycle_invoked_with_scoped_orphans() -> None:
+async def test_lifecycle_gets_the_whole_directory_and_the_matrix_accounts() -> None:
     config = OnbotConfig.model_validate(_BASE)
+    config.authentik_user_ignore_list = ["eve"]
+    config.matrix_user_ignore_list = ["@carol:company.org"]
     admin = FakeAdmin()
-    # @dave exists in Matrix and is disabled upstream; @eve does not exist in Matrix.
     admin.list_users = lambda: _async(  # type: ignore[method-assign]
         [{"name": f"@{u}:company.org"} for u in ("alice", "bob", "carol", "dave")]
     )
     lifecycle = FakeLifecycle()
     await _lifecycle_engine(config, admin, lifecycle).reconcile_once()
 
-    assert lifecycle.calls == [{"@dave:company.org"}]
+    [snap] = lifecycle.calls
+    by_name = {u.username: u for u in snap.users}
+    assert set(by_name) == {"alice", "bob", "carol", "dave", "eve"}
+    assert by_name["dave"] == DirectoryUser(
+        pk="dave-pk", username="dave", mxid="@dave:company.org", is_active=False, in_scope=True, ignored=False
+    )
+    assert by_name["eve"].ignored is True
+    assert snap.matrix_mxids == {f"@{u}:company.org" for u in ("alice", "bob", "carol", "dave")}
+    assert snap.excluded_mxids == {"@bot:company.org", "@carol:company.org"}
+    assert snap.synced_mxids == {"@alice:company.org", "@bob:company.org"}
+
+
+async def test_lifecycle_scope_comes_from_the_same_filters_as_the_room_sync() -> None:
+    """LIF-05 / REC-14: path, attribute and group filters decide who is in scope, for both sides."""
+
+    class PathAuthentik(LifecycleAuthentik):
+        def __init__(self) -> None:
+            self.queries: list[dict[str, Any]] = []
+
+        async def list_users(self, **kwargs: Any) -> list[dict[str, Any]]:
+            self.queries.append(kwargs)
+            users = await super().list_users(**kwargs)
+            if kwargs.get("filter_by_path") == "staff":
+                return [u for u in users if u["username"] in ("alice", "dave")]
+            return users
+
+    config = OnbotConfig.model_validate(_BASE)
+    sync = config.sync_authentik_users_with_matrix_rooms
+    sync.sync_only_users_in_authentik_pathes = ["staff"]
+    sync.sync_only_users_with_authentik_attributes = {"chat": True}
+    sync.sync_only_users_of_groups_with_id = ["g1"]
+    authentik = PathAuthentik()
+    lifecycle = FakeLifecycle()
+    await _lifecycle_engine(config, FakeAdmin(), lifecycle, authentik).reconcile_once()
+
+    [snap] = lifecycle.calls
+    assert {u.username for u in snap.users if u.in_scope} == {"alice", "dave"}
+    scoped = [q for q in authentik.queries if q.get("filter_by_path") == "staff"]
+    assert {q["filter_is_active"] for q in scoped} == {True, None}
+    for query in scoped:
+        assert query["filter_by_attribute"] == {"chat": True}
+        assert query["filter_groups_by_pk"] == ["g1"]
+
+
+async def test_empty_authentik_answer_skips_the_lifecycle_and_reports() -> None:
+    class Blind(LifecycleAuthentik):
+        async def list_users(self, **kwargs: Any) -> list[dict[str, Any]]:
+            return []
+
+    events = EventBus()
+    reports: list[Any] = []
+
+    async def collect(event: Any) -> None:
+        reports.append(event.payload)
+
+    events.subscribe(Signal.lifecycle_attention, collect)
+    config = OnbotConfig.model_validate(_BASE)
+    lifecycle = FakeLifecycle()
+    engine = _lifecycle_engine(config, FakeAdmin(), lifecycle, Blind())
+    engine.events = events
+    await engine.reconcile_once()
+    assert lifecycle.calls == []
+    assert [r["action"] for r in reports] == ["abort"]
+
+
+async def test_lifecycle_outcomes_that_need_attention_are_emitted() -> None:
+    from onbot.lifecycle.accounts import LifecycleAction, LifecycleOutcome
+
+    outcomes = [
+        LifecycleOutcome(mxid="@a:company.org", action=LifecycleAction.mark, dry_run=False),
+        LifecycleOutcome(mxid="@b:company.org", action=LifecycleAction.freeze, dry_run=False, detail="why"),
+        LifecycleOutcome(
+            mxid="@c:company.org", action=LifecycleAction.logout, dry_run=False, failed=True, detail="boom"
+        ),
+    ]
+    events = EventBus()
+    reports: list[Any] = []
+
+    async def collect(event: Any) -> None:
+        reports.append(event.payload)
+
+    events.subscribe(Signal.lifecycle_attention, collect)
+    engine = _lifecycle_engine(OnbotConfig.model_validate(_BASE), FakeAdmin(), FakeLifecycle(outcomes))
+    engine.events = events
+    await engine.reconcile_once()
+    assert reports == [
+        {"mxid": "@b:company.org", "action": "freeze", "detail": "why"},
+        {"mxid": "@c:company.org", "action": "logout", "detail": "boom"},
+    ]
 
 
 async def test_lifecycle_skipped_when_disabled() -> None:

@@ -66,10 +66,24 @@ async def test_healthcheck_includes_mas_admin_when_configured() -> None:
         return_value=httpx.Response(200, json={"access_token": "mas-tok", "expires_in": 3600})
     )
     by_username = respx.get("https://mas.test/api/admin/v1/users/by-username/bot").mock(
-        return_value=httpx.Response(404)  # 404 → None, still proves auth worked
+        # MAS's own "not found" document: the lookup answers None, which still proves auth worked.
+        return_value=httpx.Response(404, json={"errors": [{"title": "User not found"}]})
     )
     assert await run_healthcheck(_config(with_mas=True)) == 0
     assert by_username.called
+
+
+@respx.mock
+async def test_healthcheck_fails_when_the_mas_admin_api_is_not_routed() -> None:
+    """A bare 404 means the admin API is not mounted or not proxied: enforcement would be a no-op."""
+    _mock_core_endpoints()
+    respx.post("https://mas.test/oauth2/token").mock(
+        return_value=httpx.Response(200, json={"access_token": "mas-tok", "expires_in": 3600})
+    )
+    respx.get("https://mas.test/api/admin/v1/users/by-username/bot").mock(
+        return_value=httpx.Response(404, text="Not Found")
+    )
+    assert await run_healthcheck(_config(with_mas=True)) == 1
 
 
 @respx.mock

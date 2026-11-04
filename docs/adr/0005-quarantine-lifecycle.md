@@ -33,7 +33,8 @@ Isolate the lifecycle domain in its own module (`lifecycle/`) with:
   data, keyed by MXID — decoupled from the onboarding DM.
 - **Scoped orphan detection:** the reconciler only feeds the manager MXIDs that map to a *disabled*
   Authentik user and that already have a Matrix account; the bot user and ignore lists (G12.1) are
-  excluded, so the destructive path can never touch unrelated admin/service accounts.
+  excluded, so the destructive path can never touch unrelated admin/service accounts. (Superseded
+  by the review S1 update below: this detection missed deleted users and re-enabled on absence.)
 
 ## §7 Q1 resolved empirically (Phase 7b, 2026-06-23)
 
@@ -66,10 +67,39 @@ through MAS. The Synapse-admin effectors are insufficient under the MAS topology
   `AdminApiLifecycleEffectors` (correct only on non-MAS Synapse).
 - The lifecycle protocol gained a restorative `reenable` op so a returning user is unlocked.
 
+## Implementation update (review S1, 2026-11-04): fail closed
+
+The 2026-11-04 review found the module failing *open* (LIF-01, SEC-01, MNT-02): every tracked user who
+dropped out of the "disabled users" query was re-enabled, including users deleted from Authentik,
+users who lost a scope attribute or landed on an ignore list, and every user at once when the
+Authentik token stopped seeing users. Under MAS the unlock brought every old session back. The
+decision rules are now:
+
+- **Re-enable needs positive evidence.** The pure state machine takes a status per account
+  (`active`, `orphaned`, `frozen`, `untracked`) instead of "orphaned or not". Only `active` (the
+  bound Authentik user is present, active and in the sync scope) leads to `reenable`, and the unlock
+  is only called for a lock onbot itself set (`disabled_user_timestamp`). Dry-run calls no effector
+  at all, the unlock included.
+- **Known users and deletion.** onbot records `authentik pk -> MXID` (first seen) for every active,
+  in-scope user with a Matrix account, in its own account data next to the ledger; ledger entries
+  carry the pk too. A recorded user who disappears from Authentik is `orphaned` ("deleted") and goes
+  through the same cooldowns. Accounts never mapped are `untracked` and never touched. The binding is
+  never rewritten; renames and duplicates are reported (ADR follow-up: D8, review session S9).
+- **One scope.** The lifecycle receives every Authentik user plus the scope verdict from the same
+  query helper the room sync uses, so an account is only offboarded for a disabled user inside the
+  scope, and never while any active Authentik user (in any scope) maps to it.
+- **Frozen (D9).** A tracked user who leaves the scope, lands on an ignore list or collides with
+  another active user gets no unlock and no further step; it is reported once.
+- **Isolation.** Each user is handled on its own with exponential backoff, the ledger is saved after
+  every user, an unresolvable MAS user is a failure (LIF-10), and erase records deactivation and
+  media deletion separately so a retry never repeats the deactivation.
+- **Minimal plausibility guard.** An empty Authentik user list skips the step. The configurable
+  guards of D4 (drop thresholds, per-pass limits, confirmation) follow in later review sessions.
+
 ## Consequences
 
 - Operators must explicitly opt in to real destructive actions (G12.2); cooldown delays absorb
   accidental upstream disables (G9.3, G12.3).
 - Under MAS, configure `mas_admin` or **lifecycle enforcement is a no-op against live sessions**
-  (the Synapse-admin path silently fails to revoke). The design stays safe — the module never
-  *grants* access, only removes it, behind dry-run.
+  (the Synapse-admin path silently fails to revoke). The module only ever gives access back by
+  lifting a lock it set itself, for a user positively active and in scope, and never in dry-run.
