@@ -66,3 +66,26 @@ Proposed design, to confirm at the start of that session:
 - Report binding changes and duplicate MXIDs in the admin room; duplicates fail closed (the affected
   users are skipped, never merged).
 - One function computes the MXID (today it is written four times, MNT-13).
+
+## D9 Users who leave the sync scope during offboarding (S1)
+
+A user who still exists in Authentik but is no longer in the sync scope while onbot has them locked or
+in the offboarding pipeline is frozen: no unlock, no further destructive step. The bot reports it in
+the admin room and an admin decides manually. If the user comes back into scope as active, the normal
+re-enable applies.
+
+## D10 Withdraw power levels (S2, REC-08, G8.4)
+
+When a user loses the group membership that granted an elevated power level, the bot withdraws it.
+It withdraws only entries it set itself (tracked by the bot); levels set by humans stay untouched.
+
+## D11 Avatar fetching (S13, SEC-03)
+
+Private, loopback and link-local destinations are blocked by default; a config allowlist can release
+specific internal hosts. Plus a size cap, a total timeout, and redirects re-checked against the same
+rules.
+
+## D12 CI dependency updates and formatting (S15)
+
+Dependabot for GitHub Actions, the Docker base image and Python dependencies. CI only checks
+`ruff format` and fails; it no longer commits formatting fixes to `main`.
