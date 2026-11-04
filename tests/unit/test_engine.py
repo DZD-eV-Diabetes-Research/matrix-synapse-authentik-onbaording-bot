@@ -74,6 +74,10 @@ class FakeAdmin:
         self.deleted.append(room_id)
         return {}
 
+    async def get_room_details(self, room_id: str) -> dict[str, Any]:
+        # Every fake room is a v12 room the bot created, so the bot is an infinite creator there.
+        return {"room_id": room_id, "room_version": "12", "creator": "@bot:company.org"}
+
 
 class RecordingEffectors(DryRunEffectors):
     def __init__(self) -> None:
@@ -86,6 +90,7 @@ class RecordingEffectors(DryRunEffectors):
         self.state_writes: list[tuple[str, str, dict[str, Any]]] = []
         self.names: list[tuple[str, str]] = []
         self.topics: list[tuple[str, str]] = []
+        self.account_data: dict[tuple[str, str], dict[str, Any]] = {}
 
     async def kick_user(self, room_id: str, user_id: str, reason: str | None = None) -> None:
         self.kicks.append((room_id, user_id))
@@ -121,6 +126,16 @@ class RecordingEffectors(DryRunEffectors):
     async def put_room_state(self, room_id: str, event_type: str, content: dict[str, Any]) -> None:
         self.state_store[(room_id, event_type)] = content
         self.state_writes.append((room_id, event_type, content))
+
+    async def get_room_account_data(
+        self, user_id: str, room_id: str, data_type: str
+    ) -> dict[str, Any] | None:
+        return self.account_data.get((room_id, data_type))
+
+    async def put_room_account_data(
+        self, user_id: str, room_id: str, data_type: str, content: dict[str, Any]
+    ) -> None:
+        self.account_data[(room_id, data_type)] = content
 
 
 def _engine(events: EventBus | None = None) -> tuple[ReconcilerEngine, FakeAdmin, RecordingEffectors]:

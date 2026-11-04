@@ -39,27 +39,33 @@ from onbot.reconciler.membership import (
 )
 from onbot.reconciler.power_levels import (
     PowerLevelGroup,
+    RoomAuthority,
     apply_global_room_admins,
     compute_desired_user_levels,
+    creators_are_privileged,
     extract_power_level_groups,
-    merge_power_levels,
+    plan_power_levels,
+    room_authority,
 )
 from onbot.reconciler.report import PassReport, describe_error
 from onbot.reconciler.rooms import build_group_room_maps, resolve_room_settings
 from onbot.reconciler.state import (
     AnyRoomState,
+    GrantedPowerLevels,
     GroupRoomState,
     OnbotRoomType,
     SpaceRoomState,
     VisitorLobbyRoomState,
     dump_room_state,
     event_type_name,
+    granted_power_levels_type,
     parse_room_state,
 )
 
 log = get_logger(__name__)
 
 JOIN_RULES_EVENT_TYPE = "m.room.join_rules"
+CREATE_EVENT_TYPE = "m.room.create"
 TOPIC_EVENT_TYPE = "m.room.topic"
 
 
@@ -98,6 +104,8 @@ class ReconcilerEngine:
         self.last_reconcile_at: float | None = None
         # What the last pass could not converge, per room (REC-03). Empty report before the first pass.
         self.last_pass_report = PassReport()
+        # room id -> (room version, creators). The create event never changes, so one read per room.
+        self._create_info_cache: dict[str, tuple[str | None, frozenset[str]]] = {}
         self._stop = asyncio.Event()
         self._trigger = asyncio.Event()
 
@@ -569,13 +577,10 @@ class ReconcilerEngine:
 
         bot_id = self.config.synapse_server.bot_user_id
         problems: list[str] = []
-        for mxid in await self.admin.list_room_members(room.room_id):
-            if mxid == bot_id:
-                continue
-            try:
-                await self.effectors.kick_user(room.room_id, mxid, reason)
-            except ApiError as exc:
-                problems.append(f"could not kick {mxid}: {describe_error(exc)}")
+        members = [m for m in await self.admin.list_room_members(room.room_id) if m != bot_id]
+        await self._kick_members(
+            room.room_id, await self._kickable(room, members, problems), reason, problems
+        )
         report.extend(room_kind=room_type, room_id=room.room_id, group_pk=group_id, problems=problems)
 
         if settings.delete_disabled_rooms:
@@ -646,7 +651,7 @@ class ReconcilerEngine:
                 steps.append(
                     (
                         "power levels",
-                        self._converge_power_levels(room.room_id, gm.group_pk, users, pl_groups, room_cfg),
+                        self._converge_power_levels(room, gm.group_pk, users, pl_groups, room_cfg),
                     )
                 )
             steps.append(("name and topic", self._converge_room_attributes(room, gm.desired, gm.group_pk)))
@@ -724,7 +729,7 @@ class ReconcilerEngine:
         await self._add_members(room.room_id, mdiff.to_add, problems)
         await self._kick_members(
             room.room_id,
-            mdiff.to_kick,
+            await self._kickable(room, mdiff.to_kick, problems),
             "Removed: missing/revoked group membership in the central user directory.",
             problems,
         )
@@ -764,11 +769,10 @@ class ReconcilerEngine:
         # Only the global admins get a level here: a lobby is not a projection of the group, so the
         # group's power-level attributes deliberately do not reach into it.
         await self._write_power_levels(
-            lobby.room_id,
+            lobby,
             OnbotRoomType.visitor_lobby,
             VisitorLobbyRoomState(group_id=gm.group_pk, authentik_server=self.config.authentik_server.url),
             desired={},
-            managed=set(),
         )
 
     async def _converge_lobby_join_rules(self, lobby: MatrixRoom, space: MatrixRoom | None) -> None:
@@ -790,7 +794,7 @@ class ReconcilerEngine:
 
     async def _converge_power_levels(
         self,
-        room_id: str,
+        room: MatrixRoom,
         group_pk: str,
         users: list[MappedUser],
         pl_groups: list[PowerLevelGroup],
@@ -803,49 +807,165 @@ class ReconcilerEngine:
             make_superusers_admin=room_cfg.make_authentik_superusers_matrix_room_admin,
         )
         await self._write_power_levels(
-            room_id,
+            room,
             OnbotRoomType.group_room,
             GroupRoomState(group_id=group_pk, authentik_server=self.config.authentik_server.url),
             desired=desired,
-            managed={u.mxid for u in members_in_room},
         )
 
     async def _write_power_levels(
         self,
-        room_id: str,
+        room: MatrixRoom,
         room_type: OnbotRoomType,
         fresh_state: AnyRoomState,
         *,
         desired: dict[str, int],
-        managed: set[str],
     ) -> None:
-        """Apply ``desired`` levels for ``managed`` users, plus the global room admins at PL 100.
+        """Apply ``desired`` levels plus the global room admins at PL 100, and withdraw stale grants.
 
-        Global admins join ``managed`` so :func:`merge_power_levels` actually writes them, and so do
-        the admins recorded in the room's onbot state event by an earlier pass: those are the ones a
-        removed config entry has to be withdrawn from, since nothing else in this pass derives them
-        any more (see :class:`~onbot.reconciler.state._OnbotRoomState`). The record is rewritten only
-        when the set changed, so a steady state costs one state read and no writes.
+        Withdrawal follows D10: only entries the bot itself wrote are taken back. They are recorded,
+        with the level written, in the bot's per-room account data (:class:`GrantedPowerLevels`),
+        which no room member can edit. The ``global_admins`` list in the room's onbot state event
+        predates that record; it is still read as a withdrawal source (without a level) and kept up
+        to date, so rooms from older versions lose a removed admin's level as before.
+
+        What the bot may not change (a creator, a user at or above its level in a pre-v12 room) is
+        skipped and reported instead of failing the whole write (REC-05), and grants are capped one
+        below the bot's own level where that level is finite. A steady state costs one state read, one
+        account data read and one power-level read, and no writes.
         """
+        room_id = room.room_id
+        bot_id = self.config.synapse_server.bot_user_id
         global_admins = self.global_admins.mxids
         event_type = event_type_name(self.server_name, room_type)
         raw = await self.effectors.get_room_state(room_id, event_type)
         state = parse_room_state(room_type, raw) if raw else fresh_state
-        recorded = frozenset(state.global_admins)
+        legacy_admins = frozenset(state.global_admins)
+        record = await self._load_grant_record(room_id)
+        recorded: dict[str, int | None] = {**dict.fromkeys(legacy_admins - record.keys()), **record}
 
-        managed = set(managed) | global_admins | recorded
-        if not managed:
-            return
         desired = apply_global_room_admins(desired, global_admins)
-        current = await self.effectors.get_room_power_levels(room_id)
-        current_users = dict(current.get("users", {}))
-        merged = merge_power_levels(current_users, desired, managed)
-        if merged != current_users:
-            await self.effectors.set_room_power_levels(room_id, {**current, "users": merged})
+        if not desired and not recorded:
+            return
+        power = await self.effectors.get_room_power_levels(room_id)
+        current_users = dict(power.get("users") or {})
+        authority = await self._room_authority(room, power)
+        plan = plan_power_levels(current_users, desired, recorded, authority, bot_id=bot_id)
 
-        if recorded != global_admins:
+        for mxid in plan.released:
+            log.info(
+                "power level of %s in %s was changed by someone else since the bot set it; "
+                "leaving it to them",
+                mxid,
+                room_id,
+            )
+        if plan.users != current_users:
+            if plan.capped:
+                log.warning(
+                    "room %s (version %s): the bot is at power level %s here, so it grants at most %s: %s",
+                    room_id,
+                    room.room_version,
+                    authority.bot_level,
+                    authority.max_grant,
+                    ", ".join(f"{m} (wanted {lvl})" for m, lvl in sorted(plan.capped.items())),
+                )
+            # Record new grants before writing them: a crash between the two must never leave a
+            # level the bot set but does not know it owns.
+            interim = {**record, **plan.granted}
+            if interim != record:
+                await self._save_grant_record(room_id, interim)
+                record = interim
+            await self.effectors.set_room_power_levels(room_id, {**power, "users": plan.users})
+        if plan.granted != record:
+            await self._save_grant_record(room_id, plan.granted)
+
+        if legacy_admins != global_admins:
             state.global_admins = sorted(global_admins)
             await self.effectors.put_room_state(room_id, event_type, dump_room_state(state))
+
+        if plan.blocked:
+            raise _RoomStepProblems(
+                [f"cannot change power level of {mxid}: {why}" for mxid, why in sorted(plan.blocked.items())]
+            )
+
+    async def _load_grant_record(self, room_id: str) -> dict[str, int]:
+        bot_id = self.config.synapse_server.bot_user_id
+        raw = await self.effectors.get_room_account_data(
+            bot_id, room_id, granted_power_levels_type(self.server_name)
+        )
+        if not raw:
+            return {}
+        try:
+            return dict(GrantedPowerLevels.model_validate(raw).users)
+        except ValidationError:
+            # Withdrawing on a guess is the destructive direction; an unreadable record withdraws
+            # nothing and is replaced by the next write.
+            log.warning("unreadable power-level record for %s; treating it as empty", room_id)
+            return {}
+
+    async def _save_grant_record(self, room_id: str, users: dict[str, int]) -> None:
+        bot_id = self.config.synapse_server.bot_user_id
+        await self.effectors.put_room_account_data(
+            bot_id,
+            room_id,
+            granted_power_levels_type(self.server_name),
+            GrantedPowerLevels(users=dict(sorted(users.items()))).model_dump(mode="json"),
+        )
+
+    async def _room_authority(self, room: MatrixRoom, power_levels: dict[str, Any]) -> RoomAuthority:
+        """What the bot may change in ``room``, from its power levels and (cached) create event."""
+        room_version, creators = await self._create_info(room)
+        return room_authority(
+            power_levels,
+            self.config.synapse_server.bot_user_id,
+            room_version=room_version,
+            creators=creators,
+        )
+
+    async def _create_info(self, room: MatrixRoom) -> tuple[str | None, frozenset[str]]:
+        """A room's version and creators. Immutable per room id, so read once per process.
+
+        The version and the creator come with the admin room listing; a room created during this pass
+        is looked up once. Only rooms with privileged creators (v12+) need the create event itself,
+        for ``additional_creators`` (who may arrive through ``chatroom_params``, D6).
+        """
+        cached = self._create_info_cache.get(room.room_id)
+        if cached is not None:
+            return cached
+        room_version, creator = room.room_version, room.creator
+        if room_version is None or creator is None:
+            details = await self.admin.get_room_details(room.room_id)
+            room_version = room_version or details.get("room_version")
+            creator = creator or details.get("creator")
+        creators: set[str] = {creator} if creator else set()
+        if creators_are_privileged(room_version):
+            content = await self.effectors.get_room_state(room.room_id, CREATE_EVENT_TYPE) or {}
+            extra = content.get("additional_creators")
+            if isinstance(extra, list):
+                creators |= {c for c in extra if isinstance(c, str)}
+        info = (room_version, frozenset(creators))
+        self._create_info_cache[room.room_id] = info
+        return info
+
+    async def _kickable(self, room: MatrixRoom, mxids: list[str], problems: list[str]) -> list[str]:
+        """The subset of ``mxids`` the bot is allowed to kick; the rest are reported (REC-05, D6).
+
+        Kicking needs a level strictly above the target's, and nobody can kick a v12 creator. Trying
+        anyway only earns a 403 on every pass.
+        """
+        if not mxids:
+            return []
+        power = await self.effectors.get_room_power_levels(room.room_id)
+        authority = await self._room_authority(room, power)
+        users = power.get("users") or {}
+        kickable: list[str] = []
+        for mxid in mxids:
+            why = authority.why_untouchable(mxid, authority.level_of(users, mxid))
+            if why is None:
+                kickable.append(mxid)
+            else:
+                problems.append(f"cannot kick {mxid}: {why}")
+        return kickable
 
     async def _converge_room_attributes(
         self, room: MatrixRoom, desired: RoomCreateAttributes, group_pk: str

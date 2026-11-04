@@ -98,6 +98,25 @@ class AdminRoomState(_OnbotRoomState):
     help_event_id: str | None = None
 
 
+class GrantedPowerLevels(BaseModel):
+    """The power-level entries the bot itself wrote into one room, and the level it wrote (D10).
+
+    Lives in the bot's **per-room account data**, not in room state: only the bot can read or write
+    it, so a room moderator cannot add a name and have the bot demote somebody for them, or remove one
+    to keep a level forever. The power-level pass withdraws an entry only if it is recorded here *and*
+    still holds the recorded level; one a human changed since is theirs (see
+    :func:`~onbot.reconciler.power_levels.plan_power_levels`).
+    """
+
+    schema_version: int = SCHEMA_VERSION
+    users: dict[str, int] = Field(default_factory=dict)
+
+
+def granted_power_levels_type(server_name: str) -> str:
+    """Account data type of :class:`GrantedPowerLevels`, e.g. ``org.company.onbot.granted_power_levels``."""
+    return event_type_name(server_name, "granted_power_levels")
+
+
 AnyRoomState = SpaceRoomState | GroupRoomState | DirectRoomState | AdminRoomState | VisitorLobbyRoomState
 
 _STATE_MODEL_BY_TYPE: dict[OnbotRoomType, type[AnyRoomState]] = {

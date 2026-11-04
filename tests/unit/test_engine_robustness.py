@@ -452,3 +452,193 @@ async def test_the_bot_is_never_written_into_the_power_levels() -> None:
     written = [pl["users"] for _room, pl in effectors.power_levels]
     assert written, "the room still gets its power levels"
     assert all("@bot:company.org" not in users for users in written)
+
+
+# --- REC-05: pre-v12 rooms, where the bot is an ordinary entry at 100 ---
+
+_ALICE = "@alice:company.org"
+_BOB = "@bob:company.org"
+_CAROL = "@carol:company.org"
+_GOUT = "@gout:company.org"
+_BOT = "@bot:company.org"
+
+
+class StatefulPowerLevels(RecordingEffectors):
+    """Power levels that persist between calls and passes, like a real room."""
+
+    def __init__(self, levels: dict[str, dict[str, Any]] | None = None) -> None:
+        super().__init__()
+        self.levels: dict[str, dict[str, Any]] = levels or {}
+
+    async def get_room_power_levels(self, room_id: str) -> dict[str, Any]:
+        current = self.levels.get(room_id, {})
+        return {**current, "users": dict(current.get("users", {}))}
+
+    async def set_room_power_levels(self, room_id: str, power_levels: dict[str, Any]) -> None:
+        await super().set_room_power_levels(room_id, power_levels)
+        self.levels[room_id] = {**power_levels, "users": dict(power_levels.get("users", {}))}
+
+
+class LegacyRoomAdmin(TwoRoomAdmin):
+    """room1 is a v10 room (the legacy bot's, adopted by alias). gout sits in it from an old grant."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.refuse = set()
+
+    async def list_users(self) -> list[dict[str, Any]]:
+        return [*await super().list_users(), {"name": _GOUT}]
+
+    async def list_non_space_rooms(self) -> list[dict[str, Any]]:
+        rooms = await super().list_non_space_rooms()
+        return [{**r, "version": "10", "creator": _BOT} if r["room_id"] == _ROOM1 else r for r in rooms]
+
+    async def list_room_members(self, room_id: str) -> list[str]:
+        if room_id == _ROOM1:
+            return [_ALICE, _BOB, _GOUT, _BOT]
+        return await super().list_room_members(room_id)
+
+
+async def test_a_legacy_room_never_gets_a_grant_at_the_bots_level() -> None:
+    config = OnbotConfig.model_validate({**_BASE, "global_room_admins": ["carol"]})
+    effectors = StatefulPowerLevels({_ROOM1: {"users": {_BOT: 100}}})
+    engine, _, effectors, _ = _engine(admin=LegacyRoomAdmin(), effectors=effectors, config=config)
+    await engine.reconcile_once()
+
+    assert effectors.levels[_ROOM1]["users"] == {_BOT: 100, _ALICE: 50, _CAROL: 99}
+    # A v12 room the bot created still gets the full 100.
+    assert effectors.levels[_ROOM2]["users"] == {_CAROL: 100}
+
+
+async def test_a_legacy_room_with_users_at_the_bots_level_is_reported_and_not_fought() -> None:
+    """08 check 5: an old grant of 100 cannot be demoted or kicked by the bot any more."""
+    effectors = StatefulPowerLevels({_ROOM1: {"users": {_BOT: 100, _ALICE: 100, _GOUT: 100}}})
+    # An older bot version seated both as global admins and recorded them in the room state.
+    effectors.state_store[(_ROOM1, _GROUP_EVENT)] = {
+        "room_type": "group_room",
+        "group_id": "g1",
+        "global_admins": [_ALICE, _GOUT],
+    }
+    engine, _, effectors, bus = _engine(admin=LegacyRoomAdmin(), effectors=effectors)
+    reported = _collect(bus, Signal.room_not_converged)
+
+    for _ in range(2):
+        reported.clear()
+        await engine.reconcile_once()
+
+        # Nothing the server would refuse is even attempted ...
+        assert all(user != _GOUT for room, user in effectors.kicks if room == _ROOM1)
+        assert all(room != _ROOM1 for room, _pl in effectors.power_levels)
+        assert effectors.levels[_ROOM1]["users"] == {_BOT: 100, _ALICE: 100, _GOUT: 100}
+        # ... and both are reported once for the room, every pass.
+        room1 = [e.payload for e in reported if e.payload["room_id"] == _ROOM1]
+        assert len(room1) == 1
+        problems = " | ".join(room1[0]["problems"])
+        assert f"cannot kick {_GOUT}" in problems
+        assert f"cannot change power level of {_ALICE}" in problems
+        assert f"cannot change power level of {_GOUT}" in problems
+
+
+async def test_an_extra_creator_is_neither_kicked_nor_named_in_power_levels() -> None:
+    """D6: ``chatroom_params`` can plant ``additional_creators``; the room is reported, not fought."""
+
+    class ExtraCreatorAdmin(TwoRoomAdmin):
+        async def list_room_members(self, room_id: str) -> list[str]:
+            if room_id == _ROOM1:
+                return [_ALICE, "@mallory:company.org", _BOT]
+            return await super().list_room_members(room_id)
+
+    admin = ExtraCreatorAdmin()
+    admin.refuse = set()
+    effectors = StatefulPowerLevels()
+    effectors.state_store[(_ROOM1, "m.room.create")] = {
+        "room_version": "12",
+        "additional_creators": ["@mallory:company.org"],
+    }
+    engine, _, effectors, bus = _engine(admin=admin, effectors=effectors)
+    reported = _collect(bus, Signal.room_not_converged)
+    await engine.reconcile_once()
+
+    assert (_ROOM1, "@mallory:company.org") not in effectors.kicks
+    assert "cannot kick @mallory:company.org" in " | ".join(reported[0].payload["problems"])
+
+
+# --- D10 / REC-08: withdraw only what the bot itself granted ---
+
+
+class MutableAuthentik(TwoGroupAuthentik):
+    """g1's membership can change between passes; g1 carries power level 50."""
+
+    def __init__(self) -> None:
+        self.g1 = {"alice-pk", "bob-pk"}
+
+    async def list_users(self, **kwargs: Any) -> list[dict[str, Any]]:
+        if kwargs.get("filter_is_active") is False:
+            return []
+        users = [("alice", "alice-pk"), ("bob", "bob-pk"), ("carol", "carol-pk")]
+        return [
+            {
+                "username": name,
+                "pk": pk,
+                "is_superuser": False,
+                "groups_obj": [{"pk": "g1"}] if pk in self.g1 else [{"pk": "g2"}],
+            }
+            for name, pk in users
+        ]
+
+    async def list_groups(self, **_: Any) -> list[dict[str, Any]]:
+        return [{**_GROUP_G1, "users": sorted(self.g1 & {"alice-pk"})}, _GROUP_G2]
+
+
+def _d10_engine(levels: dict[str, Any]) -> tuple[ReconcilerEngine, MutableAuthentik, StatefulPowerLevels]:
+    config = OnbotConfig.model_validate(
+        {
+            **_BASE,
+            "sync_authentik_users_with_matrix_rooms": {
+                "kick_matrix_room_members_not_in_mapped_authentik_group_anymore": False
+            },
+        }
+    )
+    admin = TwoRoomAdmin()
+    admin.refuse = set()
+    authentik = MutableAuthentik()
+    effectors = StatefulPowerLevels({_ROOM1: levels})
+    engine, _, effectors, _ = _engine(admin=admin, effectors=effectors, config=config, authentik=authentik)
+    return engine, authentik, effectors
+
+
+async def test_a_level_the_bot_granted_is_withdrawn_when_the_member_leaves_the_group() -> None:
+    """REC-08: with kicks off, an ex-member used to stay a moderator forever."""
+    engine, authentik, effectors = _d10_engine({"users": {}})
+    await engine.reconcile_once()
+    assert effectors.levels[_ROOM1]["users"] == {_ALICE: 50}
+
+    authentik.g1 = {"bob-pk"}
+    await engine.reconcile_once()
+    assert effectors.levels[_ROOM1]["users"] == {}
+
+
+async def test_a_level_a_human_set_is_never_withdrawn() -> None:
+    """bob is in g1 without a power-level group; a room admin made him a moderator by hand."""
+    engine, _, effectors = _d10_engine({"users": {_BOB: 50}})
+    await engine.reconcile_once()
+    assert effectors.levels[_ROOM1]["users"] == {_ALICE: 50, _BOB: 50}
+
+
+async def test_a_bot_grant_a_human_changed_is_left_to_the_human() -> None:
+    engine, authentik, effectors = _d10_engine({"users": {}})
+    await engine.reconcile_once()
+    effectors.levels[_ROOM1]["users"][_ALICE] = 75  # a room admin promotes alice further
+
+    authentik.g1 = {"bob-pk"}
+    await engine.reconcile_once()
+    assert effectors.levels[_ROOM1]["users"] == {_ALICE: 75}
+
+
+async def test_the_grant_record_lives_in_the_bots_room_account_data() -> None:
+    """Not in room state: a moderator must not be able to make the bot demote somebody."""
+    engine, _, effectors = _d10_engine({"users": {}})
+    await engine.reconcile_once()
+    assert effectors.account_data[(_ROOM1, "org.company.onbot.granted_power_levels")]["users"] == {_ALICE: 50}
+    state = effectors.state_store.get((_ROOM1, _GROUP_EVENT)) or {}
+    assert "users" not in state

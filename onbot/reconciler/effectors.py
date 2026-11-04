@@ -56,6 +56,16 @@ class MatrixEffectors(Protocol):
 
     async def put_room_state(self, room_id: str, event_type: str, content: dict[str, Any]) -> None: ...
 
+    async def get_room_account_data(
+        self, user_id: str, room_id: str, data_type: str
+    ) -> dict[str, Any] | None:
+        """``user_id``'s private account data for one room, or ``None`` when unset."""
+        ...
+
+    async def put_room_account_data(
+        self, user_id: str, room_id: str, data_type: str, content: dict[str, Any]
+    ) -> None: ...
+
 
 class DryRunEffectors:
     """Logs every intended write and mutates nothing. Default until Phase 4 wires the CS client."""
@@ -117,3 +127,13 @@ class DryRunEffectors:
 
     async def put_room_state(self, room_id: str, event_type: str, content: dict[str, Any]) -> None:
         log.info("[dry-run] would set state %s on %s", event_type, room_id)
+
+    async def get_room_account_data(
+        self, user_id: str, room_id: str, data_type: str
+    ) -> dict[str, Any] | None:
+        return None
+
+    async def put_room_account_data(
+        self, user_id: str, room_id: str, data_type: str, content: dict[str, Any]
+    ) -> None:
+        log.info("[dry-run] would set account data %s for %s in %s", data_type, user_id, room_id)

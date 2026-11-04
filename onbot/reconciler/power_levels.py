@@ -9,12 +9,21 @@ legacy:
 * **Highest wins (G8.3):** when a user is in several power-level groups we take the max; superuser
   room-admin (G8.2) overrides group levels.
 
-Non-managed users (e.g. the bot, manually-promoted accounts) are never touched.
+What the engine writes is planned by :func:`plan_power_levels`, which adds two rules on top:
+
+* **Only the bot's own grants are withdrawn (D10, REC-08).** The bot records every entry it wrote;
+  when the user stops qualifying, only a recorded entry whose value is still what the bot wrote is
+  removed. Levels set by humans, and bot grants a human has since changed, stay untouched.
+* **Never grant what cannot be taken back (REC-05).** In rooms where the bot is not an infinite
+  creator (every pre-v12 room) it never grants its own level or more, and it does not try to change
+  users at or above its level, or extra creators: those are reported instead.
+
+The bot itself is never written (ADR-0011, REC-12).
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -150,3 +159,175 @@ def legacy_user_matches_or_outranks_creator(
     creator_level = users[creator_id]
     user_level = users.get(user_id, power_levels.get("users_default", 0))
     return bool(user_level >= creator_level)
+
+
+# Room versions in which the creators hold an infinite, immutable power level and may not appear in
+# `m.room.power_levels` (ADR-0011). Every stable version from 12 on keeps the rule; the unstable
+# predecessor of v12 had it too.
+_PRIVILEGED_CREATOR_UNSTABLE_VERSIONS = frozenset({"org.matrix.hydra.11"})
+
+
+def creators_are_privileged(room_version: str | None) -> bool:
+    """Whether room creators are infinite in this room version (v12 and later).
+
+    An unknown version reads as pre-v12. That is the safe side: it gives the bot a finite level, so
+    it only ever grants less and refuses more, never the reverse.
+    """
+    if room_version is None:
+        return False
+    if room_version.isdigit():
+        return int(room_version) >= 12
+    return room_version in _PRIVILEGED_CREATOR_UNSTABLE_VERSIONS
+
+
+def _as_level(value: Any, default: int) -> int:
+    """A power level as an int. Rooms before v10 may store levels as strings."""
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError:
+            return default
+    return default
+
+
+@dataclass(frozen=True, slots=True)
+class RoomAuthority:
+    """What the bot may change in one room.
+
+    ``bot_level`` is ``None`` when the bot is an infinite creator (a v12 room it created): it may then
+    change and kick everyone except other creators. Otherwise it is the bot's ordinary level, and the
+    pre-v12 auth rules apply: the bot may only change or kick users strictly below it.
+    ``creators`` are the *other* privileged creators (v12 ``additional_creators``, or the creator of
+    a v12 room the bot did not create): untouchable, and never to be named in ``users``.
+    """
+
+    bot_level: int | None
+    creators: frozenset[str]
+    users_default: int
+
+    @property
+    def max_grant(self) -> int | None:
+        """The highest level the bot hands out here, or ``None`` for no limit.
+
+        One below its own: a user at the bot's level can never be demoted or kicked by the bot again.
+        """
+        return None if self.bot_level is None else self.bot_level - 1
+
+    def level_of(self, users: Mapping[str, Any], mxid: str) -> int:
+        return _as_level(users.get(mxid), self.users_default)
+
+    def why_untouchable(self, mxid: str, level: int) -> str | None:
+        """Why the bot cannot change this user's level or kick them, or ``None`` if it can."""
+        if mxid in self.creators:
+            return "is a room creator (infinite power level)"
+        if self.bot_level is not None and level >= self.bot_level:
+            return f"is at power level {level}, not below the bot's own {self.bot_level}"
+        return None
+
+
+def room_authority(
+    power_levels: Mapping[str, Any],
+    bot_id: str,
+    *,
+    room_version: str | None,
+    creators: Iterable[str],
+) -> RoomAuthority:
+    """Derive the bot's :class:`RoomAuthority` from a room's power levels and create event."""
+    users = power_levels.get("users") or {}
+    users_default = _as_level(power_levels.get("users_default"), 0)
+    creator_set = frozenset(creators)
+    if not creators_are_privileged(room_version):
+        # Pre-v12: creators are ordinary `users` entries, the bot included.
+        return RoomAuthority(_as_level(users.get(bot_id), users_default), frozenset(), users_default)
+    bot_level = None if bot_id in creator_set else _as_level(users.get(bot_id), users_default)
+    return RoomAuthority(bot_level, creator_set - {bot_id}, users_default)
+
+
+@dataclass(frozen=True, slots=True)
+class PowerLevelPlan:
+    """The outcome of :func:`plan_power_levels` for one room."""
+
+    users: dict[str, Any]
+    """The ``users`` map to write (equal to the current one when nothing changes)."""
+    granted: dict[str, int]
+    """The bot's record of the entries it owns after this write (D10)."""
+    capped: dict[str, int]
+    """Users granted less than wanted (the wanted level), because the bot must stay above them."""
+    blocked: dict[str, str]
+    """Users whose level should change but cannot, with the reason. Reported, never retried in-pass."""
+    released: tuple[str, ...]
+    """Users whose bot-granted entry a human changed: dropped from the record, left alone."""
+
+
+def plan_power_levels(
+    current_users: Mapping[str, Any],
+    desired: Mapping[str, int],
+    recorded: Mapping[str, int | None],
+    authority: RoomAuthority,
+    *,
+    bot_id: str,
+) -> PowerLevelPlan:
+    """Plan the ``users`` map for one room.
+
+    * Every ``desired`` user the bot may change is set to the desired level, capped at
+      :attr:`RoomAuthority.max_grant`, and recorded as the bot's grant. A human edit to such a user is
+      overwritten: they qualify for exactly this level.
+    * A ``recorded`` user who is no longer desired loses the entry, but only while it still holds the
+      level the bot wrote (``None`` in ``recorded`` means "trust it", for records that predate levels).
+      If a human changed it since, the entry is theirs: it stays and leaves the record.
+    * Nobody else is touched, so a level a human set for anyone is never withdrawn.
+    * A change the bot may not make (a creator, a user at or above a finite bot level) is skipped and
+      reported in ``blocked``; a recorded entry stays recorded so it can be withdrawn later.
+    """
+    merged: dict[str, Any] = dict(current_users)
+    granted: dict[str, int] = {}
+    capped: dict[str, int] = {}
+    blocked: dict[str, str] = {}
+    released: list[str] = []
+
+    for mxid, wanted in sorted(desired.items()):
+        if mxid == bot_id:
+            continue
+        current = current_users.get(mxid)
+        why = authority.why_untouchable(mxid, authority.level_of(current_users, mxid))
+        if why is not None:
+            if current is not None and _as_level(current, authority.users_default) == wanted:
+                granted[mxid] = wanted  # already exactly what is wanted: own it, nothing to write
+            else:
+                blocked[mxid] = f"wanted at {wanted}, but {why}"
+            continue
+        level = wanted
+        if authority.max_grant is not None and wanted > authority.max_grant:
+            level = authority.max_grant
+            capped[mxid] = wanted
+        merged[mxid] = level
+        granted[mxid] = level
+
+    for mxid, recorded_level in sorted(recorded.items()):
+        if mxid in desired or mxid == bot_id:
+            continue
+        current = current_users.get(mxid)
+        if current is None:
+            continue  # already gone; forget it
+        level = _as_level(current, authority.users_default)
+        if recorded_level is not None and level != recorded_level:
+            released.append(mxid)
+            continue
+        why = authority.why_untouchable(mxid, level)
+        if why is not None:
+            blocked[mxid] = f"should lose power level {level}, but {why}"
+            granted[mxid] = level if recorded_level is None else recorded_level
+            continue
+        del merged[mxid]
+
+    return PowerLevelPlan(
+        users=merged,
+        granted=granted,
+        capped=capped,
+        blocked=blocked,
+        released=tuple(released),
+    )
