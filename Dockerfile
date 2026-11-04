@@ -1,10 +1,15 @@
-# syntax=docker/dockerfile:1
-#
 # Onbot production image (BATTLE_PLAN.md §5 Phase 8).
 #
-#   * Multi-stage: a builder resolves the *locked, prod-only* deps into a venv; the final stage
-#     copies just that venv onto a slim base — no PDM, no build tools, no dev/test deps.
-#   * Base image pinned by digest (reproducible; update the digest deliberately, not implicitly).
+#   * Multi-stage: a builder installs the *locked, prod-only* deps into a venv; the final stage
+#     copies just that venv onto a slim base. No PDM, no pip, no build tools, no dev/test deps.
+#   * Reproducible from pdm.lock: every package (runtime deps and the pdm-backend that builds the
+#     onbot wheel) is installed by exact version with the lock's sha256 hashes (--require-hashes),
+#     wheels only. scripts/lock_requirements.py reads pdm.lock with the standard library, so PDM
+#     itself is never installed here. The base image is pinned by tag and digest, tini by
+#     checksum. Dependabot proposes base image updates (.github/dependabot.yml).
+#   * Only package files reach the image: .dockerignore is an allowlist (Python files under onbot/,
+#     the lock and the metadata). The release workflow builds from a git context of the tagged
+#     commit, so untracked files never enter a published image (docs/development.md).
 #   * Runs as a non-root user.
 #   * No crypto stack (libolm): the bot operates outside encrypted rooms (ADR-0009).
 #   * HEALTHCHECK calls `onbot healthcheck`, which reads the heartbeat file the running service
@@ -13,42 +18,67 @@
 #   * Signals: tini is PID 1 and forwards SIGTERM to `onbot`, which shuts down gracefully within
 #     the default 10 s of `docker stop` (see docs/deployment.md, "Stopping").
 #
-# Config is provided at runtime — never baked in (no secrets in the image). Mount a config file and
+# Config is provided at runtime, never baked in (no secrets in the image). Mount a config file and
 # point ONBOT_CONFIG_FILE_PATH at it, or supply every setting via ONBOT_* env vars. See README.md.
 
-# python:3.14-slim-bookworm — pin by digest; refresh with `docker pull` + `docker inspect`.
-ARG PYTHON_IMAGE=python@sha256:a70519002c49552ea0a853de47599cf40479b001bd7a624f1112eaf44dcaccc7
-
-# --- builder: resolve locked prod deps into /opt/venv ------------------------------------------
-FROM ${PYTHON_IMAGE} AS builder
+# --- builder: install the locked prod deps and the onbot wheel into /opt/venv -----------------
+# Base image: python:3.14.x-slim-bookworm by tag and digest. Dependabot updates both (the same
+# reference appears in the runtime stage below; keep the two identical).
+FROM python:3.14.10-slim-bookworm@sha256:516b51cb9db2ef061e465c803e50f64361b82cefd91e525b889b967b83e83527 AS builder
 
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1 \
-    PDM_CHECK_UPDATE=false
+    PIP_ROOT_USER_ACTION=ignore \
+    PYTHONDONTWRITEBYTECODE=1
 
-RUN pip install --no-cache-dir pdm
+WORKDIR /src
 
-WORKDIR /app
+# tini as the static binary from the upstream release, verified by checksum. Fetched here so the
+# runtime stage needs no apt (and does not depend on the Debian mirror state at build time).
+ARG TINI_VERSION=v0.19.0
+ARG TINI_SHA256_AMD64=c5b0666b4cb676901f90dfcb37106783c5fe2077b04590973b885950611b30ee
+ARG TINI_SHA256_ARM64=eae1d3aa50c48fb23b8cbdf4e369d0910dfc538566bfd09df89a774aa84a48b9
+RUN arch="$(dpkg --print-architecture)" \
+ && case "$arch" in \
+        amd64) sha="$TINI_SHA256_AMD64" ;; \
+        arm64) sha="$TINI_SHA256_ARM64" ;; \
+        *) echo "no tini checksum for architecture $arch" >&2; exit 1 ;; \
+    esac \
+ && python -c 'import sys, urllib.request; urllib.request.urlretrieve(sys.argv[1], sys.argv[2])' \
+        "https://github.com/krallin/tini/releases/download/${TINI_VERSION}/tini-static-${arch}" /tmp/tini \
+ && echo "${sha}  /tmp/tini" | sha256sum -c - \
+ && chmod 0755 /tmp/tini
 
-# Export the locked production dependency set, then install it into a clean venv. Copying only the
-# lock/metadata first keeps this layer cached across source-only changes.
-COPY pyproject.toml pdm.lock README.md ./
-RUN pdm export --prod --no-hashes -o /tmp/requirements.txt
+# Lock and metadata first, so the dependency layer stays cached across source-only changes.
+COPY pyproject.toml pdm.lock README.md LICENSE ./
+COPY scripts/lock_requirements.py scripts/release_version.py ./scripts/
 
-RUN python -m venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
-RUN pip install --no-cache-dir -r /tmp/requirements.txt
+# Build tools (pdm-backend, packaging) go into the builder's own Python; the runtime venv is created
+# without pip and filled by the builder's pip, so it ends up with the runtime packages only.
+RUN python scripts/lock_requirements.py build > /tmp/build-requirements.txt \
+ && python scripts/lock_requirements.py default > /tmp/runtime-requirements.txt \
+ && pip install --require-hashes --no-deps --only-binary=:all: -r /tmp/build-requirements.txt \
+ && python -m venv --without-pip /opt/venv \
+ && pip --python /opt/venv/bin/python install \
+        --require-hashes --no-deps --only-binary=:all: -r /tmp/runtime-requirements.txt
 
-# Install the onbot package itself (no deps — they are already pinned above). The build context has
-# no .git, so pdm-backend can't derive the version from SCM; the release workflow passes it here via
-# --build-arg PDM_BUILD_SCM_VERSION=<tag>. Without it the package falls back to fallback_version.
+# The onbot package itself. The build context has no .git, so pdm-backend cannot derive the version
+# from SCM; the release workflow passes it as --build-arg PDM_BUILD_SCM_VERSION=<version> (from
+# scripts/release_version.py, the same value the PyPI build gets). Without it the package carries
+# fallback_version (0.0.0), which is fine for a local build. When it is set, the build fails unless
+# the installed package reports exactly that version.
 ARG PDM_BUILD_SCM_VERSION
-ENV PDM_BUILD_SCM_VERSION=${PDM_BUILD_SCM_VERSION}
 COPY onbot ./onbot
-RUN pip install --no-cache-dir --no-deps .
+RUN pip wheel --no-deps --no-build-isolation --wheel-dir /tmp/dist . \
+ && pip --python /opt/venv/bin/python install --no-deps /tmp/dist/onbot-*.whl \
+ && installed="$(/opt/venv/bin/python -c 'import importlib.metadata as m; print(m.version("onbot"))')" \
+ && echo "onbot ${installed}" \
+ && if [ -n "${PDM_BUILD_SCM_VERSION}" ]; then \
+        python scripts/release_version.py verify --expected "${PDM_BUILD_SCM_VERSION}" --actual "${installed}"; \
+    fi
 
 # --- runtime: slim image with just the venv + a non-root user --------------------------------
-FROM ${PYTHON_IMAGE} AS runtime
+FROM python:3.14.10-slim-bookworm@sha256:516b51cb9db2ef061e465c803e50f64361b82cefd91e525b889b967b83e83527 AS runtime
 
 LABEL org.opencontainers.image.title="onbot" \
       org.opencontainers.image.description="Keep a Matrix (Synapse) homeserver in sync with Authentik and onboard new users." \
@@ -66,11 +96,9 @@ ENV PATH="/opt/venv/bin:$PATH" \
 # otherwise wait for the SIGKILL. tini forwards the signal and reaps zombies.
 RUN useradd --create-home --uid 10001 onbot \
  && mkdir -p /config \
- && chown onbot:onbot /config \
- && apt-get update \
- && apt-get install -y --no-install-recommends tini \
- && rm -rf /var/lib/apt/lists/*
+ && chown onbot:onbot /config
 
+COPY --from=builder /tmp/tini /usr/bin/tini
 COPY --from=builder /opt/venv /opt/venv
 
 USER onbot

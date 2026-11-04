@@ -1,41 +1,24 @@
-# Keep the build context (and image) small and secret-free.
+# The build context is an allowlist (review finding SUP-17): ignore everything, then admit only what
+# the image build reads. Anything else in the working tree, tracked or not (scratch files, local
+# configs with credentials, test fixtures, .git), never reaches the builder.
+*
 
-# VCS / CI / docs / IDE
-.git
-.github
-.gitignore
-*.md
+# Package metadata, the lockfile (the image installs exactly what it pins) and the files the wheel
+# carries next to the code.
+!pyproject.toml
+!pdm.lock
 !README.md
-docs
+!LICENSE
 
-# Tests & dev tooling (not needed in the prod image)
-tests
-.pre-commit-config.yaml
-.ruff_cache
-.mypy_cache
-.pytest_cache
-htmlcov
-.coverage
-.coverage.*
+# The two stdlib/packaging helpers the builder runs.
+!scripts/lock_requirements.py
+!scripts/release_version.py
 
-# Local virtualenvs & caches
-.venv
-.dzdonbot
-__pypackages__
+# The package: Python source files only. A stray non-Python file under onbot/ (notes, dumps,
+# configs) stays out. An untracked *.py file would still be admitted by a local `docker build .`;
+# build from `git archive` as docs/development.md shows to rule that out too. Release images are
+# built from a git context of the tagged commit and never see untracked files.
+!onbot/**/*.py
+
+# Re-exclude bytecode that the pattern above would otherwise admit through a directory match.
 **/__pycache__
-*.py[cod]
-.pdm-python
-.pdm-build
-
-# Secrets / local configs — never copy real credentials into the build context.
-config.yml
-config.*.yml
-!config.example.yml
-get_access_token.sh
-*.env
-
-# Legacy reference code (not part of the runtime package)
-legacy
-
-# Helper scripts
-*.sh
