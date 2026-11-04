@@ -48,6 +48,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   This `CHANGELOG.md`.
 
 ### Changed
+- **`onbot healthcheck` checks the bot's own liveness (review S10):** the reconcile loop and the sync
+  pump write a heartbeat file (`ONBOT_HEARTBEAT_FILE`, default `/tmp/onbot-heartbeat.json`, or
+  `--heartbeat-file`); the default healthcheck reads it and needs no config, network or token. The
+  previous upstream probe is `onbot healthcheck --deep`. A long Authentik outage now marks the
+  container unhealthy.
+- **The image runs `tini` as PID 1** and the `HEALTHCHECK` uses a 10 s timeout and a 60 s start period.
+- **`reconcile-once` and `broadcast` skip startup side effects** they do not need (bot avatar, admin
+  room). `onbot run` exits 1 when one of its loops crashes.
 - **Development tooling (review S0):** `pdm.lock` is the only lockfile and CI fails when it is stale;
   the gitleaks secret scan runs in CI again (tree plus new commits); the pre-commit hooks run again and
   take ruff, mypy and the config-docs check from the pdm environment.
@@ -66,6 +74,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   troubleshooting.
 
 ### Fixed
+- **A cold start heals by itself (review S10):** startup steps (device registration, admin room,
+  rate-limit override, bot avatar) retry in the background until Synapse and MAS are up; welcomes
+  start only after the device is registered. Previously the bot ran degraded until restarted.
+- **The sync pump recovers from `M_UNKNOWN_POS`** and similar unknown-connection errors by opening a
+  fresh connection, so the admin room no longer goes deaf after a sync connection expires.
+- **`docker stop` exits cleanly within about a second:** SIGTERM is handled from process start with a
+  6 s grace period; a second signal cancels immediately. Previously early stops ended in SIGKILL.
 - **`--log-level` after the subcommand** (`onbot reconcile-once --log-level DEBUG`) failed with an
   argparse error. It is now accepted before and after the subcommand.
 - **Group room topics were rewritten on every reconcile pass.** The pass compared the desired topic
