@@ -226,6 +226,8 @@ class StartupSupervisor:
             try:
                 await step.action()
             except Exception as exc:
+                if self._stop.is_set():
+                    return  # failed because we are shutting down; nothing to retry or report
                 if is_permanent_failure(exc):
                     log.error(
                         "startup step %r refused by the server; continuing without it",

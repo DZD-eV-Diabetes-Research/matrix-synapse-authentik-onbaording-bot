@@ -6,16 +6,17 @@ Sub-commands mirror the operational surface from ``BATTLE_PLAN.md`` §4:
 * ``reconcile-once``  — run a single idempotent reconcile and exit
 * ``broadcast``       — send one announcement to every user's notice board (G4.6)
 * ``generate-config`` — emit a documented example config (G11.2)
-* ``healthcheck``     — container liveness from the service's heartbeat file; ``--deep`` probes the
+* ``healthcheck``     : container liveness from the service's heartbeat file; ``--deep`` probes the
   dependencies with the real credentials instead (Phase 8, RUN-04)
 
 ``broadcast`` carries no authorisation check of its own, deliberately: anyone who can run this
 command can already read the bot's access token out of its config or environment.
 
-Signals: SIGTERM and SIGINT end the process cleanly from the first line of :func:`main`, also when it
-runs as PID 1 in a container, where the kernel would otherwise drop them (RUN-09, SUP-10). Until the
-event loop takes over they raise :class:`SystemExit` with the shell's ``128 + signal`` code; inside the
-loop, :mod:`onbot.app` turns them into a graceful shutdown.
+Signals: SIGTERM and SIGINT are handled from the first line of :func:`main`, also when the process is
+PID 1, where the kernel drops signals nobody handles (RUN-09, SUP-10). Until the event loop takes over
+they raise :class:`SystemExit` with the shell's ``128 + signal`` code; inside the loop,
+:mod:`onbot.runtime` turns them into a graceful shutdown. The interpreter's own startup comes before
+:func:`main`, which is why the image still runs ``tini`` as PID 1.
 """
 
 from __future__ import annotations
