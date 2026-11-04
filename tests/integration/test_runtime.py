@@ -30,6 +30,7 @@ from typing import Any
 import httpx
 import pytest
 import yaml
+from pydantic import SecretStr
 from testcontainers.compose import DockerCompose
 
 from onbot.admin.admins import AdminResolver
@@ -127,8 +128,19 @@ async def test_pump_recovers_from_an_unknown_position_and_the_control_room_answe
 # --- the CLI as a child process ------------------------------------------------------------------
 
 
+def _revealed(value: Any) -> Any:
+    """``model_dump`` keeps credentials as ``SecretStr``; a config file needs their real value."""
+    if isinstance(value, SecretStr):
+        return value.get_secret_value()
+    if isinstance(value, dict):
+        return {k: _revealed(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_revealed(v) for v in value]
+    return value
+
+
 def _write_config(config: OnbotConfig, path: Path) -> Path:
-    path.write_text(yaml.safe_dump(config.model_dump(mode="json")), encoding="utf-8")
+    path.write_text(yaml.safe_dump(_revealed(config.model_dump())), encoding="utf-8")
     return path
 
 
@@ -257,7 +269,7 @@ async def test_cold_start_with_synapse_down_heals_once_it_is_up(
     ).json()["device_id"]
 
     config = make_config()
-    config.synapse_server.bot_access_token = token
+    config.synapse_server.bot_access_token = SecretStr(token)
     config.server_tick_rate_sec = 10
     config.authentik_poll_rate_sec = 2
     config.admin_room.enabled = True

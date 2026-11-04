@@ -76,6 +76,7 @@ from onbot.runtime import (
     drain,
     run_interruptible,
 )
+from onbot.safe_fetch import FetchPolicy, SafeImageFetcher
 from onbot.sync import SyncPump
 
 __all__ = [
@@ -98,12 +99,20 @@ def build_matrix_token_provider(synapse: SynapseServer) -> TokenProvider:
         return OAuth2ClientCredentialsTokenProvider(
             token_endpoint=synapse.oauth2.token_endpoint,
             client_id=synapse.oauth2.client_id,
-            client_secret=synapse.oauth2.client_secret,
+            client_secret=synapse.oauth2.client_secret.get_secret_value(),
             scope=synapse.oauth2.scope,
         )
     if synapse.bot_access_token:
-        return StaticTokenProvider(synapse.bot_access_token)
+        return StaticTokenProvider(synapse.bot_access_token.get_secret_value())
     raise ValueError("synapse_server needs either bot_access_token or an oauth2 block")
+
+
+def _fetch_policy(config: OnbotConfig) -> FetchPolicy:
+    """The avatar download limits from ``avatar_fetch`` (SEC-03, D11)."""
+    cfg = config.avatar_fetch
+    return FetchPolicy.from_entries(
+        cfg.allowed_internal_destinations, max_bytes=cfg.max_size_bytes, timeout_sec=cfg.timeout_sec
+    )
 
 
 async def _relax_bot_ratelimit(admin: ApiClientSynapseAdmin, config: OnbotConfig) -> None:
@@ -261,13 +270,13 @@ async def build_app(config: OnbotConfig, *, heartbeat: Heartbeat | None = None) 
     async with AsyncExitStack() as stack:
         authentik = ApiClientAuthentik(
             url=config.authentik_server.url,
-            api_key=config.authentik_server.api_key,
+            api_key=config.authentik_server.api_key.get_secret_value(),
         )
         stack.push_async_callback(authentik.aclose)
         matrix, admin = _matrix_clients(stack, config)
         # One uploader for the bot avatar, the group rooms and the onboarding rooms: it caches by
         # source URL, so the bot's avatar is fetched and uploaded once no matter how many rooms wear it.
-        media = MediaUploader(matrix)
+        media = MediaUploader(matrix, fetcher=SafeImageFetcher(_fetch_policy(config)))
         stack.push_async_callback(media.aclose)
         events = EventBus()
         # Lifecycle enforcement: under MAS only the MAS admin API can revoke a live session (§7 Q1),
@@ -279,7 +288,7 @@ async def build_app(config: OnbotConfig, *, heartbeat: Heartbeat | None = None) 
                 token_provider=OAuth2ClientCredentialsTokenProvider(
                     token_endpoint=f"{config.mas_admin.url.rstrip('/')}/oauth2/token",
                     client_id=config.mas_admin.client_id,
-                    client_secret=config.mas_admin.client_secret,
+                    client_secret=config.mas_admin.client_secret.get_secret_value(),
                     scope="urn:mas:admin",
                 ),
             )

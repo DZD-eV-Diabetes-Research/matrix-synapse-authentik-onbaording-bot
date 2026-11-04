@@ -118,8 +118,9 @@ def test_env_overrides_yaml_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 
     cfg = load_config()
 
-    assert cfg.synapse_server.bot_access_token == "from-env"
-    assert cfg.authentik_server.api_key == "key-from-env"
+    assert cfg.synapse_server.bot_access_token is not None
+    assert cfg.synapse_server.bot_access_token.get_secret_value() == "from-env"
+    assert cfg.authentik_server.api_key.get_secret_value() == "key-from-env"
     # untouched keys still come from the file
     assert cfg.synapse_server.server_name == "company.org"
 
@@ -139,11 +140,12 @@ def test_secrets_may_be_omitted_from_the_yaml_file(tmp_path: Path, monkeypatch: 
 
     cfg = load_config()
 
-    assert cfg.synapse_server.bot_access_token == "tok"
-    assert cfg.authentik_server.api_key == "key"
+    assert cfg.synapse_server.bot_access_token is not None
+    assert cfg.synapse_server.bot_access_token.get_secret_value() == "tok"
+    assert cfg.authentik_server.api_key.get_secret_value() == "key"
     # a nested env var merges into the file's block rather than replacing it
     assert cfg.mas_admin is not None
-    assert (cfg.mas_admin.client_id, cfg.mas_admin.client_secret) == ("cid", "mas-secret")
+    assert (cfg.mas_admin.client_id, cfg.mas_admin.client_secret.get_secret_value()) == ("cid", "mas-secret")
 
 
 def test_generate_example_config_ignores_ambient_config(

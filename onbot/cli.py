@@ -25,31 +25,40 @@ import argparse
 import asyncio
 import contextlib
 import signal
+import sys
 from collections.abc import Sequence
 from types import FrameType
 from typing import Any
 
+import yaml
+from pydantic import ValidationError
+from pydantic_settings import SettingsError
+
 from onbot import __version__
-from onbot.config import generate_example_config, get_config_file_path, load_config
+from onbot.config import LOG_LEVELS, OnbotConfig, generate_example_config, get_config_file_path, load_config
 from onbot.logging import configure_logging, get_logger
 
 log = get_logger(__name__)
 
 
-_LOG_LEVEL_HELP = "Override log level (e.g. DEBUG, INFO)."
+_LOG_LEVEL_HELP = f"Override log level ({', '.join(LOG_LEVELS)})."
+# Exit code for a configuration that cannot be loaded, distinct from a runtime failure (1).
+EXIT_CONFIG_INVALID = 2
 _HEARTBEAT_HELP = "Heartbeat file path (default: $ONBOT_HEARTBEAT_FILE, else /tmp/onbot-heartbeat.json)."
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="onbot", description="Authentik → Matrix sync & onboarding bot.")
     parser.add_argument("--version", action="version", version=f"onbot {__version__}")
-    parser.add_argument("--log-level", default=None, help=_LOG_LEVEL_HELP)
+    parser.add_argument("--log-level", default=None, type=str.upper, choices=LOG_LEVELS, help=_LOG_LEVEL_HELP)
 
     # `--log-level` is accepted after the subcommand too (`onbot reconcile-once --log-level DEBUG`).
     # SUPPRESS keeps a subparser that did not get the flag from resetting a value given before the
     # subcommand back to None.
     common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--log-level", default=argparse.SUPPRESS, help=_LOG_LEVEL_HELP)
+    common.add_argument(
+        "--log-level", default=argparse.SUPPRESS, type=str.upper, choices=LOG_LEVELS, help=_LOG_LEVEL_HELP
+    )
 
     sub = parser.add_subparsers(dest="command", required=True)
     run = sub.add_parser("run", parents=[common], help="Run the bot service (reconcile loop + onboarding).")
@@ -98,6 +107,44 @@ def _cmd_generate_config(output: str | None) -> int:
     else:
         print(text, end="")
     return 0
+
+
+def config_error_lines(exc: ValidationError) -> list[str]:
+    """One line per invalid field: its dotted path and what is wrong, never the value given (RUN-07).
+
+    pydantic's own rendering quotes the input, and for a block missing a key that input is the whole
+    block, credentials included. Container logs end up in log aggregators, so print only paths and
+    messages. The config validators word their messages without echoing values for the same reason.
+    """
+    lines = []
+    for error in exc.errors(include_input=False, include_url=False, include_context=False):
+        path = ".".join(str(part) for part in error["loc"]) or "config"
+        message = error["msg"].removeprefix("Value error, ")
+        lines.append(f"{path}: {message}")
+    return lines
+
+
+def _load_config_or_report() -> OnbotConfig | None:
+    """Load the config, or print why it is invalid to stderr (without values) and return ``None``."""
+    try:
+        return load_config()
+    except ValidationError as exc:
+        lines = config_error_lines(exc)
+        noun = "error" if len(lines) == 1 else "errors"
+        print(f"onbot: invalid configuration ({len(lines)} {noun}):", file=sys.stderr)
+        for line in lines:
+            print(f"  {line}", file=sys.stderr)
+    except yaml.MarkedYAMLError as exc:
+        # The default rendering quotes the offending line of the file, which may hold a secret.
+        mark = exc.problem_mark
+        where = f" at line {mark.line + 1}, column {mark.column + 1}" if mark is not None else ""
+        print(f"onbot: the config file is not valid YAML{where}: {exc.problem}", file=sys.stderr)
+    except yaml.YAMLError:
+        print("onbot: the config file is not valid YAML", file=sys.stderr)
+    except SettingsError as exc:
+        # Raised for an ONBOT_* variable that cannot be parsed; names the field, not the value.
+        print(f"onbot: invalid configuration: {exc}", file=sys.stderr)
+    return None
 
 
 def _exit_on_signal(signum: int, _frame: FrameType | None) -> None:
@@ -151,7 +198,9 @@ def _main(argv: Sequence[str] | None) -> int:
     # Commands that need live configuration + the async runtime.
     if get_config_file_path() is None:
         log.warning("no config file found; relying on ONBOT_* environment variables")
-    config = load_config()
+    config = _load_config_or_report()
+    if config is None:
+        return EXIT_CONFIG_INVALID
     # The config file's log_level is only knowable now; the CLI flag keeps precedence over it.
     if args.log_level is None:
         configure_logging(config.log_level)

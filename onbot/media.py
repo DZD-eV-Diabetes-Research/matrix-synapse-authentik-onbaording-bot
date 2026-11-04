@@ -5,25 +5,25 @@ must be fetched and uploaded to the homeserver's media repo, which returns an ``
 helper does that and **deduplicates by source URL within a run**, so the same avatar URL is fetched
 and uploaded at most once (the legacy bot re-uploaded on every tick). Uploads go through the
 authenticated media endpoint on :class:`~onbot.clients.matrix.ApiClientMatrix` (MSC3916).
+
+Downloads go through :class:`~onbot.safe_fetch.SafeImageFetcher`, because a room avatar URL is chosen
+by whoever may edit an Authentik group, not by the operator (SEC-03).
 """
 
 from __future__ import annotations
 
-import httpx
-
 from onbot.clients.matrix import ApiClientMatrix
 from onbot.logging import get_logger
+from onbot.safe_fetch import SafeImageFetcher
 
 log = get_logger(__name__)
 
-_DEFAULT_CONTENT_TYPE = "application/octet-stream"
-
 
 class MediaUploader:
-    def __init__(self, client: ApiClientMatrix, *, http_client: httpx.AsyncClient | None = None) -> None:
+    def __init__(self, client: ApiClientMatrix, *, fetcher: SafeImageFetcher | None = None) -> None:
         self.client = client
-        self._http = http_client or httpx.AsyncClient(timeout=30.0, follow_redirects=True)
-        self._owns_http = http_client is None
+        self._fetcher = fetcher or SafeImageFetcher()
+        self._owns_fetcher = fetcher is None
         # Source URL -> mxc URI, so a repeated URL uploads only once (G10.2).
         self._cache: dict[str, str] = {}
 
@@ -40,11 +40,9 @@ class MediaUploader:
 
         Split out of :meth:`upload_from_url` so a caller can compare the bytes against what the
         homeserver already holds before deciding to upload them again (see :mod:`onbot.avatar`).
+        Raises :class:`~onbot.safe_fetch.MediaFetchRejected` when the fetch policy refuses the URL.
         """
-        response = await self._http.get(url)
-        response.raise_for_status()
-        raw_type = response.headers.get("content-type", _DEFAULT_CONTENT_TYPE).split(";")[0].strip()
-        return response.content, raw_type or _DEFAULT_CONTENT_TYPE
+        return await self._fetcher.fetch(url)
 
     async def upload(self, url: str, content: bytes, content_type: str) -> str:
         """Upload already-fetched bytes, caching the result under their source ``url``."""
@@ -62,5 +60,5 @@ class MediaUploader:
         self._cache[url] = mxc
 
     async def aclose(self) -> None:
-        if self._owns_http:
-            await self._http.aclose()
+        if self._owns_fetcher:
+            await self._fetcher.aclose()

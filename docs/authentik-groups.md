@@ -142,6 +142,14 @@ becomes just the prefix.
 homeserver's media repository, and only when the URL changed, so pointing it somewhere new updates
 rooms that already exist. A group's visitor lobby wears the same icon automatically.
 
+Because anyone who may edit the group chooses this URL, the download is restricted: the URL must
+point to a public internet address (redirects included), the response must be an image
+(`Content-Type: image/...`), and it may be at most 5 MiB and take at most 30 seconds by default. An
+icon on an internal web server, such as an intranet host on a private address, is refused until the
+operator lists that host or network in `avatar_fetch.allowed_internal_destinations` in the Onbot
+config. A refused icon is logged and the room keeps its previous icon. See
+[configuration.md](configuration.md#avatar-downloads).
+
 Name and topic are re-applied on every reconcile while
 `keep_updating_matrix_attributes_from_authentik` is on (the default), so edits made in a Matrix client
 are overwritten. Turn it off to let room admins rename their own rooms, for all rooms or, through
@@ -199,6 +207,11 @@ Leave it unset to inherit `matrix_room_default_settings.visitor_lobby_enabled`.
 > never be applied again, several of them (federation, encryption, room version) are **irreversible
 > for the lifetime of that room**, and a mistake can create a room that leaks history or that nobody
 > can moderate. If a config-level setting can express what you want, prefer it.
+>
+> It is also a privilege: anyone who can edit the group in Authentik can use it to make themselves
+> or someone else a permanent, unremovable owner of the room. Read
+> [Security: what anyone who can edit a group can do with it](#security-what-anyone-who-can-edit-a-group-can-do-with-it)
+> before you let group owners edit attributes.
 
 ### What it actually is
 
@@ -286,6 +299,44 @@ Two warnings on those:
 - **`invite` is a trap.** Users you invite here are not in the Authentik group, so the next membership
   sync removes them again if `kick_matrix_room_members_not_in_mapped_authentik_group_anymore` is on.
   Group membership is the only supported way to put people in a room.
+
+### Security: what anyone who can edit a group can do with it
+
+Onbot passes `chatroom_params` to Matrix **unchecked**, and the attribute is read by default
+(`matrix_room_create_params_from_authentik_attribute: attributes.chatroom_params`). That is a
+deliberate decision, not an oversight: whoever may edit a group's attributes in Authentik is trusted
+with the room Onbot creates for that group. Know what that trust covers. With a single attribute
+value, set before the room exists, such a person can:
+
+- **Plant an owner nobody can remove.** `{"creation_content": {"additional_creators":
+  ["@mallory:company.org"]}}` makes that account a *creator* of the room. In room version 12 (the
+  default) creators hold an infinite power level that no `m.room.power_levels` event can lower. The
+  bot cannot demote or kick that account, neither can any other room admin, and it keeps full control
+  after leaving the group or being offboarded. Every kick the membership sync attempts against it
+  fails.
+- **Hand out power the bot never takes back.** `{"power_level_content_override": {"users":
+  {"@mallory:company.org": 100}}}` makes an account that is not in the group a room admin. Onbot only
+  manages the power levels of the group's members, so the entry stays. Lowering `state_default` or
+  `events_default` in the same override lets every member rewrite the room's name, topic, join rules
+  or history visibility.
+- **Publish a confidential room.** `{"preset": "public_chat", "visibility": "public"}` makes the room
+  joinable by every user on the server and lists it in the public room directory. Onbot does not
+  converge the join rule of group rooms, so the room stays public until someone changes it by hand.
+- **Make decisions that can never be undone.** `room_version`, everything in `creation_content`
+  (`additional_creators`, `m.federate`) and encryption are fixed for the life of the room, and an
+  `initial_state` history visibility of `world_readable` applies from the first message on.
+  Removing or correcting the attribute later changes nothing about the existing room. The only way out
+  is deleting the room through the Synapse admin API, which destroys its history.
+
+What to do about it:
+
+- Give the right to edit group attributes in Authentik only to people you would also make
+  administrators of the matching Matrix room.
+- If nobody needs per-group room shapes, switch the feature off in the Onbot config with
+  `matrix_room_default_settings.matrix_room_create_params_from_authentik_attribute: null` and shape
+  every room through `default_room_create_params`, which only the operator controls.
+- Review which groups carry a `chatroom_params` attribute before Onbot first creates their rooms, and
+  after anyone gains edit rights on groups.
 
 ### The YAML/JSON trap
 

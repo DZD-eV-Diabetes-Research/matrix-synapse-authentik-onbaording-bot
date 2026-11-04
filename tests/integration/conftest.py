@@ -184,6 +184,12 @@ def _build_config(token: str) -> OnbotConfig:
     return config
 
 
+def _bot_token(config: OnbotConfig) -> str:
+    token = config.synapse_server.bot_access_token
+    assert token is not None
+    return token.get_secret_value()
+
+
 @pytest.fixture(scope="session")
 def onbot_config(bot_token: str) -> OnbotConfig:
     """A loaded OnbotConfig pointing at the live stack (the canonical session config)."""
@@ -209,7 +215,7 @@ def authentik_admin(compose_stack: DockerCompose) -> Iterator[S.AuthentikAdmin]:
 async def matrix_client(onbot_config: OnbotConfig) -> AsyncIterator[ApiClientMatrix]:
     client = ApiClientMatrix(
         server_url=onbot_config.synapse_server.server_url,
-        access_token=onbot_config.synapse_server.bot_access_token,
+        access_token=_bot_token(onbot_config),
         server_name=onbot_config.synapse_server.server_name,
     )
     try:
@@ -222,7 +228,7 @@ async def matrix_client(onbot_config: OnbotConfig) -> AsyncIterator[ApiClientMat
 async def admin_client(onbot_config: OnbotConfig) -> AsyncIterator[ApiClientSynapseAdmin]:
     client = ApiClientSynapseAdmin(
         server_url=onbot_config.synapse_server.server_url,
-        access_token=onbot_config.synapse_server.bot_access_token,
+        access_token=_bot_token(onbot_config),
         admin_api_path=onbot_config.synapse_server.admin_api_path,
     )
     try:
@@ -234,7 +240,8 @@ async def admin_client(onbot_config: OnbotConfig) -> AsyncIterator[ApiClientSyna
 @pytest_asyncio.fixture
 async def authentik_client(onbot_config: OnbotConfig) -> AsyncIterator[ApiClientAuthentik]:
     client = ApiClientAuthentik(
-        url=onbot_config.authentik_server.url, api_key=onbot_config.authentik_server.api_key
+        url=onbot_config.authentik_server.url,
+        api_key=onbot_config.authentik_server.api_key.get_secret_value(),
     )
     try:
         yield client

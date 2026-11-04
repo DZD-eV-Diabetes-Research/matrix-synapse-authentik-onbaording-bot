@@ -40,6 +40,79 @@ Onbot authenticates to Synapse as a bot user. Under MAS you choose exactly one o
 
 The same identity drives both the Synapse Admin API and the Client-Server API.
 
+## Validation: what Onbot refuses at startup
+
+The config is checked completely before Onbot talks to any server. A config that does not pass stops
+the bot with exit code `2` (a runtime failure exits with `1`) and one line per problem on stderr:
+
+```text
+onbot: invalid configuration (2 errors):
+  mas_admin.client_id: Field required
+  sync_authentik_users_with_matrix_rooms.deactivate_disabled_authentik_users_in_matrix.dry_rn: Extra inputs are not permitted
+```
+
+Each line names the field by its YAML path and says what is expected. The value you gave is never
+printed, because it may be a credential and container logs usually end up in a log aggregator. The
+same applies to a config file that is not valid YAML (only the line and column are named) and to an
+`ONBOT_*` variable that cannot be parsed.
+
+What is checked, beyond types and required fields:
+
+- **Unknown keys are errors at every level**, so a typo such as `dry_rn: false` fails instead of
+  leaving the default in place. This includes keys inside `per_authentik_group_pk_matrix_room_settings`
+  and nested `ONBOT_*__*` variables. Remove keys an older Onbot version used.
+- **Exactly one bot credential**: `synapse_server.bot_access_token` or `synapse_server.oauth2`, not both
+  and not neither. An empty token counts as unset.
+- **URLs** (`server_url`, `oauth2.token_endpoint`, `mas_admin.url`, `authentik_server.url` and the avatar
+  URLs) need an `http://` or `https://` scheme and a host.
+- **Matrix IDs** (`bot_user_id`, `admin_room.admin_user_ids`, `matrix_user_ignore_list`) must be full
+  IDs such as `@alice:company.org`. A bare username in `matrix_user_ignore_list` would protect nobody.
+  `bot_user_id` must be on `server_name`.
+- **Alias fields** (`create_matrix_rooms_in_a_matrix_space.alias`, `admin_room.alias`, `alias_prefix`,
+  `visitor_lobby_alias_suffix`) take the localpart only: `myspace`, not `#myspace:company.org`.
+- **Ranges**: `server_tick_rate_sec` must be greater than 0, `authentik_poll_rate_sec` and the
+  offboarding grace periods must not be negative.
+- **Settings that cannot take effect**: `delete_disabled_rooms` without
+  `disable_rooms_when_mapped_authentik_group_disappears`, `place_onboarding_rooms_in_space` without the
+  parent space, and a visitor lobby without the parent space.
+- **`log_level`** accepts `DEBUG`, `INFO`, `WARNING`, `ERROR` and `CRITICAL` (any case), as does
+  the `--log-level` flag.
+
+## Credentials stay out of logs
+
+The bot access token, the OAuth2 and MAS client secrets and the Authentik API key are held as secret
+values: printing or logging the config shows `**********` in their place, and so does a JSON dump of
+it. Supplying them through `ONBOT_*` variables instead of the file is still the recommended pattern.
+
+## Avatar downloads
+
+The bot's avatar (`synapse_server.bot_avatar_url`), the space avatar and every group room's avatar
+(the `chatroom_avatar_url` group attribute) are downloaded by the bot and re-uploaded to the
+homeserver. Group room avatars are chosen by whoever may edit a group in Authentik, so every one of
+these downloads is restricted (the `avatar_fetch` block):
+
+- Only public internet addresses. Private, loopback, link-local, multicast, carrier-grade NAT and other
+  special-purpose addresses are refused, also when a public URL redirects there. The host is resolved
+  once per connection and the bot connects to exactly the address it checked, so a DNS answer that
+  changes in between does not get around the check.
+- At most five redirects, each checked like the original URL.
+- Only `image/*` responses, at most `avatar_fetch.max_size_bytes` (default 5 MiB), and the whole
+  download including redirects within `avatar_fetch.timeout_sec` (default 30 seconds).
+- `HTTP_PROXY` and the other proxy variables are not used for these downloads: behind a proxy the bot
+  could not see where a request really goes.
+
+To use an image on an internal server, list the host or its network:
+
+```yaml
+avatar_fetch:
+  allowed_internal_destinations:
+    - assets.internal.company.org   # a hostname, matched exactly, whatever it resolves to
+    - 10.20.0.0/16                  # an IP address or CIDR network
+```
+
+A refused avatar is logged with the reason. A group room keeps its previous avatar and is retried on
+the next reconcile; a refused bot avatar is not retried until the next start.
+
 ## The MXID localpart contract
 
 This is the single most important thing to get right.

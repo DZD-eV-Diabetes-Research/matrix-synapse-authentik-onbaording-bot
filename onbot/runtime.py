@@ -18,6 +18,7 @@ import httpx
 from onbot.clients.base import ApiError
 from onbot.heartbeat import Heartbeat
 from onbot.logging import get_logger
+from onbot.safe_fetch import MediaFetchRejected
 
 log = get_logger(__name__)
 
@@ -148,7 +149,13 @@ async def run_interruptible(
 
 
 def is_permanent_failure(exc: BaseException) -> bool:
-    """Whether a startup step failed because the server refused it for good (so: stop retrying)."""
+    """Whether a startup step failed because the server refused it for good (so: stop retrying).
+
+    An avatar the fetch policy refuses (internal address, not an image, too large) is permanent too:
+    the same URL is refused the same way on every retry.
+    """
+    if isinstance(exc, MediaFetchRejected):
+        return True
     status: int | None = None
     if isinstance(exc, ApiError):
         status = exc.status_code
