@@ -25,7 +25,12 @@ from onbot.clients.synapse_admin import ApiClientSynapseAdmin
 from onbot.config import OnbotConfig, SyncMatrixRoomsBasedOnAuthentikGroups
 from onbot.events import EventBus, Signal
 from onbot.identity import build_canonical, compute_mxid
-from onbot.lifecycle.accounts import AccountLifecycleManager
+from onbot.lifecycle.accounts import (
+    EMPTY_DIRECTORY_MESSAGE,
+    AccountLifecycleManager,
+    DirectorySnapshot,
+    DirectoryUser,
+)
 from onbot.logging import get_logger
 from onbot.models import GroupRoomMap, MappedUser, MatrixRoom, RoomCreateAttributes
 from onbot.reconciler.effectors import DryRunEffectors, MatrixEffectors
@@ -157,32 +162,20 @@ class ReconcilerEngine:
         cfg = self.config.sync_authentik_users_with_matrix_rooms
         if not cfg.enabled:
             return []
-        configured_paths = cfg.sync_only_users_in_authentik_pathes
-        paths: list[str | None] = [*configured_paths] if configured_paths else [None]
         by_mxid: dict[str, dict[str, Any]] = {}
-        seen_pks: set[str] = set()
-        for path in paths:
-            for user in await self.authentik.list_users(
-                filter_by_path=path,
-                filter_by_attribute=cfg.sync_only_users_with_authentik_attributes,
-                filter_groups_by_pk=cfg.sync_only_users_of_groups_with_id,
-                filter_is_active=True,
-            ):
-                if user["username"] in self.config.authentik_user_ignore_list:
-                    continue
-                if user["pk"] in seen_pks:
-                    continue
-                seen_pks.add(user["pk"])
-                try:
-                    mxid = compute_mxid(
-                        user,
-                        username_attribute=cfg.authentik_username_mapping_attribute,
-                        server_name=self.server_name,
-                    )
-                except KeyError:
-                    log.warning("cannot map MXID for Authentik user %r; skipping", user.get("pk"))
-                    continue
-                by_mxid[mxid] = user
+        for user in await self._list_scoped_users(filter_is_active=True):
+            if user["username"] in self.config.authentik_user_ignore_list:
+                continue
+            try:
+                mxid = compute_mxid(
+                    user,
+                    username_attribute=cfg.authentik_username_mapping_attribute,
+                    server_name=self.server_name,
+                )
+            except KeyError:
+                log.warning("cannot map MXID for Authentik user %r; skipping", user.get("pk"))
+                continue
+            by_mxid[mxid] = user
 
         mapped: list[MappedUser] = []
         for matrix_user in matrix_users:
@@ -194,6 +187,31 @@ class ReconcilerEngine:
                 mapped.append(MappedUser(authentik_obj=authentik_user, mxid=mxid, matrix_obj=matrix_user))
                 await self.events.emit(Signal.user_synced, mxid=mxid)
         return mapped
+
+    async def _list_scoped_users(self, *, filter_is_active: bool | None) -> list[dict[str, Any]]:
+        """Authentik users inside the sync scope (paths, attributes, groups), each once.
+
+        The one scope definition: the room sync asks for the active users in it, the lifecycle for
+        everyone in it, so "who is synced" and "who is offboarded" can never disagree (LIF-05, REC-14).
+        ``filter_is_active=None`` returns active and inactive users.
+        """
+        cfg = self.config.sync_authentik_users_with_matrix_rooms
+        configured_paths = cfg.sync_only_users_in_authentik_pathes
+        paths: list[str | None] = [*configured_paths] if configured_paths else [None]
+        users: list[dict[str, Any]] = []
+        seen_pks: set[str] = set()
+        for path in paths:
+            for user in await self.authentik.list_users(
+                filter_by_path=path,
+                filter_by_attribute=cfg.sync_only_users_with_authentik_attributes,
+                filter_groups_by_pk=cfg.sync_only_users_of_groups_with_id,
+                filter_is_active=filter_is_active,
+            ):
+                if user["pk"] in seen_pks:
+                    continue
+                seen_pks.add(user["pk"])
+                users.append(user)
+        return users
 
     async def _gather_group_rooms(self) -> list[MatrixRoom]:
         if not self.config.sync_matrix_rooms_based_on_authentik_groups.enabled:
@@ -623,41 +641,75 @@ class ReconcilerEngine:
         sync_cfg = self.config.sync_authentik_users_with_matrix_rooms
         if not sync_cfg.deactivate_disabled_authentik_users_in_matrix.enabled:
             return
-        orphaned = await self._gather_orphaned_mxids(matrix_users, active_mxids)
-        await self.lifecycle.reconcile_accounts(orphaned)
+        snapshot = await self._gather_lifecycle_snapshot(matrix_users, active_mxids)
+        if snapshot is None:
+            return
+        for outcome in await self.lifecycle.reconcile_accounts(snapshot):
+            if outcome.needs_attention:
+                await self.events.emit(
+                    Signal.lifecycle_attention,
+                    mxid=outcome.mxid,
+                    action=outcome.action.value,
+                    detail=outcome.detail,
+                )
 
-    async def _gather_orphaned_mxids(
+    async def _gather_lifecycle_snapshot(
         self, matrix_users: list[dict[str, Any]], active_mxids: set[str]
-    ) -> set[str]:
-        """MXIDs whose Authentik account is disabled but a Matrix account still exists (G9.1).
+    ) -> DirectorySnapshot | None:
+        """The Authentik directory and the Matrix accounts, as the lifecycle needs them (G9.1).
 
-        Scoped to *disabled* Authentik users we can positively map — never sweeping arbitrary Matrix
-        accounts that simply lack an Authentik counterpart (e.g. admin/service users), so the
-        destructive path can only ever touch accounts we provisioned from a now-disabled directory
-        entry. The bot user and the ignore lists (G12.1) are always excluded.
+        Every Authentik user, active or not and in scope or not, so the lifecycle can tell "disabled",
+        "deleted", "out of scope" and "active elsewhere" apart; the scope comes from the same query
+        helper the room sync uses. The lifecycle itself decides what to do with each account and only
+        ever acts on accounts it can tie to an Authentik user (see ``onbot.lifecycle.accounts``).
+
+        Returns ``None``, and the step is skipped, when Authentik answers with no users at all: a
+        token that lost its view permission gets an empty ``200``, and judging every account on that
+        would be wrong (minimal guard, D4 layer 1 follows in S3).
         """
         cfg = self.config.sync_authentik_users_with_matrix_rooms
-        disabled_users = await self.authentik.list_users(
-            filter_by_attribute=cfg.sync_only_users_with_authentik_attributes,
-            filter_is_active=False,
-        )
-        matrix_mxids = {u["name"] for u in matrix_users}
-        bot_id = self.config.synapse_server.bot_user_id
-        orphaned: set[str] = set()
-        for user in disabled_users:
-            if user.get("username") in self.config.authentik_user_ignore_list:
-                continue
+        everyone = await self.authentik.list_users(filter_is_active=None)
+        if not everyone:
+            log.warning(EMPTY_DIRECTORY_MESSAGE)
+            await self.events.emit(
+                Signal.lifecycle_attention, mxid=None, action="abort", detail=EMPTY_DIRECTORY_MESSAGE
+            )
+            return None
+        in_scope = {str(u["pk"]) for u in await self._list_scoped_users(filter_is_active=None)}
+        ignored = set(self.config.authentik_user_ignore_list)
+        users: list[DirectoryUser] = []
+        for user in everyone:
+            pk = str(user["pk"])
+            is_active = user.get("is_active") is True
             try:
-                mxid = compute_mxid(
+                mxid: str | None = compute_mxid(
                     user,
                     username_attribute=cfg.authentik_username_mapping_attribute,
                     server_name=self.server_name,
                 )
             except KeyError:
-                continue
-            if mxid == bot_id or mxid in self.config.matrix_user_ignore_list:
-                continue
-            if mxid in active_mxids or mxid not in matrix_mxids:
-                continue
-            orphaned.add(mxid)
-        return orphaned
+                mxid = None
+                if pk in in_scope and not is_active:
+                    log.warning(
+                        "cannot map MXID for disabled Authentik user %r; only a recorded binding can "
+                        "offboard it",
+                        pk,
+                    )
+            users.append(
+                DirectoryUser(
+                    pk=pk,
+                    username=str(user.get("username", "")),
+                    mxid=mxid,
+                    is_active=is_active,
+                    in_scope=pk in in_scope,
+                    ignored=user.get("username") in ignored,
+                )
+            )
+        return DirectorySnapshot(
+            users=tuple(users),
+            matrix_mxids=frozenset(u["name"] for u in matrix_users),
+            excluded_mxids=frozenset(
+                {self.config.synapse_server.bot_user_id, *self.config.matrix_user_ignore_list}
+            ),
+            synced_mxids=frozenset(active_mxids),
+        )
