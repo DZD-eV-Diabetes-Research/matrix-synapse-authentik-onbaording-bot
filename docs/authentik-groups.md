@@ -144,7 +144,8 @@ rooms that already exist. A group's visitor lobby wears the same icon automatica
 
 Name and topic are re-applied on every reconcile while
 `keep_updating_matrix_attributes_from_authentik` is on (the default), so edits made in a Matrix client
-are overwritten. Turn it off to let room admins rename their own rooms.
+are overwritten. Turn it off to let room admins rename their own rooms, for all rooms or, through
+`per_authentik_group_pk_matrix_room_settings`, for single groups.
 
 ## Step 3: power levels
 
@@ -167,6 +168,10 @@ Details worth knowing:
 - A power level is only applied to a user in rooms they are actually a member of. To give somebody
   access and admin rights in *every* room including ones they are not in, that is the separate and
   much sharper `global_room_admins` config list, not a group attribute.
+- Removing a user from the group (or the attribute from the group) withdraws the level again, but
+  only a level Onbot set itself. A level somebody set by hand in a Matrix client stays.
+- In rooms older than room version 12 the bot is itself at 100, so a group carrying 100 grants 99
+  there. See [features.md](features.md#power-levels-from-authentik).
 
 ## Step 4: visitor lobby
 

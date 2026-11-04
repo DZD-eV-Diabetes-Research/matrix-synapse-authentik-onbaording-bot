@@ -61,3 +61,9 @@
 - **Older room versions still work.** Omitting `users` from the override and the creator-aware read
   predicate are both correct on pre-v12 rooms too, so an operator on an older Synapse (via
   `room_version`, or an old server default) is unaffected.
+- **The power-level writer reads the room version too** (added 2026-11, review finding REC-05). The
+  infinite-creator argument only holds where the bot is a v12 creator. In every other room
+  (`RoomAuthority` in `onbot/reconciler/power_levels.py`, from the room version and the create
+  event) the bot has an ordinary level: it grants at most one below it and does not try to change or
+  kick users at or above it, reporting them instead. In v12 rooms it also never names or kicks
+  `additional_creators`.

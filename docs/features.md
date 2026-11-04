@@ -187,9 +187,21 @@ follows.
   `kick_matrix_room_members_not_in_mapped_authentik_group_anymore` is on by default; turn it off to
   make Onbot *add-only*, so it never kicks anyone and users keep rooms after losing the group that
   granted them.
+- **Switching user sync off stops membership management.** With
+  `sync_authentik_users_with_matrix_rooms.enabled: false` Onbot adds nobody, removes nobody and leaves
+  power levels alone; it only keeps the rooms themselves (name, topic, lobby join rule) in step.
+- **An empty answer never empties the rooms.** If, in one pass, not a single managed group room has a
+  single member who should be in it (an Authentik token that suddenly sees nobody, a user filter that
+  matches nobody), Onbot skips every removal for that pass and logs
+  `reconcile: guard: skipping every kick this pass`. Additions still happen.
 - **Matrix-only accounts are protected.** `matrix_user_ignore_list` shields server admins, other
-  bots and bridge users from a sync that would otherwise see them as unknown to Authentik and remove
-  them; the bot's own account is always protected.
+  bots and bridge users from a sync that would otherwise see them as unknown to Authentik: they are
+  never removed from a group room. The bot's own account is always protected.
+- **One broken room does not hold up the others.** A member the server refuses to add (for example
+  somebody banned from the room), a member Onbot may not remove, or a room that refuses a change is
+  skipped, and everything else, other rooms and the offboarding of disabled accounts included, still
+  runs. Each such room is logged once per pass as a warning that starts with
+  `reconcile: room not converged:` and names the room, the Authentik group and what went wrong.
 - Membership is reconciled on a schedule *and* whenever Authentik changes, so it also quietly repairs
   a member somebody kicked by hand inside Matrix.
 
@@ -224,14 +236,29 @@ of who-may-moderate in the same place as the rest of your access control, and ke
 - **Superusers become admins** (`make_authentik_superusers_matrix_room_admin`, on by default):
   Authentik superusers are granted power level 100 in the rooms they are in, overriding the group
   attribute.
-- **Levels are withdrawn as well as granted.** Lose the group that gave you a level and Onbot lowers
-  you back to the room default; it only ever touches the users it manages, leaving hand-promoted
-  accounts and its own account alone.
-- **The bot always outranks the room.** As the room's creator it sits above everyone with an
-  effectively infinite power level, so it can always manage membership and settings. One consequence
-  worth knowing: a user manually raised to the maximum level in an older room cannot be lowered by
-  anyone — nothing outranks the top — which is the trap behind the read-only welcome-room note in
+- **Levels are withdrawn as well as granted, but only the ones Onbot set.** Onbot records every level
+  it writes, in its own per-room account data, which no room member can see or edit. When you stop
+  qualifying for a level, for whatever reason (you left the group, lost the power-level group or
+  superuser status, your account was disabled or left the sync scope), that entry is removed and you
+  drop back to the room default. Levels a human set in a Matrix client are never withdrawn, and
+  neither is a level Onbot set that a human changed afterwards: from then on it is theirs. Onbot's
+  own account is never written.
+- **Upgrading from a version without the record:** on its first pass Onbot adopts every existing
+  level that matches what it would grant anyway. A user who had already left their group before the
+  upgrade keeps their old level until somebody removes it by hand.
+- **In rooms Onbot created as room version 12, the bot outranks everyone.** As the room's creator it
+  holds an effectively infinite power level, so it can always manage membership and settings.
+- **In older rooms the bot is an ordinary member at 100.** That is the case for rooms before room
+  version 12: rooms adopted from a legacy bot, or rooms created while `synapse_server.room_version`
+  pins an older version. Matrix forbids lowering or removing anybody at or above your own level, so
+  there Onbot never grants more than 99 (superusers and global room admins included), and it does
+  not try to change or remove users who already sit at 100. It reports them instead, once per pass,
+  in the `reconcile: room not converged:` warning. A room admin has to lower them by hand (they can
+  lower themselves; nobody else can). The same trap is behind the read-only welcome-room note in
   [troubleshooting.md](troubleshooting.md#welcome-rooms-created-before-onbot-made-them-read-only).
+- **Extra room creators are out of reach.** A creator added through `chatroom_params`
+  (`additional_creators`) has an infinite power level that nobody can lower or remove. Onbot skips
+  such a user and reports the room.
 
 **Settings:** `authentik_group_attr_for_matrix_power_level` and
 `make_authentik_superusers_matrix_room_admin` under
@@ -397,8 +424,10 @@ without anyone editing rooms by hand.
   same attribute: there is nothing extra to configure.
 - **Keeping in step is a switch.** `keep_updating_matrix_attributes_from_authentik` (on by default)
   re-applies the name and topic every reconcile, to the group room and its lobby alike, overwriting
-  any drift. Turn it off to let room admins rename a room in their client and keep the change. Note
-  this covers name and topic only, a room's alias is fixed when it is created and never changes.
+  any drift. Turn it off to let room admins rename a room in their client and keep the change, for
+  every room in `matrix_room_default_settings` or for single groups in
+  `per_authentik_group_pk_matrix_room_settings`. Note this covers name and topic only, a room's alias
+  is fixed when it is created and never changes.
 
 **Settings:** the `matrix_name_from_authentik_attribute`, `matrix_topic_from_authentik_attribute`,
 `*_prefix` and `keep_updating_matrix_attributes_from_authentik` fields under
