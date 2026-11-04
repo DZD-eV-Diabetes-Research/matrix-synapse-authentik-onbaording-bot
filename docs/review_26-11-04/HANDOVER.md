@@ -6,7 +6,7 @@ This file is the entry point; `SESSIONS.md` holds the session briefs and the sta
 
 ## Where things stand
 
-Local `main` (not pushed) contains the review docs and five merged sessions:
+Local `main` (not pushed) contains the review docs and all six sessions of waves 0 and 1:
 
 | Session | Merge commit | Result |
 |---|---|---|
@@ -14,6 +14,7 @@ Local `main` (not pushed) contains the review docs and five merged sessions:
 | S10 Runtime lifecycle | 9db28b1 | startup steps retry, sync pump recovers from `M_UNKNOWN_POS`, heartbeat healthcheck (`--deep` for upstreams), tini, clean `docker stop` |
 | S1 Offboarding fails open | ab73206 | never unlocks unless positively active and in scope, deleted users offboarded, out-of-scope frozen (D9), per-user ledger save |
 | S13 Security hardening and config validation | b063fe4 | strict config validation, `SecretStr`, config errors without values (exit 2), SSRF-safe avatar fetch (D11) |
+| S15 CI and release hardening | 257df75 | releases gated on full CI from main, SHA-pinned actions, reproducible hash-checked image, one version source, Dependabot, hardened dev scripts |
 | S2 Reconciler pass robustness | 44cdf95 | per-room isolation, lifecycle always runs, max PL 99 in pre-v12 rooms, D10 withdrawal of bot-granted levels, `enabled: false` no longer kicks |
 
 After the S2 merge: 595 unit and contract tests green, all pre-commit hooks green. CHANGELOG
@@ -34,64 +35,34 @@ integration run on main after the S13 merge has not been done yet**; do it first
 Until S3 adds the drop threshold, an Authentik token that suddenly sees only a few users would make
 every other known user look deleted and lock them after the cooldown. Only an empty list is caught.
 
-## Sessions that were still running at handover
+## Wave 1 is complete
 
-One session agent of wave 1 (S15) was still running at handover and left to finish on their own. Each
-works in a git worktree under `.claude/worktrees/` on its own branch, based on local `main` at the time
-it started (`.claude/` is excluded locally via `.git/info/exclude`).
+All wave 1 agents finished and their branches are merged. No session agent is running. The finished
+worktrees under `.claude/worktrees/` can be removed (`git worktree unlock <path>` then
+`git worktree remove <path>`), and the `worktree-agent-*` helper branches deleted. Keep the `review/*`
+branches until the maintainer has pushed.
 
-| Session | Branch | Stack instance | Started from |
-|---|---|---|---|
-| S15 CI and release hardening | `review/s15-ci-release` | 5 | 23cf1e9 |
+Before starting wave 2:
 
-If the previous session merged any of them before closing, the status table in `SESSIONS.md` says
-"done" for it and `git log main` shows a `Merge review/...` commit. Otherwise do the following.
+1. Run the full integration suite once on main: `ONBOT_ITEST_INSTANCE=0 ./run_integration_tests.sh`
+   (about 30 minutes). It has not run since S13 and S15 were merged. If createRoom 429s show up again,
+   check that `reconcile-once` still lifts the rate limit (a637961).
+2. Wave review: start a fresh reviewer agent that reads the merged diff of waves 0 and 1
+   (`git diff 1e91cd2..257df75`) cold, without the orchestrator's summary, and checks that every finding listed for S0, S1, S2, S10, S13 and S15 in
+   `SESSIONS.md` is really fixed and nothing regressed.
+3. Ask the maintainer the open questions below.
 
-### 1. Check whether each branch is finished
+### How merging worked (for the next waves)
 
-The agents' final reports are gone with the old session. Reconstruct from git:
+For each finished branch: read `git diff main...<branch>` against the brief, `git merge --no-ff`,
+resolve conflicts keeping both sides' intent, `pdm run pytest tests/unit tests/contract -q`,
+`pdm run pre-commit run --all-files`, regenerate config docs (`pdm run gen-config-docs`) if the model
+changed, write the CHANGELOG lines from the agent's report, mark the session done in `SESSIONS.md`, add
+handover notes to later session briefs, commit. Session agents never edit CHANGELOG, generated config
+docs or the status table. After the wave, one full integration run on main.
 
-```bash
-git log --oneline main..review/s15-ci-release
-git -C .claude/worktrees/<agent-dir> status --short   # uncommitted work means the agent did not finish
-```
-
-A branch is finished when its commits cover the "Must hold" / "Done when" points of its brief in
-`SESSIONS.md` and the worktree is clean. If a branch is unfinished, either continue it in a new
-session agent (same branch, same worktree or a fresh one from the branch) or finish it by hand.
-Leftover integration stacks: `docker ps --filter name=onbot-itest` and tear down with
-`docker compose -f tests/integration/stack/docker-compose.yml -p onbot-itest-<n> down -v`.
-
-### 2. Review and merge, one at a time
-
-Only S15 is left. It must not touch `onbot/` Python code, so conflicts should be limited to the
-Dockerfile (S10 added tini and the heartbeat healthcheck) and docs.
-
-For each branch:
-
-1. Read the diff (`git diff main...<branch>`), check it against the session brief and the findings it
-   claims to fix.
-2. `git merge --no-ff <branch> -m "Merge <branch>: <one line> (review session <Sx>)"`. Resolve
-   conflicts keeping both sides' intent (so far conflicts were only doc tables).
-3. `pdm run pytest tests/unit tests/contract -q` and `pdm run pre-commit run --all-files`.
-4. After S13 the config-docs check fails until the docs are regenerated: run
-   `pdm run gen-config-docs`, check the diff of `docs/CONFIG_REFERENCE.md` and `config.example.yml`,
-   and confirm `config.example.yml` still validates against the stricter model.
-5. Write the CHANGELOG lines for the session (Unreleased; destructive behaviour changes under
-   Changed or Security, breaking config validation under Changed). Derive them from the commits and
-   the brief, since the agent reports are not available.
-6. Mark the session done in the `SESSIONS.md` status table and add handover notes to later sessions
-   where the branch left something for them.
-7. Commit. Session agents never edit CHANGELOG, generated config docs or the status table; that is
-   the orchestrator's job.
-
-After the whole wave: run the integration suite once on main
-(`ONBOT_ITEST_INSTANCE=0 ./run_integration_tests.sh`), then start a fresh reviewer agent that reads
-the wave's merged diff cold (without your summary) and checks every listed finding is really fixed.
-
-Clean-up: `git worktree remove <path>` for finished worktrees (they may be locked by the old agent
-process; `git worktree unlock <path>` first), delete the `worktree-agent-*` helper branches, keep the
-`review/*` branches until the maintainer has pushed.
+Lesson from wave 1: branches that are green on their own can fail together (S10 removed a startup
+step that tests of S1 and S2 depended on). The full integration run after each wave is not optional.
 
 ## Known handover items from finished sessions
 
@@ -100,7 +71,7 @@ process; `git worktree unlock <path>` first), delete the `worktree-agent-*` help
 - S1 stores `KnownUsers` in bot account data `<reversed domain>.onbot.known_users`; S9 builds the D8
   identity binding on it (noted in its brief).
 - S1 shaped the effectors as `erase(mxid, gdpr_erase=...)` plus `delete_media`; S4 implements D7 on it.
-- S10: tini is installed via apt unpinned; S15 was told to pin it. The `synapse_server.oauth2` path is
+- S10: tini is now a checksummed static binary (S15). The `synapse_server.oauth2` path is
   still untested end to end (S11). Replays after a sync reset still welcome non-mapped joiners (S8).
 - S10: the heartbeat staleness thresholds (3 ticks plus 300 s for reconcile, 300 s for sync) are fixed,
   not configurable; a long Authentik outage marks the container unhealthy. Mention to the maintainer if
@@ -115,8 +86,7 @@ process; `git worktree unlock <path>` first), delete the `worktree-agent-*` help
 Per the wave plan in `SESSIONS.md` (max 3 agents in parallel, one worktree and one stack instance per
 agent, branches from local `main`):
 
-1. Full integration run on main. Then finish wave 1 (merge S15 as above) and run the wave review over
-   S1, S2, S10, S13, S15.
+1. Full integration run on main and the wave review (see "Wave 1 is complete").
 2. S16 history scrub, only while no `review/*` branch is open. Prepare locally on a mirror clone;
    the force-push is the maintainer's step.
 3. Wave 2: S3 (guard layers 1 and 2, admin-room reporting), S4 (offboarding completeness, D7), S11
@@ -136,7 +106,15 @@ Open maintainer decisions that later sessions will need (ask before starting the
 - S7: whether a manually closed lobby should stay closed.
 - S9: confirm the D8 design once it is known whether the MAS admin API resolves upstream links by
   subject.
-- S15: possibly the PyPI trusted publishing switch-over timing (if the S15 branch left it open).
+- S15 (merged, confirm): releases are only allowed from tags on `main`; releases take about 20
+  minutes longer because the integration suite runs first.
+- S15: Dependabot cannot update `pdm.lock`, and GitHub's dependency graph reads the stale `uv.lock`
+  until main is pushed. Add a `pip-audit` CI job, or switch to Renovate (which supports pdm)?
+- S15: stay on Debian bookworm for the base image or move to trixie?
+- S15 maintainer checklist (in `docs/development.md`): protect `main` and tags; create the `release`
+  environment with a reviewer and move the Docker Hub and PyPI secrets into it; set Actions to
+  read-only by default; limit the Docker Hub token to `dzdde/onbot`; set up PyPI Trusted Publishing,
+  then delete `PYPI_API_TOKEN`; yank `0.1.0.dev0`; delete or keep the stale `beta` image tag.
 
 ## Working rules (maintainer preferences)
 

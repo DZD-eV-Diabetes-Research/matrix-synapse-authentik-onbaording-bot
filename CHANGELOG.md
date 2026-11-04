@@ -48,6 +48,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   This `CHANGELOG.md`.
 
 ### Changed
+- **Release and build pipeline (review S15):** image and PyPI package share one PEP 440 version
+  (`scripts/release_version.py`); pre-release image tags use the normalised form (`0.2.0b1`), and a
+  non-release tag fails the build instead of shipping `0.0.0`. The image is built reproducibly from
+  `pdm.lock` with hash-checked wheels; tini is a checksummed static binary; the base image is
+  `python:3.14.10-slim-bookworm` pinned by digest. Runtime dependencies are capped below their next
+  major version, and the sdist no longer ships the tests. Dependabot proposes updates for GitHub
+  Actions, the base image and `pyproject.toml` ranges (lockfile updates stay manual, `pdm update`).
+- **Dev scripts:** `provision-bot-account.sh` never puts the token in argv or prints it in full, can
+  end previous sessions with `--revoke-previous`, and no longer truncates MAS tokens at an underscore;
+  without a terminal it needs `--quiet` or `--write-token-to`. The integration stack binds to
+  127.0.0.1, and `build_dev_env.sh` no longer leaks `set -e` into the calling shell.
 - **Stricter config validation (review S13), may reject configs that loaded before:** unknown keys are
   rejected at every level (typos fail loudly); exactly one bot credential (`bot_access_token` xor
   `oauth2`); URLs must be http(s); MXIDs must be complete, the bot's on `server_name`; alias fields are
@@ -131,6 +142,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   model forbids unknown keys, so remove these two settings if present.
 
 ### Security
+- **Releases are gated (review S15, SUP-02):** the release workflow runs the full CI on the tagged
+  commit, requires the tag to be on `main` and publishes from a `release` environment. All workflows
+  run with read-only defaults, pin every action by commit SHA, never persist checkout credentials, and
+  CI checks out the PR head SHA and only checks formatting instead of committing fixes.
 - **Avatars are fetched only from public addresses (review S13, SEC-03):** private, loopback,
   link-local and similar destinations are refused unless listed in
   `avatar_fetch.allowed_internal_destinations`; the checked address is the one connected to (no DNS
