@@ -5,9 +5,13 @@
 #
 # This is the authoritative coverage gate: it runs the whole suite, so the composition root
 # (onbot/app.py) — only reachable end-to-end — is exercised and counted (fail_under in pyproject).
+# A stack that cannot start fails the run (exit code != 0); it is never reported as skipped.
 #
 # Env:
-#   ONBOT_ITEST_KEEP=1   leave the stack running after the run (fast local iteration)
+#   ONBOT_ITEST_KEEP=1       leave the stack running after the run (fast local iteration)
+#   ONBOT_ITEST_INSTANCE=<n> use an isolated stack instance: compose project onbot-itest-<n>, host
+#                            ports shifted by 10*n. Lets several worktrees run the suite at the same
+#                            time. See tests/README.md.
 # Flags:
 #   --dev                stop at first failure with full output (-x -s --tb=long)
 # Other args pass through to pytest, e.g.:  ./run_integration_tests.sh -k lifecycle
@@ -19,7 +23,14 @@ if ! docker info >/dev/null 2>&1; then
     exit 1
 fi
 
+if [ "${ONBOT_ITEST_SKIP:-}" = "1" ]; then
+    echo "❌ ONBOT_ITEST_SKIP=1 is set, but this script is the integration run. Unset it." >&2
+    exit 1
+fi
+
 echo "🧪 Full suite + live stack (Phase 7b). First run pulls images and boots the stack (~2-3 min)."
+pdm run python -c \
+    'import os; from tests.integration.stack_instance import StackInstance as S; print("   Stack:", S.from_env(os.environ).describe())'
 
 PYTEST_ARGS=("--cov" "--cov-report=term-missing")
 for arg in "$@"; do

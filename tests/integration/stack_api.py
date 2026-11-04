@@ -12,13 +12,16 @@ Two things live here:
   provisioned MXID and a working access token.
 
 The in-network issuer hostnames (``mas:8080`` / ``authentik-server:9000``) are rewritten to
-``localhost`` on each browser hop so the host-side helper and the containers agree on one identity.
+``localhost`` and this instance's published host port on each browser hop, so the host-side helper
+and the containers agree on one identity. Which instance (compose project, host ports) is chosen in
+:mod:`tests.integration.stack_instance`.
 """
 
 from __future__ import annotations
 
 import base64
 import hashlib
+import os
 import re
 import secrets
 from dataclasses import dataclass
@@ -27,10 +30,14 @@ from urllib.parse import parse_qs, quote, urlencode, urljoin, urlparse
 
 import httpx
 
-# Fixed host ports published by tests/integration/stack/docker-compose.yml.
-SYNAPSE_URL = "http://localhost:8008"
-MAS_URL = "http://localhost:8080"
-AUTHENTIK_URL = "http://localhost:9000"
+from tests.integration.stack_instance import StackInstance
+
+# The stack instance of this run (ONBOT_ITEST_INSTANCE and friends), and the host ports it publishes
+# from tests/integration/stack/docker-compose.yml.
+STACK = StackInstance.from_env(os.environ)
+SYNAPSE_URL = STACK.synapse_url
+MAS_URL = STACK.mas_url
+AUTHENTIK_URL = STACK.authentik_url
 SERVER_NAME = "onbot.test"
 BOT_USER_ID = "@onbot:onbot.test"
 
@@ -44,9 +51,12 @@ TEST_REDIRECT_URI = "http://localhost:9999/callback"
 MAS_ADMIN_CLIENT_ID = "0000000000000000000MASADMN"
 MAS_ADMIN_CLIENT_SECRET = "04ca2b8aa47c1d270cd6fa3d72f5e8750ca5e66cb57a6783ccb01be6fffa483b"
 
-# Browser-hop host rewrites: containers advertise in-network names; the host reaches them on
-# published localhost ports.
-_REWRITE = {"mas:8080": "localhost:8080", "authentik-server:9000": "localhost:9000"}
+# Browser-hop host rewrites: containers advertise in-network names (fixed container ports); the host
+# reaches them on this instance's published localhost ports.
+_REWRITE = {
+    "mas:8080": f"localhost:{STACK.mas_port}",
+    "authentik-server:9000": f"localhost:{STACK.authentik_port}",
+}
 
 
 def _rewrite(url: str) -> str:
