@@ -221,6 +221,9 @@ if [ "$REVOKE_PREVIOUS" = true ]; then
         die "kill-sessions failed (see message above); no new token was issued."
     fi
     log "$kill_out"
+    # Synapse caches MAS token introspection: tested with MAS 0.14 and Synapse 1.156, an ended
+    # token kept working for about two minutes.
+    log "Note: Synapse may accept the old tokens for about two more minutes (introspection cache)."
 fi
 
 # ---------------------------------------------------------------------------- 3) issue token
@@ -230,7 +233,8 @@ if [ "$SYNAPSE_ADMIN" = true ]; then
 fi
 log "Issuing a compatibility token for '$USERNAME' (synapse admin: $SYNAPSE_ADMIN)..."
 token_out="$(dc exec -T mas mas-cli manage issue-compatibility-token "${admin_flag[@]}" "$USERNAME" 2>&1 || true)"
-TOKEN="$(printf '%s' "$token_out" | grep -oE 'mct_[A-Za-z0-9]+' | head -n1 || true)"
+# MAS tokens look like mct_<random>_<checksum>; the underscore is part of the token.
+TOKEN="$(printf '%s' "$token_out" | grep -oE 'mct_[A-Za-z0-9_]+' | head -n1 || true)"
 if [ -z "$TOKEN" ]; then
     # mas-cli printed no token, so its output holds nothing secret
     log "$token_out"

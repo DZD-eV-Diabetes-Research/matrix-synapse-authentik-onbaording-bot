@@ -353,7 +353,8 @@ def test_build_dev_env_refuses_to_run_unsourced() -> None:
     assert "must be sourced" in result.stdout
 
 
-FAKE_TOKEN = "mct_FAKEfake0123456789abcdefTOKEN"
+# Real MAS tokens carry an underscore before a checksum suffix; the parser must keep it.
+FAKE_TOKEN = "mct_FAKEfake0123456789abcdefTOKEN_a1B2c3"
 
 FAKE_DOCKER = f"""#!/bin/bash
 # Fake `docker compose ...` for provision-bot-account.sh: logs argv and stdin, answers like the stack.
