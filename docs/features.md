@@ -422,10 +422,11 @@ within.
 
 ### What a user sees
 
-- Nothing, until it actually happens. After a grace period a disabled user is logged out of Matrix,
-  and much later — a year, by default — their account is deactivated.
-- If they are re-enabled in Authentik within the window, the pending action is cancelled and they
-  carry on as if nothing happened.
+- Nothing, until it actually happens. After a grace period a disabled or deleted user is locked out
+  of Matrix, and much later (a year, by default) their account is deactivated.
+- If they are re-enabled in Authentik before the account is deactivated, the pending action is
+  cancelled or the lock is lifted, and they carry on. Under MAS a lock suspends sessions rather than
+  ending them, so lifting it brings the same sessions back.
 
 ### What an admin should know
 
@@ -435,17 +436,40 @@ within.
   nothing. Set it to `false` to make offboarding act. Run with the default first and read the audit
   log before you flip it.
 - **Grace periods absorb accidents.** `deactivate_after_n_sec` (24 hours by default) is how long a
-  user stays disabled before being logged out; `delete_after_n_sec` (365 days by default, or `null`
-  to never delete) before the account is erased. `include_user_media_on_delete` also removes their
+  user stays disabled before being locked out; `delete_after_n_sec` (365 days by default, or `null`
+  to never delete) is how long after the lock the account is erased. `include_user_media_on_delete` also removes their
   uploads, for data-protection erasure.
 - **On a MAS-fronted homeserver you must configure `mas_admin`.** There the Matrix session belongs to
   the Matrix Authentication Service, and the Synapse admin API cannot revoke it — without `mas_admin`
   credentials the logout is a no-op against live sessions. This, and the `dry_run` default, are the
   two reasons "disabled users keep their access" in
   [troubleshooting.md](troubleshooting.md).
-- **The destructive path is tightly scoped.** It can only ever touch accounts Onbot can positively
-  map to a now-*disabled* Authentik user that already has a Matrix account; the bot and both ignore
-  lists are always excluded, so unrelated admin and service accounts are structurally out of reach.
+- **Who is offboarded.** A user who is disabled in Authentik while inside the sync scope (the same
+  path, attribute and group filters that decide who is synced), and a *known* user who is deleted
+  from Authentik. Onbot records every user it sees active, in scope and with a Matrix account
+  (`authentik pk -> Matrix ID`, in the bot's account data), so a later deletion is noticed and goes
+  through the same grace periods. A user deleted before Onbot ever saw them active is not known and
+  not offboarded. Matrix accounts that no Authentik user ever mapped to (service, bridge or MAS-only
+  accounts) are never touched, and neither is any account an active Authentik user maps to, in or
+  out of scope.
+- **Access only comes back on positive evidence.** Onbot lifts a lock only when the Authentik user it
+  belongs to is present, active and inside the sync scope again, and only a lock Onbot set itself. A
+  deletion, a removed attribute, a mapping change or an empty answer from Authentik never unlocks
+  anybody. If Authentik suddenly returns no users at all, the offboarding step is skipped for that
+  pass (`lifecycle step aborted` in the log).
+- **Leaving the scope freezes.** A user who is being offboarded (marked or locked) but leaves the sync
+  scope, lands on an ignore list, or whose Matrix ID another active Authentik user now maps to, is
+  *frozen*: no unlock and no further step. Onbot writes one `FROZEN` line to the audit log and emits
+  a `lifecycle_attention` event (meant for the admin room). An admin decides by hand: bring the user
+  back into scope (active means the lock is lifted, disabled means offboarding continues), or lock
+  or deactivate the account in MAS directly.
+- **A failing user does not hold up the rest.** If a step fails for one user (for example MAS does
+  not know the username), the audit log says `FAILED`, the state does not advance, and Onbot retries
+  that user with a growing delay (up to 6 hours) while everybody else is processed normally. Erasure
+  records the account deactivation and the media deletion separately, so a retry resumes and never
+  repeats the deactivation.
+- **Dry-run touches nothing**, not even to unlock: every action, including lifting a lock, is only
+  written to the audit log while `dry_run` is `true`.
 
 **Settings:** the fields under
 [`deactivate_disabled_authentik_users_in_matrix`](CONFIG_REFERENCE.md) (inside
