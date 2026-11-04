@@ -816,8 +816,12 @@ async def test_a_room_the_bot_is_not_in_does_not_abort_the_pass() -> None:
     assert admin.deleted == []
 
 
-async def test_a_non_403_state_error_still_fails_the_pass() -> None:
-    """The 403 handler is narrow on purpose: a 500 from Synapse is still a real fault."""
+async def test_a_non_403_state_error_is_reported_not_skipped() -> None:
+    """The 403 handler is narrow on purpose: a 500 from Synapse is still a real fault.
+
+    Since S2 a fault no longer aborts the pass (REC-03), but it must not be mistaken for "not a
+    managed room" either: the room is reported as not converged, which a 403 never is.
+    """
 
     class BrokenStateEffectors(RecordingEffectors):
         async def get_room_state(
@@ -825,6 +829,15 @@ async def test_a_non_403_state_error_still_fails_the_pass() -> None:
         ) -> dict[str, Any] | None:
             raise ApiError("GET", "http://synapse/whatever", 500, {"errcode": "M_UNKNOWN"})
 
-    engine = ReconcilerEngine(_teardown_config(), FakeAuthentik(), ForeignRoomAdmin(), BrokenStateEffectors())  # type: ignore[arg-type]
-    with pytest.raises(ApiError):
-        await engine.reconcile_once()
+    bus = EventBus()
+    reported: list[str] = []
+
+    async def handler(event: Any) -> None:
+        reported.append(event.payload["room_id"])
+
+    bus.subscribe(Signal.room_not_converged, handler)
+    engine = ReconcilerEngine(
+        _teardown_config(), FakeAuthentik(), ForeignRoomAdmin(), BrokenStateEffectors(), bus
+    )  # type: ignore[arg-type]
+    await engine.reconcile_once()
+    assert "!private:company.org" in reported

@@ -25,6 +25,13 @@ class Signal(StrEnum):
     # Emitted at the end of every reconcile pass, so state that must converge on the tick but is not
     # the reconciler's business can ride along (the admin room's invites, ADR-0010).
     reconcile_completed = "reconcile_completed"
+    # A managed room (or the space) the pass could not fully converge: emitted once per room per pass,
+    # with ``room_kind``, ``room_id``, ``group_pk`` and ``problems`` (a list of one-line strings).
+    # Meant for the admin room; nothing subscribes yet.
+    room_not_converged = "room_not_converged"
+    # The pass skipped a destructive action class because its input looked implausible, with
+    # ``action`` (e.g. "kick") and ``reason``. Meant for the admin room; nothing subscribes yet.
+    destructive_actions_suppressed = "destructive_actions_suppressed"
 
 
 @dataclass(frozen=True, slots=True)
