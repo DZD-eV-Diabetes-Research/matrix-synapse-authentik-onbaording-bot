@@ -388,6 +388,22 @@ class TestKnownUsers:
         assert set(known.users) == {"pk-a"}
         assert len(warnings) == 1 and "both map to" in warnings[0]
 
+    def test_ledger_entry_binds_the_account_against_newcomers(self) -> None:
+        entry = LifecycleEntry(disabled_user_timestamp=2.0, authentik_pk="pk-x")
+        known = KnownUsers()
+        changed, warnings = update_known_users(
+            known, snapshot(user("x", pk="pk-new")), _ledger(x=entry), now=5.0
+        )
+        assert not changed and known.users == {}
+        assert len(warnings) == 1 and "both map to" in warnings[0]
+
+    def test_ledger_entry_owner_itself_is_recorded(self) -> None:
+        entry = LifecycleEntry(marked_for_disabling_timestamp=2.0, authentik_pk="pk-x")
+        known = KnownUsers()
+        changed, warnings = update_known_users(known, snapshot(user("x")), _ledger(x=entry), now=5.0)
+        assert changed and warnings == []
+        assert known.users["pk-x"].mxid == mx("x")
+
     def test_pruned_when_gone_from_authentik_and_nothing_left_to_offboard(self) -> None:
         known = _known(gone="pk-gone", tracked="pk-tracked", listed="pk-listed")
         snap = snapshot(matrix={mx("listed")})
@@ -493,7 +509,9 @@ class TestManagerDryRun:
     async def test_dry_run_logout_does_not_act_or_advance_state(self) -> None:
         marked = 1000.0
         store = InMemoryLedgerStore(
-            LifecycleLedger(entries={X: LifecycleEntry(marked_for_disabling_timestamp=marked)})
+            LifecycleLedger(
+                entries={X: LifecycleEntry(marked_for_disabling_timestamp=marked, authentik_pk="pk-x")}
+            )
         )
         eff, clock = RecordingEffectors(), Clock(marked + DAY)
         mgr = _manager(store, eff, clock)
@@ -698,6 +716,22 @@ class TestManagerLive:
         entry = store.ledger.entries[X]
         assert eff.logouts == [X]
         assert entry.failures == 0 and entry.retry_after_timestamp is None and entry.last_error is None
+
+    async def test_legacy_entry_is_bound_to_its_authentik_user(self) -> None:
+        """An entry written before pks were recorded gets one, so a mapping change cannot detach it."""
+        store = InMemoryLedgerStore(LifecycleLedger(entries={X: LOCKED.model_copy()}))
+        eff, clock = RecordingEffectors(), Clock()
+        mgr = _manager(store, eff, clock, dry_run=False)
+        await mgr.reconcile_accounts(ORPHAN_X)
+        assert store.ledger.entries[X].authentik_pk == "pk-x"
+
+        renamed_and_back = snapshot(user("x", active=False, pk="pk-x", mxid=mx("other")), user("x2", mxid=X))
+        await mgr.reconcile_accounts(renamed_and_back)
+        assert eff.reenables == []  # judged by pk-x (still disabled), not by the newcomer
+        assert (
+            store.ledger.entries[X].frozen_reason
+            == "another active Authentik user maps to this Matrix account"
+        )
 
     async def test_known_users_are_recorded(self) -> None:
         store, eff, clock = InMemoryLedgerStore(), RecordingEffectors(), Clock()

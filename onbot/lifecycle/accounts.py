@@ -294,7 +294,10 @@ def update_known_users(
     """
     changed = False
     warnings: list[str] = []
-    owner_of = {k.mxid: pk for pk, k in known.users.items()}
+    # A ledger entry binds its account too: a newcomer must not become a second owner of an account
+    # that is being offboarded for somebody else.
+    owner_of = {mxid: e.authentik_pk for mxid, e in ledger.entries.items() if e.authentik_pk is not None}
+    owner_of.update({k.mxid: pk for pk, k in known.users.items()})
     for user in snapshot.users:
         if not (user.is_active and user.in_scope and not user.ignored and user.mxid is not None):
             continue
@@ -309,7 +312,7 @@ def update_known_users(
                 )
             continue
         owner = owner_of.get(user.mxid)
-        if owner is not None:
+        if owner is not None and owner != user.pk:
             warnings.append(
                 f"Authentik users {owner} and {user.pk} both map to {user.mxid}; "
                 f"keeping the binding to {owner}"
@@ -551,6 +554,16 @@ class AccountLifecycleManager:
         ):
             audit.info("%s is no longer frozen (%s)", mxid, classification.reason)
             entry.frozen_reason = None
+            await self.store.save(ledger)
+        if (
+            entry is not None
+            and entry.authentik_pk is None
+            and classification.pk is not None
+            and classification.status is AccountStatus.orphaned
+        ):
+            # An entry from before pks were recorded: bind it once to the disabled user it tracks, so
+            # a later rename or lost mapping attribute cannot detach it.
+            entry.authentik_pk = classification.pk
             await self.store.save(ledger)
 
         action = decide_account_action(
