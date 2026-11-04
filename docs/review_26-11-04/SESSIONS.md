@@ -29,7 +29,7 @@ Start a session by pointing Claude at this file and the session ID, for example:
 | Order | Session | Topic | Size | Depends on | Status |
 |---|---|---|---|---|---|
 | 1 | S0 | Tooling baseline | S | | done (e3282ef) |
-| 2 | S1 | Offboarding fails open (critical hotfix) | M | S0 | open |
+| 2 | S1 | Offboarding fails open (critical hotfix) | M | S0 | done (merged in wave 1a) |
 | 3 | S2 | Reconciler pass robustness | M | S0 | open |
 | 4 | S3 | Guard layers 1 and 2, reconciler dry-run | M | S2 | open |
 | 5 | S16 | Git history scrub | S | S0, no open branches | open |
@@ -187,6 +187,13 @@ entry 2 (MNT-04 part).
 
 **Findings:** REC-01, LIF-08, MNT-09.
 
+**Handover from wave 1:** since S1, a known user who vanishes from Authentik is treated as deleted and
+locked after the cooldown. A token that suddenly sees only a few users therefore makes every other
+known user look deleted; layer 1 must catch that (only an empty list is caught today). "Report in the
+admin room" has no route yet: S1 emits `Signal.lifecycle_attention` (frozen users, failures, aborts)
+and logs `FROZEN`, `FAILED`, `lifecycle step aborted` at WARNING. Add the admin-room subscriber in
+`app.py` in this session and route the guard reports and the S2 room failure events through it.
+
 **Steps:**
 - Layer 1: persist last known good counts (users in scope, groups mapped to rooms). Abort the
   destructive part of a pass when the new list is empty or drops by more than a configurable
@@ -207,6 +214,10 @@ entry 2 (MNT-04 part).
 **Goal:** offboarding does what the docs say, on both effector paths.
 
 **Findings:** LIF-07, LIV-03, LIF-09, LIF-11 (D7), LIF-12, LIF-14, LIF-15, rest of LIF-16 and MNT-05.
+
+**Handover from S1:** effectors already have the shape `erase(mxid, gdpr_erase=...)` plus a separate
+`delete_media`; the MAS effector ignores `gdpr_erase` so far. LIF-12 and LIF-14 may be partly covered by
+S1's per-user ledger save and backoff; check before re-doing.
 
 **Steps:**
 - LIF-07: on lock, also finish the user's MAS sessions (compat, OAuth2, browser) so re-enable does not
@@ -305,6 +316,11 @@ integration tests.
 **Goal:** a renamed Authentik user keeps their Matrix account and all its rooms and power levels.
 
 **Findings:** SEC-07, MNT-13, SEC-08.
+
+**Handover from S1:** a `KnownUsers` record already exists in bot account data
+`<reversed domain>.onbot.known_users` as `users[pk] = {mxid, first_seen}`; ledger entries carry
+`authentik_pk`. Bindings are never rewritten and duplicates are reported, not recorded. Build the D8
+binding on top of it instead of adding a second store.
 
 **Steps:**
 - Confirm the design in D8 with the maintainer first, and check that the MAS admin API can resolve an

@@ -48,6 +48,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   This `CHANGELOG.md`.
 
 ### Changed
+- **Deleted Authentik users are offboarded (review S1):** a user onbot has seen active and in scope
+  who is later deleted from Authentik goes through the usual lock, deactivate and erase cooldowns.
+  Matrix accounts onbot never mapped are never touched. Tracked users who leave the sync scope are
+  frozen (no unlock, no further step) and reported. An empty Authentik user list skips the lifecycle
+  step.
+- **Dry-run calls no lifecycle effector at all**, unlock included, and onbot only unlocks locks it set
+  itself.
 - **`onbot healthcheck` checks the bot's own liveness (review S10):** the reconcile loop and the sync
   pump write a heartbeat file (`ONBOT_HEARTBEAT_FILE`, default `/tmp/onbot-heartbeat.json`, or
   `--heartbeat-file`); the default healthcheck reads it and needs no config, network or token. The
@@ -74,6 +81,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   troubleshooting.
 
 ### Fixed
+- **Offboarding no longer stalls on one user (review S1):** a failing user backs off instead of
+  blocking everyone, the ledger is saved per user, and an erase resumes without repeating the
+  deactivation.
+- **A MAS lookup 404 is a failure, not "nothing to do":** only MAS's own not-found answer means "no such
+  user"; a 404 from a missing or unrouted admin API fails the step and `onbot healthcheck --deep`. The
+  lock audit line no longer says "erase in Nones".
 - **A cold start heals by itself (review S10):** startup steps (device registration, admin room,
   rate-limit override, bot avatar) retry in the background until Synapse and MAS are up; welcomes
   start only after the device is registered. Previously the bot ran degraded until restarted.
@@ -97,6 +110,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   model forbids unknown keys, so remove these two settings if present.
 
 ### Security
+- **Offboarding fails closed (review S1, LIF-01):** onbot never unlocks a user unless the Authentik
+  user it is bound to is present, active and in scope. Previously deleting a locked user in Authentik,
+  stripping a scope attribute, an ignore-list edit or an empty API answer unlocked the account in MAS
+  and revived its old sessions.
 - ⚠️ **Unresolved release blocker:** the Phase 1 maintainer security items (rotate leaked
   credentials, scrub git history) remain open. No image/release should be published until they are
   done.

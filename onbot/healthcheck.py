@@ -74,7 +74,8 @@ async def _probe_authentik(authentik: ApiClientAuthentik) -> ProbeResult:
 
 async def _probe_mas_admin(mas: ApiClientMasAdmin, bot_user_id: str) -> ProbeResult:
     """Confirm the MAS admin client-credentials token works (lifecycle enforcement path, §7 Q1)."""
-    # ``by-username`` returns the user or 404 (both prove auth); the lookup itself never mutates.
+    # ``by-username`` returns the user or MAS's own JSON not-found answer (both prove auth). Any other
+    # 404 (admin API not mounted or not routed) raises, so the probe fails. The lookup never mutates.
     await mas.get_user_id_by_username(mxid_localpart(bot_user_id))
     return ProbeResult("mas-admin", True, "admin API authorized")
 
