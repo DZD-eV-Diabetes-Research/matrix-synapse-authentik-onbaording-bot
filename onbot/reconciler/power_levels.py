@@ -3,13 +3,12 @@
 Ported from legacy ``power_level_manager.py`` and made side-effect-free. Two improvements over
 legacy:
 
-* **Withdrawal (G8.4):** legacy left elevated power levels sticky forever. Here we compute the full
-  *desired* level for every managed room member and :func:`merge_power_levels` removes the explicit
-  entry for any managed user who no longer qualifies — converging both up and down (AD-2).
+* **Withdrawal (G8.4):** legacy left elevated power levels sticky forever. Here the full *desired*
+  level is computed for every room member, and :func:`plan_power_levels` converges up and down (AD-2).
 * **Highest wins (G8.3):** when a user is in several power-level groups we take the max; superuser
   room-admin (G8.2) overrides group levels.
 
-What the engine writes is planned by :func:`plan_power_levels`, which adds two rules on top:
+What the engine writes is planned by :func:`plan_power_levels`, with two rules:
 
 * **Only the bot's own grants are withdrawn (D10, REC-08).** The bot records every entry it wrote;
   when the user stops qualifying, only a recorded entry whose value is still what the bot wrote is
@@ -69,7 +68,8 @@ def compute_desired_user_levels(
     """Desired explicit power level per managed member who qualifies for one (> default).
 
     Members with no group level and no superuser admin are omitted (they should sit at the room
-    default); :func:`merge_power_levels` turns that omission into a withdrawal.
+    default); :func:`plan_power_levels` turns that omission into a withdrawal of a level the bot
+    granted earlier.
     """
     groups = list(power_level_groups)
     desired: dict[str, int] = {}
@@ -98,35 +98,10 @@ def apply_global_room_admins(
     level does not depend on group membership, so a global admin who is *also* in a power-level
     group carrying 50 still ends up at 100 rather than at the group's number.
 
-    The returned mxids must be added to ``managed_mxids`` for :func:`merge_power_levels`, otherwise
-    the entries are computed and then dropped on the floor. Removing a name from the config
-    withdraws the level on the next pass by the same route: it is no longer desired, but it is still
-    managed while it remains in the room.
+    Removing a name from the config withdraws the level on the next pass: it is no longer desired,
+    but the bot recorded the grant, so :func:`plan_power_levels` takes it back.
     """
     return {**desired, **dict.fromkeys(global_admin_mxids, level)}
-
-
-def merge_power_levels(
-    current_users: dict[str, int],
-    desired: dict[str, int],
-    managed_mxids: set[str],
-) -> dict[str, int]:
-    """Merge desired levels into the current ``users`` map, withdrawing stale managed entries.
-
-    Only ``managed_mxids`` are added/updated/removed; everyone else is left untouched. Returns a new
-    dict (the caller decides whether it changed before writing).
-
-    Note this never adds the bot: the bot is the room *creator* and, under room version 12, is absent
-    from ``users`` by design (see :func:`legacy_user_matches_or_outranks_creator`). It is not in
-    ``managed_mxids``, so its absence here is correct, not a demotion.
-    """
-    merged = dict(current_users)
-    for mxid in managed_mxids:
-        if mxid in desired:
-            merged[mxid] = desired[mxid]
-        else:
-            merged.pop(mxid, None)
-    return merged
 
 
 def legacy_user_matches_or_outranks_creator(
