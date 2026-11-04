@@ -82,7 +82,9 @@ async def _probe_mas_admin(mas: ApiClientMasAdmin, bot_user_id: str) -> ProbeRes
 async def run_healthcheck(config: OnbotConfig) -> int:
     """Probe every configured dependency, log a line per result, and return an exit code."""
     token_provider = build_matrix_token_provider(config.synapse_server)
-    authentik = ApiClientAuthentik(url=config.authentik_server.url, api_key=config.authentik_server.api_key)
+    authentik = ApiClientAuthentik(
+        url=config.authentik_server.url, api_key=config.authentik_server.api_key.get_secret_value()
+    )
     admin = ApiClientSynapseAdmin(
         server_url=config.synapse_server.server_url,
         token_provider=token_provider,
@@ -101,7 +103,7 @@ async def run_healthcheck(config: OnbotConfig) -> int:
             token_provider=OAuth2ClientCredentialsTokenProvider(
                 token_endpoint=f"{config.mas_admin.url.rstrip('/')}/oauth2/token",
                 client_id=config.mas_admin.client_id,
-                client_secret=config.mas_admin.client_secret,
+                client_secret=config.mas_admin.client_secret.get_secret_value(),
                 scope="urn:mas:admin",
             ),
         )

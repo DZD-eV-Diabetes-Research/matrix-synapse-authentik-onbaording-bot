@@ -28,10 +28,18 @@ emits its own minimal template via ``onbot.config.generate_example_config`` inst
 from __future__ import annotations
 
 import argparse
+import contextlib
+import inspect
 import sys
+from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
+from unittest import mock
 
-from psyplus import YamlSettingsPlus
+from psyplus import YamlSettingsPlus, yaml_generator
+from psyplus.field_info import FieldInfoContainer
+from psyplus.utils import clean_annotation
+from pydantic import BaseModel, SecretStr
 
 from onbot.config import OnbotConfig
 
@@ -63,13 +71,56 @@ def _strip_trailing_ws(text: str) -> str:
     return "\n".join(line.rstrip() for line in text.splitlines())
 
 
+def _construct(cls: type[BaseModel], data: dict[str, Any]) -> BaseModel:
+    """Build ``cls`` from psyplus' placeholder data without validating it.
+
+    psyplus fills required fields with empty placeholders ("" for a URL, None for a secret) and then
+    runs ``model_validate``, which the model's validators rightly reject (an empty URL is not a URL).
+    The template only needs the structure, so construct the instance, nested blocks included.
+    """
+    values: dict[str, Any] = {}
+    for key, value in data.items():
+        annotation = clean_annotation(cls.model_fields[key].annotation)
+        if isinstance(value, dict) and inspect.isclass(annotation) and issubclass(annotation, BaseModel):
+            value = _construct(annotation, value)
+        values[key] = value
+    return cls.model_construct(**values)
+
+
+def _build_placeholder_instance(cls: type[BaseModel]) -> BaseModel:
+    return _construct(cls, yaml_generator._build_dict_for_class(cls))
+
+
+_original_type_string = FieldInfoContainer.get_type_string
+
+
+def _type_string(self: FieldInfoContainer) -> str | None:
+    """Show a credential field as a secret string; psyplus would call a ``SecretStr`` "Object"."""
+    if clean_annotation(self.get_annotation()) is SecretStr:
+        return "str (secret)"
+    return _original_type_string(self)
+
+
+@contextlib.contextmanager
+def _psyplus_adapted() -> Iterator[None]:
+    with (
+        mock.patch.object(yaml_generator, "build_settings_instance", _build_placeholder_instance),
+        mock.patch.object(FieldInfoContainer, "get_type_string", _type_string),
+    ):
+        yield
+
+
 def render_markdown() -> str:
-    body = _strip_trailing_ws(YamlSettingsPlus(OnbotConfig).render_markdown())
+    with _psyplus_adapted():
+        rendered = YamlSettingsPlus(OnbotConfig).render_markdown()
+    body = _strip_trailing_ws(rendered)
     return _GENERATED_BANNER + body.rstrip() + "\n"
 
 
 def render_yaml() -> str:
-    body = _strip_trailing_ws(YamlSettingsPlus(OnbotConfig).render_yaml())
+    with _psyplus_adapted():
+        rendered = YamlSettingsPlus(OnbotConfig).render_yaml()
+    body = _strip_trailing_ws(rendered)
     return _YAML_BANNER + "\n" + body.rstrip() + "\n"
 
 

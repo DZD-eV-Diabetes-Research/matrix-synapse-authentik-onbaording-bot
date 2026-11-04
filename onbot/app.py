@@ -98,11 +98,11 @@ def build_matrix_token_provider(synapse: SynapseServer) -> TokenProvider:
         return OAuth2ClientCredentialsTokenProvider(
             token_endpoint=synapse.oauth2.token_endpoint,
             client_id=synapse.oauth2.client_id,
-            client_secret=synapse.oauth2.client_secret,
+            client_secret=synapse.oauth2.client_secret.get_secret_value(),
             scope=synapse.oauth2.scope,
         )
     if synapse.bot_access_token:
-        return StaticTokenProvider(synapse.bot_access_token)
+        return StaticTokenProvider(synapse.bot_access_token.get_secret_value())
     raise ValueError("synapse_server needs either bot_access_token or an oauth2 block")
 
 
@@ -258,7 +258,7 @@ async def build_app(config: OnbotConfig, *, heartbeat: Heartbeat | None = None) 
     async with AsyncExitStack() as stack:
         authentik = ApiClientAuthentik(
             url=config.authentik_server.url,
-            api_key=config.authentik_server.api_key,
+            api_key=config.authentik_server.api_key.get_secret_value(),
         )
         stack.push_async_callback(authentik.aclose)
         matrix, admin = _matrix_clients(stack, config)
@@ -276,7 +276,7 @@ async def build_app(config: OnbotConfig, *, heartbeat: Heartbeat | None = None) 
                 token_provider=OAuth2ClientCredentialsTokenProvider(
                     token_endpoint=f"{config.mas_admin.url.rstrip('/')}/oauth2/token",
                     client_id=config.mas_admin.client_id,
-                    client_secret=config.mas_admin.client_secret,
+                    client_secret=config.mas_admin.client_secret.get_secret_value(),
                     scope="urn:mas:admin",
                 ),
             )

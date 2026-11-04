@@ -38,12 +38,22 @@ model to YAML (G11.2), deliberately with every source switched off.
 from __future__ import annotations
 
 import inspect
+import ipaddress
 import os
+import re
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, get_args
+from urllib.parse import urlsplit
 
 import yaml
-from pydantic import BaseModel, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -54,12 +64,88 @@ from pydantic_settings import (
 CONFIG_FILE_ENV_VAR = "ONBOT_CONFIG_FILE_PATH"
 
 
-class MatrixOAuth2(BaseModel):
+# --- validation building blocks (MNT-03, SEC-11) ------------------------------------------------
+#
+# Error messages here must name what is expected and must never echo the offending value: the CLI
+# prints them verbatim, and some of the values are credentials (RUN-07).
+
+
+class _StrictModel(BaseModel):
+    """Base of every nested config block: an unknown key is an error, not silently ignored.
+
+    A typo such as ``dry_rn: false`` must fail loudly instead of leaving the destructive default in
+    place (MNT-03). The top-level model forbids unknown keys as well (see :class:`OnbotConfig`).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+
+def _check_http_url(value: str) -> str:
+    try:
+        parts = urlsplit(value)
+        host = parts.hostname
+    except ValueError:
+        host = None
+        parts = None
+    if parts is None or parts.scheme not in ("http", "https") or not host:
+        raise ValueError("must be an http:// or https:// URL with a host, such as https://matrix.company.org")
+    return value
+
+
+_MXID_RE = re.compile(r"^@[^:\s]+:\S+$")
+
+
+def _check_mxid(value: str) -> str:
+    if not _MXID_RE.match(value):
+        raise ValueError(
+            "must be a full Matrix user ID with the leading @ and the server, such as @alice:company.org"
+        )
+    return value
+
+
+def _check_alias_part(value: str) -> str:
+    if any(ch in value for ch in "#:") or any(ch.isspace() for ch in value):
+        raise ValueError(
+            "must be part of an alias localpart only, without '#', ':' or spaces: write myspace for "
+            "#myspace:<server_name>"
+        )
+    return value
+
+
+def _check_alias_localpart(value: str) -> str:
+    if not value:
+        raise ValueError(
+            "must not be empty: give the alias localpart, such as myspace for #myspace:<server_name>"
+        )
+    return _check_alias_part(value)
+
+
+_HOSTNAME_RE = re.compile(r"^[A-Za-z0-9_]([A-Za-z0-9_.-]*[A-Za-z0-9_])?\.?$")
+
+
+def _check_destination(value: str) -> str:
+    value = value.strip()
+    try:
+        ipaddress.ip_network(value, strict=False)
+    except ValueError:
+        if not _HOSTNAME_RE.match(value):
+            raise ValueError(
+                "must be a hostname (without scheme, port or path), an IP address or a CIDR network "
+                "such as 10.0.0.0/8"
+            ) from None
+    return value
+
+
+LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+LOG_LEVELS: tuple[str, ...] = get_args(LogLevel)
+
+
+class MatrixOAuth2(_StrictModel):
     """OAuth2 client-credentials auth against MAS (AD-6, Phase 6).
 
     The forward-looking alternative to a static compatibility token: the bot is a confidential
-    OAuth2 client of MAS and mints short-lived access tokens that refresh transparently. When this
-    block is set it takes precedence over ``bot_access_token``.
+    OAuth2 client of MAS and mints short-lived access tokens that refresh transparently. Exclusive
+    with ``bot_access_token``: :class:`SynapseServer` rejects a config that sets both (MNT-03).
     """
 
     token_endpoint: Annotated[
@@ -86,7 +172,7 @@ class MatrixOAuth2(BaseModel):
         ),
     ]
     client_secret: Annotated[
-        str,
+        SecretStr,
         Field(
             title="OAuth2 client secret",
             description=inspect.cleandoc(
@@ -111,8 +197,13 @@ class MatrixOAuth2(BaseModel):
         ),
     ] = None
 
+    @field_validator("token_endpoint")
+    @classmethod
+    def _v_token_endpoint(cls, value: str) -> str:
+        return _check_http_url(value)
 
-class MasAdmin(BaseModel):
+
+class MasAdmin(_StrictModel):
     """MAS admin API credentials for lifecycle enforcement (ADR-0005/0006, §7 Q1).
 
     Under MAS the Matrix token is owned by MAS, so the Synapse admin API cannot revoke a live
@@ -146,7 +237,7 @@ class MasAdmin(BaseModel):
         ),
     ]
     client_secret: Annotated[
-        str,
+        SecretStr,
         Field(
             title="MAS admin client secret",
             description=inspect.cleandoc(
@@ -159,8 +250,13 @@ class MasAdmin(BaseModel):
         ),
     ]
 
+    @field_validator("url")
+    @classmethod
+    def _v_url(cls, value: str) -> str:
+        return _check_http_url(value)
 
-class AdminRoom(BaseModel):
+
+class AdminRoom(_StrictModel):
     """The operator control room (ADR-0010).
 
     A single Matrix room the bot joins, invites the admins to, and listens in for prefixed commands
@@ -262,8 +358,18 @@ class AdminRoom(BaseModel):
         ),
     ] = Field(default_factory=list)
 
+    @field_validator("alias")
+    @classmethod
+    def _v_alias(cls, value: str) -> str:
+        return _check_alias_localpart(value)
 
-class SynapseServer(BaseModel):
+    @field_validator("admin_user_ids")
+    @classmethod
+    def _v_admin_user_ids(cls, value: list[str]) -> list[str]:
+        return [_check_mxid(v) for v in value]
+
+
+class SynapseServer(_StrictModel):
     """Where the homeserver lives and how the bot authenticates against it."""
 
     server_name: Annotated[
@@ -303,7 +409,7 @@ class SynapseServer(BaseModel):
         ),
     ]
     bot_access_token: Annotated[
-        str | None,
+        SecretStr | None,
         Field(
             title="Bot access token",
             description=inspect.cleandoc(
@@ -377,8 +483,46 @@ class SynapseServer(BaseModel):
         ),
     ] = None
 
+    @field_validator("bot_access_token", mode="before")
+    @classmethod
+    def _blank_token_is_unset(cls, value: Any) -> Any:
+        # An empty ONBOT_SYNAPSE_SERVER__BOT_ACCESS_TOKEN is how an environment "unsets" the token.
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
-class AuthentikServer(BaseModel):
+    @model_validator(mode="after")
+    def _check_credentials_and_bot_server(self) -> SynapseServer:
+        """Exactly one bot credential, and the bot account lives on ``server_name`` (MNT-03)."""
+        has_token = self.bot_access_token is not None
+        has_oauth2 = self.oauth2 is not None
+        if has_token == has_oauth2:
+            state = "both are set" if has_token else "neither is set"
+            raise ValueError(f"set exactly one of bot_access_token or oauth2 ({state})")
+        bot_server = self.bot_user_id.split(":", 1)[1]
+        if bot_server.lower() != self.server_name.lower():
+            raise ValueError(
+                "bot_user_id must be an account on server_name: the part after ':' must equal server_name"
+            )
+        return self
+
+    @field_validator("server_url")
+    @classmethod
+    def _v_server_url(cls, value: str) -> str:
+        return _check_http_url(value)
+
+    @field_validator("bot_avatar_url")
+    @classmethod
+    def _v_bot_avatar_url(cls, value: str | None) -> str | None:
+        return None if value is None else _check_http_url(value)
+
+    @field_validator("bot_user_id")
+    @classmethod
+    def _v_bot_user_id(cls, value: str) -> str:
+        return _check_mxid(value)
+
+
+class AuthentikServer(_StrictModel):
     """Where the upstream identity provider lives and how the bot authenticates against it."""
 
     url: Annotated[
@@ -390,7 +534,7 @@ class AuthentikServer(BaseModel):
         ),
     ]
     api_key: Annotated[
-        str,
+        SecretStr,
         Field(
             title="Authentik API token",
             description=inspect.cleandoc(
@@ -404,8 +548,13 @@ class AuthentikServer(BaseModel):
         ),
     ]
 
+    @field_validator("url")
+    @classmethod
+    def _v_url(cls, value: str) -> str:
+        return _check_http_url(value)
 
-class DeactivateDisabledAuthentikUsersInMatrix(BaseModel):
+
+class DeactivateDisabledAuthentikUsersInMatrix(_StrictModel):
     """Lifecycle settings (Phase 5 — quarantined, dry-run/audit default; AD-5)."""
 
     enabled: Annotated[
@@ -442,6 +591,7 @@ class DeactivateDisabledAuthentikUsersInMatrix(BaseModel):
                 within this window cancels the pending deactivation. The default is 24 hours."""
             ),
             examples=[86400, 3600],
+            ge=0,
         ),
     ] = 60 * 60 * 24
     delete_after_n_sec: Annotated[
@@ -455,6 +605,7 @@ class DeactivateDisabledAuthentikUsersInMatrix(BaseModel):
                 deactivated. The default is 365 days."""
             ),
             examples=[31536000, None],
+            ge=0,
         ),
     ] = 60 * 60 * 24 * 365
     include_user_media_on_delete: Annotated[
@@ -470,7 +621,7 @@ class DeactivateDisabledAuthentikUsersInMatrix(BaseModel):
     ] = False
 
 
-class SyncAuthentikUsersWithMatrix(BaseModel):
+class SyncAuthentikUsersWithMatrix(_StrictModel):
     """How Authentik users/groups are projected into Matrix room membership (the core sync)."""
 
     enabled: Annotated[
@@ -555,7 +706,7 @@ class SyncAuthentikUsersWithMatrix(BaseModel):
     ] = Field(default_factory=DeactivateDisabledAuthentikUsersInMatrix)
 
 
-class CreateMatrixSpaceIfNotExists(BaseModel):
+class CreateMatrixSpaceIfNotExists(_StrictModel):
     """Identity of the parent space the bot creates when it is missing."""
 
     enabled: Annotated[
@@ -611,8 +762,13 @@ class CreateMatrixSpaceIfNotExists(BaseModel):
         ),
     ] = Field(default_factory=lambda: {"preset": "private_chat", "visibility": "private"})
 
+    @field_validator("avatar_url")
+    @classmethod
+    def _v_avatar_url(cls, value: str | None) -> str | None:
+        return None if value is None else _check_http_url(value)
 
-class CreateMatrixRoomsInAMatrixSpace(BaseModel):
+
+class CreateMatrixRoomsInAMatrixSpace(_StrictModel):
     """Whether the group rooms are gathered under one parent space, and which one."""
 
     enabled: Annotated[
@@ -645,8 +801,13 @@ class CreateMatrixRoomsInAMatrixSpace(BaseModel):
         ),
     ] = Field(default_factory=CreateMatrixSpaceIfNotExists)
 
+    @field_validator("alias")
+    @classmethod
+    def _v_alias(cls, value: str) -> str:
+        return _check_alias_localpart(value)
 
-class SyncMatrixRoomsBasedOnAuthentikGroups(BaseModel):
+
+class SyncMatrixRoomsBasedOnAuthentikGroups(_StrictModel):
     """Which Authentik groups become Matrix rooms, and how their power levels are derived."""
 
     enabled: Annotated[
@@ -753,7 +914,7 @@ class SyncMatrixRoomsBasedOnAuthentikGroups(BaseModel):
     ] = "chat-systemwide-powerlevel"
 
 
-class MatrixDynamicRoomSettings(BaseModel):
+class MatrixDynamicRoomSettings(_StrictModel):
     """Template for how a Matrix room's identity (alias/name/topic/encryption/create params) is
     derived from its Authentik group. Used as the default for all rooms and overridable per group
     via ``per_authentik_group_pk_matrix_room_settings``."""
@@ -984,9 +1145,81 @@ class MatrixDynamicRoomSettings(BaseModel):
         ),
     ] = "attributes.chatroom_visitor_lobby"
 
+    @field_validator("alias_prefix")
+    @classmethod
+    def _v_alias_prefix(cls, value: str | None) -> str | None:
+        return None if value is None else _check_alias_part(value)
+
+    @field_validator("visitor_lobby_alias_suffix")
+    @classmethod
+    def _v_visitor_lobby_alias_suffix(cls, value: str) -> str:
+        return _check_alias_localpart(value)
+
+
+class AvatarFetch(_StrictModel):
+    """Limits for downloading avatar images (SEC-03, decision D11).
+
+    Room avatar URLs come from Authentik group attributes, so they are chosen by whoever may edit a
+    group. The download therefore refuses internal destinations unless released here, and is capped
+    in size and time. Enforced by :mod:`onbot.safe_fetch`.
+    """
+
+    allowed_internal_destinations: Annotated[
+        list[str],
+        Field(
+            title="Internal hosts avatars may be downloaded from",
+            description=inspect.cleandoc(
+                """Avatar images (the bot's, the space's and every group room's) are only downloaded
+                from public internet addresses. Private, loopback, link-local, multicast and other
+                special-purpose addresses are refused, because a room avatar URL is set by whoever
+                may edit an Authentik group, and the bot would otherwise fetch internal endpoints
+                (cloud metadata, MAS, Authentik) and publish the response as an image in the room.
+
+                List the exceptions here: a hostname (matched exactly, whatever it resolves to), an
+                IP address, or a network in CIDR notation. Write no scheme, port or path. Redirects
+                are checked against the same rules on every hop. Environment proxy settings are not
+                used for these downloads."""
+            ),
+            examples=[["assets.internal.company.org", "10.20.0.0/16"]],
+        ),
+    ] = Field(default_factory=list)
+    max_size_bytes: Annotated[
+        int,
+        Field(
+            title="Maximum avatar size (bytes)",
+            description=inspect.cleandoc(
+                """Largest avatar image the bot downloads. A larger file is refused and the download
+                is stopped as soon as the limit is crossed. The default is 5 MiB."""
+            ),
+            examples=[5242880],
+            gt=0,
+        ),
+    ] = 5 * 1024 * 1024
+    timeout_sec: Annotated[
+        float,
+        Field(
+            title="Avatar download deadline (seconds)",
+            description=inspect.cleandoc(
+                """Time limit for one avatar download as a whole, redirects included. A server that
+                sends its response too slowly is cut off when it runs out, so it cannot hold up the
+                reconcile pass."""
+            ),
+            examples=[30],
+            gt=0,
+        ),
+    ] = 30.0
+
+    @field_validator("allowed_internal_destinations")
+    @classmethod
+    def _v_allowed_internal_destinations(cls, value: list[str]) -> list[str]:
+        return [_check_destination(v) for v in value]
+
 
 class OnbotConfig(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="ONBOT_", env_nested_delimiter="__")
+    # Unknown top-level keys fail as well (pydantic-settings' default, spelled out here). The env
+    # source only looks up ONBOT_* names that belong to a field, so harness or runtime variables
+    # such as ONBOT_CONFIG_FILE_PATH, ONBOT_HEARTBEAT_FILE or ONBOT_ITEST_* never trip it.
+    model_config = SettingsConfigDict(env_prefix="ONBOT_", env_nested_delimiter="__", extra="forbid")
 
     @classmethod
     def settings_customise_sources(
@@ -1010,16 +1243,28 @@ class OnbotConfig(BaseSettings):
         return tuple(sources)
 
     log_level: Annotated[
-        Literal["INFO", "DEBUG"],
+        LogLevel,
         Field(
             title="Logging verbosity",
             description=inspect.cleandoc(
                 """How much the bot logs. `DEBUG` is noisy — it includes every API call it makes — but
                 it is the fastest way to see why a user or group is not being picked up while wiring
-                the bot up. The `--log-level` command-line flag overrides this."""
+                the bot up. `WARNING` keeps a quiet production log. The `--log-level` command-line
+                flag overrides this."""
             ),
         ),
     ] = "INFO"
+
+    @field_validator("matrix_user_ignore_list")
+    @classmethod
+    def _v_matrix_user_ignore_list(cls, value: list[str]) -> list[str]:
+        return [_check_mxid(v) for v in value]
+
+    @field_validator("log_level", mode="before")
+    @classmethod
+    def _log_level_upper(cls, value: Any) -> Any:
+        return value.upper() if isinstance(value, str) else value
+
     server_tick_rate_sec: Annotated[
         int,
         Field(
@@ -1036,6 +1281,7 @@ class OnbotConfig(BaseSettings):
                 edited power level). Minutes, not seconds, is the right order of magnitude."""
             ),
             examples=[300, 900],
+            gt=0,
         ),
     ] = 300
     authentik_poll_rate_sec: Annotated[
@@ -1052,6 +1298,7 @@ class OnbotConfig(BaseSettings):
                 case new users wait for the next `server_tick_rate_sec` reconcile."""
             ),
             examples=[15, 60, 0],
+            ge=0,
         ),
     ] = 15
 
@@ -1333,6 +1580,35 @@ class OnbotConfig(BaseSettings):
         ),
     ] = Field(default_factory=list)
 
+    avatar_fetch: Annotated[
+        AvatarFetch,
+        Field(
+            title="Avatar downloads",
+            description=inspect.cleandoc(
+                """Where avatar images may be downloaded from, and how large and slow such a
+                download may be. Applies to `synapse_server.bot_avatar_url`, the space avatar and
+                every group room avatar."""
+            ),
+        ),
+    ] = Field(default_factory=AvatarFetch)
+
+    @model_validator(mode="after")
+    def _no_settings_without_effect(self) -> OnbotConfig:
+        """Reject switches that cannot take effect because the switch they depend on is off (MNT-03)."""
+        rooms = self.sync_matrix_rooms_based_on_authentik_groups
+        if rooms.delete_disabled_rooms and not rooms.disable_rooms_when_mapped_authentik_group_disappears:
+            raise ValueError(
+                "sync_matrix_rooms_based_on_authentik_groups.delete_disabled_rooms only acts on rooms "
+                "that disable_rooms_when_mapped_authentik_group_disappears disabled: enable that too, "
+                "or set delete_disabled_rooms to false"
+            )
+        if self.place_onboarding_rooms_in_space and not self.create_matrix_rooms_in_a_matrix_space.enabled:
+            raise ValueError(
+                "place_onboarding_rooms_in_space requires create_matrix_rooms_in_a_matrix_space to be "
+                "enabled: there is no space to place the rooms in"
+            )
+        return self
+
     @model_validator(mode="after")
     def _visitor_lobby_requires_a_space(self) -> OnbotConfig:
         """A lobby's ``restricted`` join rule needs a space to be restricted *to*.
@@ -1382,22 +1658,13 @@ def generate_example_config() -> str:
 
     # The template must show the *defaults*. Every normal construction path consults the settings
     # sources, so an ambient config.yml or ONBOT_* variable would otherwise leak into the generated
-    # example — and from there into the committed config.example.yml. Take the sources away.
-    class _DefaultsOnly(OnbotConfig):
-        @classmethod
-        def settings_customise_sources(
-            cls,
-            settings_cls: type[BaseSettings],
-            init_settings: PydanticBaseSettingsSource,
-            env_settings: PydanticBaseSettingsSource,
-            dotenv_settings: PydanticBaseSettingsSource,
-            file_secret_settings: PydanticBaseSettingsSource,
-        ) -> tuple[PydanticBaseSettingsSource, ...]:
-            return (init_settings,)
-
-    model = _DefaultsOnly(
-        synapse_server=SynapseServer(server_name="", server_url="", bot_user_id="", bot_access_token=""),
-        authentik_server=AuthentikServer(url="", api_key=""),
+    # example, and from there into the committed config.example.yml. model_construct consults no
+    # source and runs no validation, which the placeholders (empty, so not valid values) also need.
+    model = OnbotConfig.model_construct(
+        synapse_server=SynapseServer.model_construct(
+            server_name="", server_url="", bot_user_id="", bot_access_token=None
+        ),
+        authentik_server=AuthentikServer.model_construct(url="", api_key=SecretStr("")),
     )
     data = model.model_dump(mode="json")
     for key in ("server_name", "server_url", "bot_user_id", "bot_access_token"):
