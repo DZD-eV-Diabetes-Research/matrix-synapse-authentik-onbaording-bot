@@ -24,7 +24,7 @@ def test_generate_config_to_file(tmp_path: Path) -> None:
     assert "synapse_server" in target.read_text(encoding="utf-8")
 
 
-def test_healthcheck_dispatches_and_propagates_exit_code(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_deep_healthcheck_dispatches_and_propagates_exit_code(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
 
     async def fake_run_healthcheck(config: object) -> int:
@@ -36,7 +36,7 @@ def test_healthcheck_dispatches_and_propagates_exit_code(monkeypatch: pytest.Mon
     monkeypatch.setattr(cli, "get_config_file_path", lambda: "config.yml")
     monkeypatch.setattr("onbot.healthcheck.run_healthcheck", fake_run_healthcheck)
 
-    assert cli.main(["healthcheck"]) == 3
+    assert cli.main(["healthcheck", "--deep"]) == 3
     assert captured["config"] is sentinel
 
 
@@ -53,18 +53,22 @@ def _run_healthcheck_with(monkeypatch: pytest.MonkeyPatch, config_level: str, ar
 
 def test_config_log_level_is_applied(monkeypatch: pytest.MonkeyPatch) -> None:
     # Regression: the config file's log_level used to be parsed and then never read.
-    assert _run_healthcheck_with(monkeypatch, "DEBUG", ["healthcheck"]) == logging.DEBUG
+    assert _run_healthcheck_with(monkeypatch, "DEBUG", ["healthcheck", "--deep"]) == logging.DEBUG
 
 
 def test_cli_log_level_overrides_config(monkeypatch: pytest.MonkeyPatch) -> None:
-    assert _run_healthcheck_with(monkeypatch, "DEBUG", ["--log-level", "INFO", "healthcheck"]) == logging.INFO
+    assert (
+        _run_healthcheck_with(monkeypatch, "DEBUG", ["--log-level", "INFO", "healthcheck", "--deep"])
+        == logging.INFO
+    )
 
 
 def test_cli_log_level_after_the_subcommand_overrides_config(monkeypatch: pytest.MonkeyPatch) -> None:
     # Regression (MNT-11): the documented `onbot reconcile-once --log-level DEBUG` used to fail with
     # "unrecognized arguments", because the flag only existed on the root parser.
     assert (
-        _run_healthcheck_with(monkeypatch, "INFO", ["healthcheck", "--log-level", "DEBUG"]) == logging.DEBUG
+        _run_healthcheck_with(monkeypatch, "INFO", ["healthcheck", "--deep", "--log-level", "DEBUG"])
+        == logging.DEBUG
     )
 
 
