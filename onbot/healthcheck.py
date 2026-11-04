@@ -1,11 +1,16 @@
-"""Dependency health probe for ``onbot healthcheck`` (BATTLE_PLAN §5 Phase 8).
+"""Dependency probe for ``onbot healthcheck --deep`` (BATTLE_PLAN §5 Phase 8).
 
 Probes the services the bot actually talks to — the Matrix CS API, the Synapse admin API, the
 Authentik API, and (when configured) the MAS admin API — using the *real* configured credentials, so
 the check verifies connectivity **and** authorization, not just that a port is open. Each probe is a
 single lightweight authenticated request.
 
-Exit code contract (suitable for a container ``HEALTHCHECK`` / orchestrator readiness probe):
+This is an operator tool, not the container ``HEALTHCHECK`` any more (RUN-04, RUN-11, SUP-09). It
+cannot see the bot itself, it fails while Authentik is down although the bot will catch up, and with
+``mas_admin`` (or ``synapse_server.oauth2``) every run mints a fresh MAS token. The container check is
+the plain ``onbot healthcheck``, which reads the service's heartbeat file (:mod:`onbot.heartbeat`).
+
+Exit code contract:
 
 * ``0`` — every required dependency answered successfully.
 * ``1`` — at least one probe failed (unreachable, auth rejected, or unexpected response).

@@ -1,8 +1,10 @@
 """Reconciler engine (AD-2): level-triggered, idempotent convergence.
 
 Computes *desired* state (from Authentik) vs *actual* state (Synapse) and applies the diff. Runs on
-a schedule **and** on demand (replacing the legacy ``while True: sleep`` tick loop), and shuts down
-gracefully on SIGINT/SIGTERM. A single ``reconcile_once`` pass is fully re-runnable.
+a schedule **and** on demand (replacing the legacy ``while True: sleep`` tick loop) until
+:meth:`ReconcilerEngine.request_stop`. Signals are handled by the process (``onbot.app``), not here, so
+that they are caught from the first moment and not only once the loop runs (RUN-09). A single
+``reconcile_once`` pass is fully re-runnable.
 
 The pure decision logic lives in the sibling modules (``rooms``, ``membership``, ``power_levels``);
 reads go through the Authentik + Synapse-admin clients; writes go through the Synapse-admin client
@@ -13,8 +15,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import signal
 import time
+from collections.abc import Callable
 from typing import Any
 
 from pydantic import ValidationError
@@ -86,6 +88,8 @@ class ReconcilerEngine:
         # Unix timestamp of the last pass that ran to completion; reported by the admin room's
         # `!status` command. ``None`` until the first pass finishes.
         self.last_reconcile_at: float | None = None
+        # Passes the run loop has begun, so a caller can tell "not started yet" from "missed one".
+        self.passes_started = 0
         self._stop = asyncio.Event()
         self._trigger = asyncio.Event()
 
@@ -99,17 +103,25 @@ class ReconcilerEngine:
         self._stop.set()
         self._trigger.set()  # unblock the wait so we exit promptly
 
-    async def run(self) -> None:
-        """Run scheduled + on-demand reconciles until stopped (SIGINT/SIGTERM)."""
-        self._install_signal_handlers()
+    async def run(self, *, on_pass: Callable[[bool], None] | None = None) -> None:
+        """Run scheduled + on-demand reconciles until :meth:`request_stop`.
+
+        ``on_pass`` is told after every pass whether it succeeded (the liveness heartbeat).
+        """
         log.info("reconciler started; tick=%ss", self.config.server_tick_rate_sec)
         while not self._stop.is_set():
             # Clear before the pass so a trigger raised *during* it is preserved for the next wait.
             self._trigger.clear()
+            self.passes_started += 1
             try:
                 await self.reconcile_once()
             except Exception:
                 log.exception("reconcile pass failed; will retry next tick")
+                if on_pass is not None:
+                    on_pass(False)
+            else:
+                if on_pass is not None:
+                    on_pass(True)
             if self._stop.is_set():
                 break
             await self._wait_for_next_tick()
@@ -119,14 +131,6 @@ class ReconcilerEngine:
         # Wake on an on-demand trigger, or fall through on the scheduled timeout.
         with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(self._trigger.wait(), timeout=self.config.server_tick_rate_sec)
-
-    def _install_signal_handlers(self) -> None:
-        try:
-            loop = asyncio.get_running_loop()
-            for sig in (signal.SIGINT, signal.SIGTERM):
-                loop.add_signal_handler(sig, self.request_stop)
-        except NotImplementedError, RuntimeError:  # pragma: no cover - non-main thread / Windows
-            log.debug("signal handlers unavailable in this environment")
 
     # --- one convergence pass ------------------------------------------------
 

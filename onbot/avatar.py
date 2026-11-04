@@ -54,32 +54,30 @@ async def ensure_bot_avatar(
 ) -> None:
     """Make the bot's profile picture match ``source_url``, writing nothing if it already does.
 
-    Best-effort: a failed fetch, upload or profile write is logged and retried on the next start,
-    which is how it behaved before this was made idempotent.
+    Raises on failure (a failed fetch, upload or profile write); the caller retries until it succeeds
+    (``onbot.app``), so an avatar that could not be set during a cold start is set once the homeserver
+    is up rather than on the next restart.
     """
     if not source_url:
         return
     data_type = bot_avatar_account_data_type(server_name)
-    try:
-        record = await client.get_account_data(user_id, data_type)
-        current = await client.get_user_avatar(user_id)
-        if current and record.get("source_url") == source_url and record.get("mxc") == current:
-            # Unchanged: reuse the mxc for every room that wears the same picture, and stay silent.
-            media.remember(source_url, current)
-            log.debug("bot avatar already set from %s (%s)", source_url, current)
-            return
-        content, content_type = await media.fetch(source_url)
-        if current and await _holds_same_bytes(client, current, content):
-            media.remember(source_url, current)
-            await _write_record(client, user_id, data_type, source_url, current)
-            log.info("bot avatar already matches %s; recorded %s without re-setting it", source_url, current)
-            return
-        mxc = await media.upload(source_url, content, content_type)
-        await client.set_user_avatar(user_id, mxc)
-        await _write_record(client, user_id, data_type, source_url, mxc)
-        log.info("set bot avatar from %s", source_url)
-    except Exception:
-        log.exception("failed to set bot avatar from %s", source_url)
+    record = await client.get_account_data(user_id, data_type)
+    current = await client.get_user_avatar(user_id)
+    if current and record.get("source_url") == source_url and record.get("mxc") == current:
+        # Unchanged: reuse the mxc for every room that wears the same picture, and stay silent.
+        media.remember(source_url, current)
+        log.debug("bot avatar already set from %s (%s)", source_url, current)
+        return
+    content, content_type = await media.fetch(source_url)
+    if current and await _holds_same_bytes(client, current, content):
+        media.remember(source_url, current)
+        await _write_record(client, user_id, data_type, source_url, current)
+        log.info("bot avatar already matches %s; recorded %s without re-setting it", source_url, current)
+        return
+    mxc = await media.upload(source_url, content, content_type)
+    await client.set_user_avatar(user_id, mxc)
+    await _write_record(client, user_id, data_type, source_url, mxc)
+    log.info("set bot avatar from %s", source_url)
 
 
 async def _holds_same_bytes(client: AvatarClient, mxc: str, content: bytes) -> bool:

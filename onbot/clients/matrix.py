@@ -125,28 +125,27 @@ class ApiClientMatrix(BaseApiClient):
 
         The bot advertises **no** encryption algorithms (ADR-0009: it operates outside encrypted
         rooms), so this is purely the device-bookkeeping registration, not an e2ee opt-in. Verified
-        against the Phase 7b live stack; idempotent. Best-effort: never blocks startup.
+        against the Phase 7b live stack; idempotent. Raises on failure: the caller retries until it
+        succeeds, because a failure during a cold start would otherwise break every welcome send for
+        the lifetime of the process (RUN-02, see ``onbot.app``).
         """
-        try:
-            whoami = await self.get_json("v3/account/whoami")
-            device_id = whoami.get("device_id")
-            if not device_id:
-                return
-            await self.post_json(
-                "v3/keys/upload",
-                json_body={
-                    "device_keys": {
-                        "user_id": whoami["user_id"],
-                        "device_id": device_id,
-                        "algorithms": [],
-                        "keys": {},
-                        "signatures": {},
-                    }
-                },
-            )
-            log.info("registered bot device %s for message sending (MAS compatibility)", device_id)
-        except Exception:
-            log.exception("could not register bot device; welcome DM sends may fail under MAS")
+        whoami = await self.get_json("v3/account/whoami")
+        device_id = whoami.get("device_id")
+        if not device_id:
+            return
+        await self.post_json(
+            "v3/keys/upload",
+            json_body={
+                "device_keys": {
+                    "user_id": whoami["user_id"],
+                    "device_id": device_id,
+                    "algorithms": [],
+                    "keys": {},
+                    "signatures": {},
+                }
+            },
+        )
+        log.info("registered bot device %s for message sending (MAS compatibility)", device_id)
 
     # --- room / space creation ----------------------------------------------
 

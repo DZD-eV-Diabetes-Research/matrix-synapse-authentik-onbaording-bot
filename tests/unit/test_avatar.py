@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 import httpx
+import pytest
 import respx
 
 from onbot.avatar import bot_avatar_account_data_type, ensure_bot_avatar
@@ -151,11 +152,13 @@ class TestEnsureBotAvatar:
         assert client.account_data == {}
 
     @respx.mock
-    async def test_fetch_failure_leaves_the_profile_alone(self) -> None:
+    async def test_fetch_failure_leaves_the_profile_alone_and_raises(self) -> None:
+        # Raised, not swallowed: the startup supervisor in onbot.app retries it (RUN-02).
         respx.get(AVATAR_URL).mock(return_value=httpx.Response(500))
         client = FakeClient(avatar="mxc://company.org/old", media={"mxc://company.org/old": IMAGE})
 
-        await _run(client)
+        with pytest.raises(httpx.HTTPStatusError):
+            await _run(client)
 
         assert client.profile_writes == []
         assert client.account_data == {}
