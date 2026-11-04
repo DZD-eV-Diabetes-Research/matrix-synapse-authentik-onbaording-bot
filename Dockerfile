@@ -7,8 +7,11 @@
 #   * Base image pinned by digest (reproducible; update the digest deliberately, not implicitly).
 #   * Runs as a non-root user.
 #   * No crypto stack (libolm): the bot operates outside encrypted rooms (ADR-0009).
-#   * HEALTHCHECK calls `onbot healthcheck`, which probes the configured Synapse/MAS/Authentik
-#     endpoints with the real credentials and exits non-zero when a dependency is unhealthy.
+#   * HEALTHCHECK calls `onbot healthcheck`, which reads the heartbeat file the running service
+#     writes (reconcile loop + sync pump) and exits non-zero when it is stale. It makes no network
+#     call and mints no token; `onbot healthcheck --deep` is the dependency probe for operators.
+#   * Signals: tini is PID 1 and forwards SIGTERM to `onbot`, which shuts down gracefully within
+#     the default 10 s of `docker stop` (see docs/deployment.md, "Stopping").
 #
 # Config is provided at runtime — never baked in (no secrets in the image). Mount a config file and
 # point ONBOT_CONFIG_FILE_PATH at it, or supply every setting via ONBOT_* env vars. See README.md.
@@ -57,20 +60,27 @@ ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONDONTWRITEBYTECODE=1 \
     ONBOT_CONFIG_FILE_PATH=/config/config.yml
 
-# Non-root runtime user; /config is where an operator mounts the config file.
+# Non-root runtime user; /config is where an operator mounts the config file. tini runs as PID 1:
+# the kernel drops a signal to PID 1 that has no handler, and onbot can only install its handlers
+# once the interpreter has imported it (about a second), so a `docker stop` in that window would
+# otherwise wait for the SIGKILL. tini forwards the signal and reaps zombies.
 RUN useradd --create-home --uid 10001 onbot \
  && mkdir -p /config \
- && chown onbot:onbot /config
+ && chown onbot:onbot /config \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends tini \
+ && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /opt/venv /opt/venv
 
 USER onbot
 WORKDIR /home/onbot
 
-# Probe the configured dependencies. Generous start period: the bot's homeserver/IdP may still be
-# coming up alongside it. Exits non-zero (unhealthy) if any dependency is unreachable/unauthorized.
-HEALTHCHECK --interval=60s --timeout=20s --start-period=30s --retries=3 \
+# Liveness from the heartbeat file (default /tmp/onbot-heartbeat.json, override with
+# ONBOT_HEARTBEAT_FILE). The staleness limits are written into the file by the service itself, so the
+# check needs no config and no network.
+HEALTHCHECK --interval=60s --timeout=10s --start-period=60s --retries=3 \
     CMD ["onbot", "healthcheck"]
 
-ENTRYPOINT ["onbot"]
+ENTRYPOINT ["/usr/bin/tini", "--", "onbot"]
 CMD ["run"]
