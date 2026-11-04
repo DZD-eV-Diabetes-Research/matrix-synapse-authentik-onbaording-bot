@@ -13,14 +13,15 @@ This document is auto-generated from the pydantic-settings model. All settings c
 
 How much the bot logs. `DEBUG` is noisy — it includes every API call it makes — but
 it is the fastest way to see why a user or group is not being picked up while wiring
-the bot up. The `--log-level` command-line flag overrides this.
+the bot up. `WARNING` keeps a quiet production log. The `--log-level` command-line
+flag overrides this.
 
 | Property | Value |
 |---|---|
 | Type | Enum |
 | Required | No |
 | Default | `"INFO"` |
-| Allowed values | `INFO` · `DEBUG` |
+| Allowed values | `DEBUG` · `INFO` · `WARNING` · `ERROR` · `CRITICAL` |
 | Environment variable | `ONBOT_LOG_LEVEL` |
 
 ---
@@ -44,6 +45,7 @@ edited power level). Minutes, not seconds, is the right order of magnitude.
 | Type | int |
 | Required | No |
 | Default | `300` |
+| Constraints | Gt(gt=0) |
 | Environment variable | `ONBOT_SERVER_TICK_RATE_SEC` |
 
 **Examples:**
@@ -79,6 +81,7 @@ case new users wait for the next `server_tick_rate_sec` reconcile.
 | Type | int |
 | Required | No |
 | Default | `15` |
+| Constraints | Ge(ge=0) |
 | Environment variable | `ONBOT_AUTHENTIK_POLL_RATE_SEC` |
 
 **Examples:**
@@ -206,7 +209,7 @@ it to the config file.
 
 | Property | Value |
 |---|---|
-| Type | str |
+| Type | str (secret) |
 | Required | No |
 | Default | `null` |
 | Environment variable | `ONBOT_SYNAPSE_SERVER__BOT_ACCESS_TOKEN` |
@@ -295,7 +298,7 @@ than committing it to the config file.
 
 | Property | Value |
 |---|---|
-| Type | str |
+| Type | str (secret) |
 | Required | **Yes** |
 | Environment variable | `ONBOT_SYNAPSE_SERVER__OAUTH2__CLIENT_SECRET` |
 
@@ -464,7 +467,7 @@ rather than committing it to the config file.
 
 | Property | Value |
 |---|---|
-| Type | str |
+| Type | str (secret) |
 | Required | **Yes** |
 | Environment variable | `ONBOT_AUTHENTIK_SERVER__API_KEY` |
 
@@ -549,7 +552,7 @@ the config file.
 
 | Property | Value |
 |---|---|
-| Type | str |
+| Type | str (secret) |
 | Required | **Yes** |
 | Environment variable | `ONBOT_MAS_ADMIN__CLIENT_SECRET` |
 
@@ -1093,6 +1096,7 @@ within this window cancels the pending deactivation. The default is 24 hours.
 | Type | int |
 | Required | No |
 | Default | `86400` |
+| Constraints | Ge(ge=0) |
 | Environment variable | `ONBOT_SYNC_AUTHENTIK_USERS_WITH_MATRIX_ROOMS__DEACTIVATE_DISABLED_AUTHENTIK_USERS_IN_MATRIX__DEACTIVATE_AFTER_N_SEC` |
 
 **Examples:**
@@ -1125,6 +1129,7 @@ deactivated. The default is 365 days.
 | Type | int |
 | Required | No |
 | Default | `31536000` |
+| Constraints | Ge(ge=0) |
 | Environment variable | `ONBOT_SYNC_AUTHENTIK_USERS_WITH_MATRIX_ROOMS__DEACTIVATE_DISABLED_AUTHENTIK_USERS_IN_MATRIX__DELETE_AFTER_N_SEC` |
 
 **Examples:**
@@ -2625,6 +2630,100 @@ if it carries the attributes or name prefix that would otherwise select it.
 ```yaml
 authentik_group_id_ignore_list:
 - 1120a6e1124f309bbe96c8be5fb09eab
+```
+
+---
+
+## `avatar_fetch`
+
+*Avatar downloads*
+
+Where avatar images may be downloaded from, and how large and slow such a
+download may be. Applies to `synapse_server.bot_avatar_url`, the space avatar and
+every group room avatar.
+
+| Property | Value |
+|---|---|
+| Type | Object (AvatarFetch) |
+| Required | No |
+| Environment variable | `ONBOT_AVATAR_FETCH` |
+
+---
+
+### `avatar_fetch.allowed_internal_destinations`
+
+*Internal hosts avatars may be downloaded from*
+
+Avatar images (the bot's, the space's and every group room's) are only downloaded
+from public internet addresses. Private, loopback, link-local, multicast and other
+special-purpose addresses are refused, because a room avatar URL is set by whoever
+may edit an Authentik group, and the bot would otherwise fetch internal endpoints
+(cloud metadata, MAS, Authentik) and publish the response as an image in the room.
+
+List the exceptions here: a hostname (matched exactly, whatever it resolves to), an
+IP address, or a network in CIDR notation. Write no scheme, port or path. Redirects
+are checked against the same rules on every hop. Environment proxy settings are not
+used for these downloads.
+
+| Property | Value |
+|---|---|
+| Type | List of str |
+| Required | No |
+| Environment variable | `ONBOT_AVATAR_FETCH__ALLOWED_INTERNAL_DESTINATIONS` |
+
+**Examples:**
+
+```yaml
+allowed_internal_destinations:
+- assets.internal.company.org
+- 10.20.0.0/16
+```
+
+---
+
+### `avatar_fetch.max_size_bytes`
+
+*Maximum avatar size (bytes)*
+
+Largest avatar image the bot downloads. A larger file is refused and the download
+is stopped as soon as the limit is crossed. The default is 5 MiB.
+
+| Property | Value |
+|---|---|
+| Type | int |
+| Required | No |
+| Default | `5242880` |
+| Constraints | Gt(gt=0) |
+| Environment variable | `ONBOT_AVATAR_FETCH__MAX_SIZE_BYTES` |
+
+**Examples:**
+
+```yaml
+max_size_bytes: 5242880
+```
+
+---
+
+### `avatar_fetch.timeout_sec`
+
+*Avatar download deadline (seconds)*
+
+Time limit for one avatar download as a whole, redirects included. A server that
+sends its response too slowly is cut off when it runs out, so it cannot hold up the
+reconcile pass.
+
+| Property | Value |
+|---|---|
+| Type | float |
+| Required | No |
+| Default | `30.0` |
+| Constraints | Gt(gt=0) |
+| Environment variable | `ONBOT_AVATAR_FETCH__TIMEOUT_SEC` |
+
+**Examples:**
+
+```yaml
+timeout_sec: 30
 ```
 
 ---

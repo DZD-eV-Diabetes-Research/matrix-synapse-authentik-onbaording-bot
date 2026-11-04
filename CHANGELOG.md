@@ -48,6 +48,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   This `CHANGELOG.md`.
 
 ### Changed
+- **Stricter config validation (review S13), may reject configs that loaded before:** unknown keys are
+  rejected at every level (typos fail loudly); exactly one bot credential (`bot_access_token` xor
+  `oauth2`); URLs must be http(s); MXIDs must be complete, the bot's on `server_name`; alias fields are
+  localparts only (no `#`, no `:server`); `server_tick_rate_sec > 0` and other intervals `>= 0`;
+  `delete_disabled_rooms` without disabling rooms, and onboarding rooms inside a space without a space,
+  are rejected; `log_level` accepts all standard levels. An invalid config exits with code 2 and lists
+  one line per field, without values.
+- **`reconcile-once` lifts the bot's Synapse rate limit again**, like the service does. A pass creates
+  rooms and sends messages, and a cron-driven deployment never runs the service steps.
+- **`sync_authentik_users_with_matrix_rooms.enabled: false` no longer kicks anyone (review S2):** it
+  stops membership and power-level management instead of treating every member as unwanted. A pass in
+  which no group room has any desired member skips all kicks and reports it.
+- **Power levels the bot granted are withdrawn when the granting membership ends (D10, G8.4).** Only
+  entries the bot set itself (tracked in the bot's per-room account data) are withdrawn; levels set by
+  humans stay.
+- **Rooms older than version 12 get at most power level 99** from the bot, so it can always take the
+  level back. Users already at 100 and extra room creators are reported, not fought over.
 - **Deleted Authentik users are offboarded (review S1):** a user onbot has seen active and in scope
   who is later deleted from Authentik goes through the usual lock, deactivate and erase cooldowns.
   Matrix accounts onbot never mapped are never touched. Tracked users who leave the sync scope are
@@ -81,6 +98,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   troubleshooting.
 
 ### Fixed
+- **Users on `matrix_user_ignore_list` were kicked** from group rooms; the bot's own MXID could be
+  written into the power-level users map; a failed lookup of the global admin group kicked and demoted
+  the admins everywhere; a per-group `keep_updating_matrix_attributes_from_authentik` override was
+  ignored (review S2).
 - **Offboarding no longer stalls on one user (review S1):** a failing user backs off instead of
   blocking everyone, the ledger is saved per user, and an erase resumes without repeating the
   deactivation.
@@ -110,6 +131,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   model forbids unknown keys, so remove these two settings if present.
 
 ### Security
+- **Avatars are fetched only from public addresses (review S13, SEC-03):** private, loopback,
+  link-local and similar destinations are refused unless listed in
+  `avatar_fetch.allowed_internal_destinations`; the checked address is the one connected to (no DNS
+  rebinding), redirects are re-checked per hop (at most 5), downloads are capped at
+  `avatar_fetch.max_size_bytes` (5 MiB) and `avatar_fetch.timeout_sec` (30 s) and must be images.
+- **Config errors never print values (RUN-07)**; previously a validation error could print a short
+  secret in clear text. All credentials are held as `SecretStr`.
+- **One failing room no longer stops the pass (review S2, REC-03):** each room converges in isolation,
+  failures are reported once per room and pass, and the offboarding step always runs. Previously a
+  single room the bot could not manage stopped every pass, including offboarding.
 - **Offboarding fails closed (review S1, LIF-01):** onbot never unlocks a user unless the Authentik
   user it is bound to is present, active and in scope. Previously deleting a locked user in Authentik,
   stripping a scope attribute, an ignore-list edit or an empty API answer unlocked the account in MAS

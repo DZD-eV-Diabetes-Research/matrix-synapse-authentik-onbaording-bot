@@ -30,7 +30,7 @@ Start a session by pointing Claude at this file and the session ID, for example:
 |---|---|---|---|---|---|
 | 1 | S0 | Tooling baseline | S | | done (e3282ef) |
 | 2 | S1 | Offboarding fails open (critical hotfix) | M | S0 | done (merged in wave 1a) |
-| 3 | S2 | Reconciler pass robustness | M | S0 | open |
+| 3 | S2 | Reconciler pass robustness | M | S0 | done (merged in wave 1a) |
 | 4 | S3 | Guard layers 1 and 2, reconciler dry-run | M | S2 | open |
 | 5 | S16 | Git history scrub | S | S0, no open branches | open |
 | 6 | S4 | Offboarding completeness | M | S1 | open |
@@ -42,7 +42,7 @@ Start a session by pointing Claude at this file and the session ID, for example:
 | 12 | S10 | Runtime lifecycle: startup, sync recovery, shutdown, liveness | M | S0 | done (merged in wave 1a) |
 | 13 | S11 | HTTP layer: retries, idempotency, token provider | M | S10 | open |
 | 14 | S12 | Broadcast and admin room | S | S8 | open |
-| 15 | S13 | Security hardening and config validation | M | S0 | open |
+| 15 | S13 | Security hardening and config validation | M | S0 | done (merged in wave 1b) |
 | 16 | S15 | CI and release hardening | M | S0 | open |
 | 17 | S14 | Docs, dead code, cleanup | S | last | open |
 
@@ -194,6 +194,15 @@ admin room" has no route yet: S1 emits `Signal.lifecycle_attention` (frozen user
 and logs `FROZEN`, `FAILED`, `lifecycle step aborted` at WARNING. Add the admin-room subscriber in
 `app.py` in this session and route the guard reports and the S2 room failure events through it.
 
+**Handover from S2:** S2 emits `Signal.room_not_converged` (`room_kind`, `room_id`, `group_pk`,
+`problems`) once per room per pass and `Signal.destructive_actions_suppressed` (`action`, `reason`);
+`engine.last_pass_report` holds the last pass's problems (useful for `!status`). S2's minimal guard
+skips all kicks when no group room has any desired member. With a single group room this cannot tell a
+group that legitimately empties from a collapsed Authentik answer; layer 1 (comparison against the last
+known good counts) should replace that heuristic. When the room stage fails as a whole, the pass still
+raises after the lifecycle ran. The config descriptions of `sync_authentik_users_with_matrix_rooms.enabled`
+and `global_room_admins` (the 99 cap in pre-v12 rooms) still need a wording update (S13 or S14).
+
 **Steps:**
 - Layer 1: persist last known good counts (users in scope, groups mapped to rooms). Abort the
   destructive part of a pass when the new list is empty or drops by more than a configurable
@@ -255,6 +264,10 @@ S1's per-user ledger save and backoff; check before re-doing.
 **Goal:** the bot knows its rooms by id, not by alias, and creates every room in one place.
 
 **Findings:** REC-04, SEC-02, REC-13, ONB-17, ONB-16, ONB-02.
+
+**Handover from wave 1:** S2 added `room_version` and `creator` to `MatrixRoom` and caches create-event
+info per room id. The onbot state marker in rooms is still editable by moderators, so the mapping must
+not trust it alone. S13 left the internal Authentik URL that is written into room state to this session.
 
 **Steps:**
 - One room provisioning helper used by group rooms, lobbies, the space, the control room and notice

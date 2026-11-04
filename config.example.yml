@@ -8,17 +8,19 @@
 # Type:         Enum
 # Required:     False
 # Default:      "INFO"
-# Allowed vals: ['INFO', 'DEBUG']
+# Allowed vals: ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']
 # Env-var:      'ONBOT_LOG_LEVEL'
 # Description:  How much the bot logs. `DEBUG` is noisy — it includes every API call it makes — but
 #               it is the fastest way to see why a user or group is not being picked up while wiring
-#               the bot up. The `--log-level` command-line flag overrides this.
+#               the bot up. `WARNING` keeps a quiet production log. The `--log-level` command-line
+#               flag overrides this.
 log_level: INFO
 
 # ## server_tick_rate_sec - Reconcile interval (seconds) ###
 # Type:        int
 # Required:    False
 # Default:     300
+# Constraints: Gt(gt=0)
 # Env-var:     'ONBOT_SERVER_TICK_RATE_SEC'
 # Description: How often, in seconds, the bot re-converges Authentik state onto Matrix. A
 #              reconcile reads the whole Matrix side — every managed room's members, power levels
@@ -39,6 +41,7 @@ server_tick_rate_sec: 300
 # Type:        int
 # Required:    False
 # Default:     15
+# Constraints: Ge(ge=0)
 # Env-var:     'ONBOT_AUTHENTIK_POLL_RATE_SEC'
 # Description: How often, in seconds, the bot asks Authentik whether anything changed — a new
 #              user, a group membership, a renamed room group. When something did, it runs a
@@ -103,7 +106,7 @@ synapse_server:
 
   # ## bot_access_token - Bot access token ###
   # YAML-path:   synapse_server.bot_access_token
-  # Type:        str
+  # Type:        str (secret)
   # Required:    False
   # Default:     null
   # Env-var:     'ONBOT_SYNAPSE_SERVER__BOT_ACCESS_TOKEN'
@@ -201,7 +204,7 @@ authentik_server:
 
   # ## api_key - Authentik API token ###
   # YAML-path:   authentik_server.api_key
-  # Type:        str
+  # Type:        str (secret)
   # Required:    True
   # Env-var:     'ONBOT_AUTHENTIK_SERVER__API_KEY'
   # Description: API token for your Authentik server. Generate one under
@@ -211,7 +214,7 @@ authentik_server:
   #              rather than committing it to the config file.
   # Example:
   #  >api_key: yEl4tFqeIBQwoHAd9hajmkm2PBjSAirY_THIS_IS_JUST_AN_EXAMPLE_i57e
-  api_key: ''
+  api_key:
 
 # ## mas_admin - Matrix Authentication Service admin API ###
 # Type:        Object (MasAdmin)
@@ -567,6 +570,7 @@ sync_authentik_users_with_matrix_rooms:
     # Type:        int
     # Required:    False
     # Default:     86400
+    # Constraints: Ge(ge=0)
     # Env-var:     'ONBOT_SYNC_AUTHENTIK_USERS_WITH_MATRIX_ROOMS__DEACTIVATE_DISABLED_AUTHENTIK_USERS_IN_MATRIX__DEACTIVATE_AFTER_N_SEC'
     # Description: Seconds a user must stay disabled in Authentik before their Matrix account is
     #              deactivated. Absorbs accidental upstream disables: re-enabling the Authentik account
@@ -582,6 +586,7 @@ sync_authentik_users_with_matrix_rooms:
     # Type:        int
     # Required:    False
     # Default:     31536000
+    # Constraints: Ge(ge=0)
     # Env-var:     'ONBOT_SYNC_AUTHENTIK_USERS_WITH_MATRIX_ROOMS__DEACTIVATE_DISABLED_AUTHENTIK_USERS_IN_MATRIX__DELETE_AFTER_N_SEC'
     # Description: Seconds a user must stay disabled in Authentik before their Matrix account is
     #              erased, counted from the same point as `deactivate_after_n_sec` (so it should be the
@@ -1211,3 +1216,60 @@ authentik_user_ignore_list: []
 #  >authentik_group_id_ignore_list:
 #  >- 1120a6e1124f309bbe96c8be5fb09eab
 authentik_group_id_ignore_list: []
+
+# ## avatar_fetch - Avatar downloads ###
+# Type:        Object (AvatarFetch)
+# Required:    False
+# Env-var:     'ONBOT_AVATAR_FETCH'
+# Description: Where avatar images may be downloaded from, and how large and slow such a
+#              download may be. Applies to `synapse_server.bot_avatar_url`, the space avatar and
+#              every group room avatar.
+avatar_fetch:
+
+  # ## allowed_internal_destinations - Internal hosts avatars may be downloaded from ###
+  # YAML-path:   avatar_fetch.allowed_internal_destinations
+  # Type:        List of str
+  # Required:    False
+  # Env-var:     'ONBOT_AVATAR_FETCH__ALLOWED_INTERNAL_DESTINATIONS'
+  # Description: Avatar images (the bot's, the space's and every group room's) are only downloaded
+  #              from public internet addresses. Private, loopback, link-local, multicast and other
+  #              special-purpose addresses are refused, because a room avatar URL is set by whoever
+  #              may edit an Authentik group, and the bot would otherwise fetch internal endpoints
+  #              (cloud metadata, MAS, Authentik) and publish the response as an image in the room.
+  #
+  #              List the exceptions here: a hostname (matched exactly, whatever it resolves to), an
+  #              IP address, or a network in CIDR notation. Write no scheme, port or path. Redirects
+  #              are checked against the same rules on every hop. Environment proxy settings are not
+  #              used for these downloads.
+  # Example:
+  #  >allowed_internal_destinations:
+  #  >- assets.internal.company.org
+  #  >- 10.20.0.0/16
+  allowed_internal_destinations: []
+
+  # ## max_size_bytes - Maximum avatar size (bytes) ###
+  # YAML-path:   avatar_fetch.max_size_bytes
+  # Type:        int
+  # Required:    False
+  # Default:     5242880
+  # Constraints: Gt(gt=0)
+  # Env-var:     'ONBOT_AVATAR_FETCH__MAX_SIZE_BYTES'
+  # Description: Largest avatar image the bot downloads. A larger file is refused and the download
+  #              is stopped as soon as the limit is crossed. The default is 5 MiB.
+  # Example:
+  #  >max_size_bytes: 5242880
+  max_size_bytes: 5242880
+
+  # ## timeout_sec - Avatar download deadline (seconds) ###
+  # YAML-path:   avatar_fetch.timeout_sec
+  # Type:        float
+  # Required:    False
+  # Default:     30.0
+  # Constraints: Gt(gt=0)
+  # Env-var:     'ONBOT_AVATAR_FETCH__TIMEOUT_SEC'
+  # Description: Time limit for one avatar download as a whole, redirects included. A server that
+  #              sends its response too slowly is cut off when it runs out, so it cannot hold up the
+  #              reconcile pass.
+  # Example:
+  #  >timeout_sec: 30
+  timeout_sec: 30.0
