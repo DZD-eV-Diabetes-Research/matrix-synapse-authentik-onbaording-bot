@@ -219,11 +219,14 @@ class App:
         return steps
 
     def reconcile_once_steps(self) -> list[StartupStep]:
-        """What a single pass needs: a registered device for the welcome sends it may trigger."""
+        """What a single pass needs: a registered device for the welcome sends it may trigger, and the
+        lifted rate limit, because a pass creates rooms and sends messages just like the service (a
+        cron-driven ``reconcile-once`` deployment never runs the service steps)."""
         return [
             StartupStep("version negotiation", self.negotiate_versions),
             StartupStep("device registration", self.register_device),
             StartupStep("onboarding", self.open_onboarding),
+            StartupStep("rate-limit override", self.relax_ratelimit),
         ]
 
 

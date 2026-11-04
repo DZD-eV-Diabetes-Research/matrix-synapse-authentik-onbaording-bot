@@ -366,7 +366,10 @@ async def test_broadcast_touches_only_what_a_broadcast_needs() -> None:
     }
 
 
-async def test_reconcile_once_skips_avatar_ratelimit_and_admin_room(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_reconcile_once_skips_avatar_and_admin_room_but_lifts_the_ratelimit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pass creates rooms and sends messages, so a cron-driven reconcile-once needs the lifted limit."""
     config = _config()
     config.admin_room.enabled = True
     config.synapse_server.bot_avatar_url = "https://cdn.test/bot.png"
@@ -389,6 +392,7 @@ async def test_reconcile_once_skips_avatar_ratelimit_and_admin_room(monkeypatch:
         "GET /_matrix/client/versions",
         "GET /_matrix/client/v3/account/whoami",
         "POST /_matrix/client/v3/keys/upload",
+        "POST /_synapse/admin/v1/users/@bot:example.test/override_ratelimit",
     }
 
 
