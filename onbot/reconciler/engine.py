@@ -287,10 +287,13 @@ class ReconcilerEngine:
                     continue
                 by_mxid[mxid] = user
 
+        bot_id = self.config.synapse_server.bot_user_id
         mapped: list[MappedUser] = []
         for matrix_user in matrix_users:
             mxid = matrix_user["name"]
-            if mxid in self.config.matrix_user_ignore_list:
+            # The bot is never a synced user, even when its account also exists in Authentik: as the
+            # room creator it must stay out of the power-level users map (ADR-0011, REC-12).
+            if mxid == bot_id or mxid in self.config.matrix_user_ignore_list:
                 continue
             authentik_user = by_mxid.get(mxid)
             if authentik_user is not None:
@@ -674,7 +677,9 @@ class ReconcilerEngine:
             desired_mxids,
             actual_members,
             kick_enabled=sync_cfg.kick_matrix_room_members_not_in_mapped_authentik_group_anymore,
-            protected_ids=[bot_id, *global_admins],
+            # `matrix_user_ignore_list` promises these accounts are never touched: server admins,
+            # bridges and other bots that sit in group rooms without an Authentik counterpart (REC-07).
+            protected_ids=[bot_id, *global_admins, *self.config.matrix_user_ignore_list],
         )
         problems: list[str] = []
         await self._add_members(room.room_id, mdiff.to_add, problems)

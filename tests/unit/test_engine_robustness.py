@@ -350,3 +350,48 @@ async def test_a_per_group_keep_updating_override_is_honoured() -> None:
 
     # Only g2 follows Authentik; g1 opted out per group and keeps its name.
     assert effectors.names == [(_ROOM2, "Other renamed")]
+
+
+# --- REC-07: matrix_user_ignore_list is honoured on the kick path ---
+
+
+async def test_an_ignored_matrix_user_in_a_group_room_is_never_kicked() -> None:
+    config = OnbotConfig.model_validate({**_BASE, "matrix_user_ignore_list": ["@stale:company.org"]})
+    admin = TwoRoomAdmin()
+    admin.refuse = set()
+    engine, _, effectors, _ = _engine(admin=admin, config=config)
+    await engine.reconcile_once()
+
+    sync_cfg = config.sync_authentik_users_with_matrix_rooms
+    assert sync_cfg.kick_matrix_room_members_not_in_mapped_authentik_group_anymore
+    assert (_ROOM1, "@stale:company.org") not in effectors.kicks
+
+
+# --- REC-12: the bot's own MXID never lands in the power-level users map ---
+
+
+class BotIsAnAuthentikUser(TwoGroupAuthentik):
+    """The bot's account is also an Authentik superuser in g1 (a plausible setup mistake)."""
+
+    async def list_users(self, **kwargs: Any) -> list[dict[str, Any]]:
+        users = await super().list_users(**kwargs)
+        if kwargs.get("filter_is_active") is False:
+            return users
+        bot = {"username": "bot", "pk": "bot-pk", "is_superuser": True, "groups_obj": [{"pk": "g1"}]}
+        return [*users, bot]
+
+
+class BotInMatrixAdmin(TwoRoomAdmin):
+    async def list_users(self) -> list[dict[str, Any]]:
+        return [*await super().list_users(), {"name": "@bot:company.org"}]
+
+
+async def test_the_bot_is_never_written_into_the_power_levels() -> None:
+    admin = BotInMatrixAdmin()
+    admin.refuse = set()
+    engine, _, effectors, _ = _engine(admin=admin, authentik=BotIsAnAuthentikUser())
+    await engine.reconcile_once()
+
+    written = [pl["users"] for _room, pl in effectors.power_levels]
+    assert written, "the room still gets its power levels"
+    assert all("@bot:company.org" not in users for users in written)
