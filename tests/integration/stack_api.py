@@ -169,6 +169,11 @@ class AuthentikAdmin:
         if r.status_code != 404:
             r.raise_for_status()
 
+    def set_group_attributes(self, group_pk: str, attributes: dict[str, Any]) -> None:
+        """Replace a group's custom attributes (opt it in or out of chat, a lobby, ...)."""
+        r = self._http.patch(f"/core/groups/{group_pk}/", json={"attributes": attributes})
+        r.raise_for_status()
+
     def add_user_to_group(self, group_pk: str, user_pk: int) -> None:
         r = self._http.post(f"/core/groups/{group_pk}/add_user/", json={"pk": user_pk})
         r.raise_for_status()
