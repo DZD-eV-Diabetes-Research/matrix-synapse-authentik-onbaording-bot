@@ -12,6 +12,7 @@ import pytest
 
 from onbot.app import run_reconcile_once
 from onbot.clients.matrix import ApiClientMatrix
+from onbot.onboarding.welcome import welcome_txn_id
 from tests.integration import stack_api as S
 
 pytestmark = pytest.mark.integration
@@ -87,3 +88,43 @@ async def test_the_welcome_room_is_read_only_for_its_user(
     # Force-joining skips the invite that makes a client tag the room as a DM, so it carries a name.
     name = await matrix_client.get_room_state_event(room_id, "m.room.name")
     assert name is not None and name["name"]
+
+
+async def test_a_repeated_welcome_send_is_deduplicated_by_its_transaction_id(
+    make_config, authentik_admin: S.AuthentikAdmin, matrix_client: ApiClientMatrix
+) -> None:
+    """ONB-09: the welcome flow's deterministic txn id makes Synapse drop a repeated send."""
+    _login, room_id = await _welcome_room_of(make_config, authentik_admin, matrix_client, "txn")
+    before = await _bot_message_bodies(matrix_client, room_id)
+    txn = welcome_txn_id(room_id, "test-key")
+
+    first = await matrix_client.send_text_message(room_id, "only once", txn_id=txn)
+    again = await matrix_client.send_text_message(room_id, "only once", txn_id=txn)
+
+    assert first == again
+    after = await _bot_message_bodies(matrix_client, room_id)
+    assert after.count("only once") == 1 and len(after) == len(before) + 1
+
+
+async def test_a_user_who_left_their_notice_board_is_invited_back_once(
+    make_config, authentik_admin: S.AuthentikAdmin, matrix_client: ApiClientMatrix
+) -> None:
+    """ONB-07: the room is invite-only, so without the invitation a "Leave" would be for good."""
+    login, room_id = await _welcome_room_of(make_config, authentik_admin, matrix_client, "leaver")
+    S.leave_room(login.access_token, room_id)
+
+    await run_reconcile_once(make_config())  # a new process checks every user once
+    assert await matrix_client.get_membership(room_id, login.mxid) == "invite"
+
+    S.leave_room(login.access_token, room_id)  # declined
+    await run_reconcile_once(make_config())
+    assert await matrix_client.get_membership(room_id, login.mxid) == "leave"  # not invited twice
+
+
+async def _bot_message_bodies(client: ApiClientMatrix, room_id: str) -> list[str]:
+    resp = await client.get_json(f"v3/rooms/{room_id}/messages", params={"dir": "b", "limit": 100})
+    return [
+        (ev.get("content") or {}).get("body", "")
+        for ev in resp.get("chunk", [])
+        if ev.get("type") == "m.room.message" and ev.get("sender") == S.BOT_USER_ID
+    ]

@@ -436,6 +436,17 @@ def ban_user(access_token: str, room_id: str, user_id: str) -> None:
     r.raise_for_status()
 
 
+def leave_room(access_token: str, room_id: str) -> None:
+    """The token owner leaves ``room_id`` (what "Leave" in a client does)."""
+    r = httpx.post(
+        f"{SYNAPSE_URL}/_matrix/client/v3/rooms/{quote(room_id, safe='')}/leave",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json={},
+        timeout=30.0,
+    )
+    r.raise_for_status()
+
+
 def join_room_status(access_token: str, room_id_or_alias: str) -> int:
     """HTTP status of the token owner joining a room (200 joined, 403 forbidden by join rule)."""
     return httpx.post(
