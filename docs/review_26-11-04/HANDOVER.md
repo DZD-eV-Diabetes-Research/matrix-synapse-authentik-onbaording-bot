@@ -40,24 +40,19 @@ The first real CI run on GitHub (old 771cdaa) was fully green, 23 minutes.
 reuse of a green CI run, full-history secret scan. Verified with actionlint and against real API
 data of a finished run; the reuse path itself runs for the first time at the next release.
 
-**Wave 2 merged** (2026-11-06): S11 (HTTP layer, `synapse_server.oauth2` removed, D18), S3 (guard
-with `!confirm <id>` batches, admin-room notifier, `reconcile-once --dry-run`), S4 (sessions ended on
-lock, D7 `gdpr_erase_on_delete`, paged media deletion, robust ledger). Merge order S11, S3, S4; the
-S4 merge needed manual resolution in `onbot/lifecycle/accounts.py` (both sides kept; `plan_accounts`
-also skips quarantined entries), `onbot/app.py` and `onbot/events.py`. After the merges (990eaef):
-1036 unit and contract tests green, all hooks green, config docs regenerated. The release blocker
-note in CHANGELOG is gone (S3 closes it).
+**Wave 2 complete** (2026-11-06): S11, S3, S4, then the fixup sessions W2F (D19: test stack on MAS
+1.28.0 and Synapse 1.164.2, offboarding refused under MAS without `mas_admin`, admin room on by
+default with a required admin) and W2R (cold wave 2 review findings: guard fails closed on an
+unreadable state with `!guard reset`, rejected batches end with their cause, unreadable ledger
+reported again, demotions and retention guarded, async v2 room deletion). Merges needed manual
+resolution in `onbot/lifecycle/accounts.py` (S4 and W2R), `onbot/app.py`, `onbot/events.py` and
+`docs/troubleshooting.md`. Final full integration run on main (9a43e83): **1130 passed, 0 failed**,
+10.5 minutes. The deployment repo already uses Synapse's stable `matrix_authentication_service`
+block, which Synapse 1.164 requires.
 
-**Full integration run on main after the wave 2 merges (990eaef): 1082 passed, 0 failed.**
-
-**Running when this was written:** session W2F on `review/w2f-fixups` (instance 1: D19 items:
-test stack to current MAS and Synapse, offboarding refused under MAS without `mas_admin`, admin room
-on by default with at least one admin), and session W2R on `review/w2r-fixups` (instance 2) with the findings of the cold wave 2 review
-(unreadable guard state failed open, rejected batches held forever, unreadable ledger no longer
-reported after the S3/S4 merge, guard gaps for demotions and retention, `delete_room` retry).
-
-**Next:** merge W2F (CHANGELOG, regenerate config docs), act on the wave 2 review, full integration
-run, then wave 3 (S5, S6, S12). S5 brief has the S3 handover and D19 (room deletion is layer 3).
+**Wave 3 started** from 0176886: S5 (instance 1), S6 (instance 2), S9 (instance 3); S12 moved to
+wave 4 (D8 confirmed). Maintainer still to do: push `main`, GitHub Support purge request, the S15
+repository settings checklist.
 
 ## Where things stand (2026-11-04)
 

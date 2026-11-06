@@ -21,6 +21,8 @@ lobbies, the space and the control room), not by canonical alias. The alias beco
 only. Existing deployments need a one-time migration that adopts current rooms by alias plus the
 onbot state marker, and then never looks them up by alias again.
 
+**Revised by D20:** no separate persisted mapping; identity is marker plus creator.
+
 ## D4 Guard for destructive actions (REC-01, REC-02, LIF-08, MNT-01)
 
 Three layers:
@@ -194,3 +196,20 @@ integration suite stays a required gate, but:
   deployments without an admin room disable it explicitly and steer the guard through its limits.
 - **S5:** deleting a room (`delete_disabled_rooms`) counts as irreversible (layer 3, confirmation from
   3 per pass); closing or detaching a room stays layer 2.
+
+## D20 Room identity and room upgrades (S6, S17, decided 2026-11-06)
+
+- **Identity (revises D3):** no separate persisted mapping (the bot keeps no database, AD-1). A room
+  belongs to a group, or is the lobby, space or control room, when the bot is its creator and it
+  carries the onbot marker of the expected type with that `group_pk`. The marker event types get a
+  required power level above any human level, so moderators cannot rewrite them. The alias is
+  presentation only; it is used once to adopt existing rooms and never again for lookups.
+- **Why not alias plus UUID:** with the default `pk` alias a future group room is hard to squat, but
+  a moderator (PL 50) changing or clearing the main address still breaks the pairing, lobby, space
+  and control room aliases are predictable, and attribute-based aliases are guessable.
+- **Tombstones in S6:** follow an upgrade only when the new room names the old one as `predecessor`
+  and the bot created it. A room upgraded by a human is reported and its group skipped.
+- **Bot-driven upgrades (S17):** deferred to a later iteration, not before the next release. When
+  built: triggered by an admin command (no automatic upgrades in the reconciler), the bot force-joins
+  the group members into the new room, and the old room stays as a read-only archive that the bot
+  keeps in scope for offboarding.

@@ -39,7 +39,7 @@ Start a session by pointing Claude at this file and the session ID, for example:
 | 5 | S16 | Git history scrub | S | S0, no open branches | done (force-pushed 2026-11-06, new main 89afecf) |
 | 6 | S4 | Offboarding completeness | M | S1 | done (merged in wave 2) |
 | 7 | S5 | Guard layer 3: `!confirm` for irreversible actions | M | S3, S4 | open |
-| 8 | S6 | Room identity mapping and unified room provisioning | L | S2 | open |
+| 8 | S6 | Room identity (marker plus creator) and unified room provisioning | L | S2 | open |
 | 9 | S7 | Room repair: space link, lobbies, blocks | M | S6 | open |
 | 10 | S8 | Onboarding correctness | M | S6 | open |
 | 11 | S9 | User identity across renames | M | S1, S3 | open |
@@ -49,6 +49,7 @@ Start a session by pointing Claude at this file and the session ID, for example:
 | 15 | S13 | Security hardening and config validation | M | S0 | done (merged in wave 1b) |
 | 16 | S15 | CI and release hardening | M | S0 | done (merged in wave 1b) |
 | 17 | S14 | Docs, dead code, cleanup | S | last | open |
+| 18 | S17 | Bot-driven room upgrades (D20) | M | S6, S7 | deferred: later iteration, not before the next release |
 
 S1 to S3 should land before the next release: together they close every known way the bot can
 mass-kick users or revive offboarded accounts. The history scrub (S16) is placed early because every
@@ -73,6 +74,7 @@ every merge and the integration suite once per wave. Nothing is pushed; the main
 | 3 | S5, S6, S9 | S6 is the largest session. S12 moved to wave 4 (overlaps with S8, depends on it). |
 | 4 | S7, S8, S12 | |
 | 5 | S14 | |
+| later | S17 | Not part of this review run; not before the next release (D20). |
 
 After each wave a fresh reviewer agent reads the merged diff of that wave cold (without the
 orchestrator's summary) and checks that every listed finding is really fixed and nothing regressed.
@@ -333,9 +335,10 @@ erase) in one pass wait for confirmation; 1 or 2 run as today.
 
 ---
 
-## S6 Room identity mapping and unified room provisioning (D3)
+## S6 Room identity and unified room provisioning (D3, D20)
 
-**Goal:** the bot knows its rooms by id, not by alias, and creates every room in one place.
+**Goal:** the bot recognises its rooms by creator and marker, not by alias, and creates every room in
+one place.
 
 **Findings:** REC-04, SEC-02, REC-13, ONB-17, ONB-16, ONB-02.
 
@@ -347,14 +350,27 @@ not trust it alone. S13 left the internal Authentik URL that is written into roo
 - One room provisioning helper used by group rooms, lobbies, the space, the control room and notice
   boards. It writes the onbot marker in `initial_state` of `createRoom` (not afterwards), so a failure
   after creation can never produce an unmarked room (ONB-02, ONB-16).
-- A persisted mapping `group_pk -> room_id` (and lobby, space, control room). Lookups go through the
-  mapping; the alias is presentation only. Alias conflicts are reported, never adopted (REC-13, SEC-02).
+- Identity by marker plus creator (D20), no separate mapping store: a room belongs to a group (or is
+  the lobby, space or control room) when the bot is its creator (room details admin API, works
+  without membership) and it carries the onbot marker of the expected type with that `group_pk`. The
+  alias is presentation only. Alias conflicts and two rooms claiming the same group are reported in
+  the log and admin room and that group is skipped, never adopted or guessed (REC-13, SEC-02).
+- The provisioning helper raises the required power level for the onbot marker event types above any
+  human level (v12: creator only), so a moderator cannot rewrite `group_pk`.
+- Before `createRoom`, resolve the alias in the directory. If it points at a room that is not ours,
+  report and skip the group instead of failing with `M_ROOM_IN_USE` or building a second room.
 - One-time migration: adopt existing rooms by alias only if they carry the onbot marker and were
-  created by the bot; write them into the mapping; afterwards never look up by alias again.
-- ONB-17: the control room is found through the mapping as well.
+  created by the bot; afterwards never look up by alias again. If legacy rooms were created by a
+  different account (legacy bot MXID), stop and report the question instead of widening the rule.
+- Tombstones (D20): if a managed room has `m.room.tombstone`, follow `replacement_room` only when its
+  `m.room.create` names the old room as `predecessor` and the bot is its creator; then stamp the
+  marker there. Otherwise (a human upgraded the room) report it and skip the group. The bot does not
+  upgrade rooms itself in this session (see S17).
+- ONB-17: the control room is found the same way (creator plus `admin_room` marker).
 
 **Tests:** the live scenarios from `08` check 4 (squat with a private and a public room, moderator
-clears the alias) as integration tests.
+clears the alias) as integration tests, plus: moderator changes the main address, moderator tries to
+edit the marker, a room upgraded by a human (reported, skipped).
 
 **Size note:** this is the largest session. If it runs long, split after the provisioning helper.
 
@@ -534,5 +550,38 @@ gitleaks over the rewritten history, a mapping of old to new tag SHAs. Then hand
 checklist for the irreversible part: force-push `main` and all 14 tags, re-create GitHub releases if
 their tags moved, ask GitHub Support to purge cached views of the old commits, tell everyone with a
 clone to re-clone. Nothing is pushed by Claude.
+
+---
+
+## S17 Bot-driven room upgrades (D20, deferred)
+
+**Status:** later iteration, not before the next release. Not part of the wave plan.
+
+**Goal:** an admin can move managed rooms to a new room version without members losing access or
+history, and without the bot losing track of its rooms.
+
+**Background:** Matrix has no real migration. An upgrade creates a new room id, tombstones the old
+room, and moves the local aliases. Members are not moved, custom state (the onbot marker, space
+links) is not copied, and encrypted history stays in the old room. New room versions are rare
+(v10 2022, v11 2023, v12 2025) and the bot creates new rooms with the server default, so this is an
+occasional maintenance action, not continuous reconciliation. The main candidates are pre-v12 rooms
+adopted from the legacy bot (v12 state resolution fixes; REC-05 is already handled by S2).
+
+**Steps:**
+- Control room command, for example `!upgrade <group>` and `!upgrade legacy` (all managed rooms below
+  a given version). Allowlisted admins only. Check the target against `/capabilities`
+  (`m.room_versions`). A config default for the target version is fine, but no automatic upgrades in
+  the reconciler.
+- The bot calls `POST /rooms/{roomId}/upgrade`, so it is creator of the new room. Then: stamp the
+  onbot marker, relink `m.space.child` / `m.space.parent`, and force-join every current group member
+  through the admin join API so nobody has to follow the "room replaced" banner.
+- The old room stays as a read-only archive (history remains readable for previous members). The bot
+  keeps it in scope for offboarding: people who leave the group are removed from every predecessor in
+  the tombstone chain. It adds nobody new there and removes it from the space.
+- Report every upgrade in the admin room. Larger batches go through the D4 guard (count per pass,
+  or a `!confirm` batch).
+
+**Open before starting:** whether the group rooms federate (decides how much the v12 fixes matter for
+legacy rooms), and whether old rooms should eventually be closed instead of archived.
 
 **Note:** commit SHAs quoted in this review directory change after the scrub.
