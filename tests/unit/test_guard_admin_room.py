@@ -16,6 +16,7 @@ from onbot.guard import (
     GuardLimits,
     GuardState,
     InputCounts,
+    MatrixAccountDataGuardStore,
     MemoryGuardStore,
 )
 from tests.unit.test_control_room import (
@@ -113,10 +114,49 @@ async def test_confirm_of_an_unknown_id_says_so() -> None:
 async def test_reject_closes_the_batch_without_a_pass() -> None:
     guard, batch_id = await _guard_with_batch()
     client, engine = _FakeClient(), _Engine()
-    await _run(_handler(client, guard, engine), _message(f"!reject {batch_id}"))
+    handler = _handler(client, guard, engine)
+    await _run(handler, _message(f"!reject {batch_id}"))
     assert "rejected" in client.sends[0][1]
     assert engine.triggered == 0
+    # Wave 2 review: a rejected batch still holds its actions, so !pending shows it, marked.
+    await _run(handler, _message("!pending", event_id="$cmd2"))
+    assert batch_id in client.sends[1][1]
+    assert "rejected by @admin:matrix.test" in client.sends[1][1]
+    assert "at the latest until" in client.sends[1][1]
+
+
+async def test_guard_reset_replaces_an_unreadable_state_and_starts_a_pass() -> None:
+    account_data = _FakeClient()
+    account_data.account_data["test.matrix.onbot.guard"] = {"batches": "broken"}
+    guard = DestructiveActionGuard(
+        GuardLimits(),
+        MatrixAccountDataGuardStore(account_data, "@bot:matrix.test", "matrix.test"),
+        EventBus(),
+    )
+    client, engine = _FakeClient(), _Engine()
+    handler = _handler(client, guard, engine)
+    await _run(handler, _message("!pending"))
+    assert "cannot read its state" in client.sends[0][1]
+    assert "!guard reset" in client.sends[0][1]
+    await _run(handler, _message("!status", event_id="$cmd2"))
+    assert "cannot read its state" in client.sends[1][1]
+    await _run(handler, _message("!guard", event_id="$cmd3"))
+    assert "Usage: !guard reset" in client.sends[2][1]
+    assert engine.triggered == 0
+
+    await _run(handler, _message("!guard reset", event_id="$cmd4"))
+    assert "kept verbatim" in client.sends[3][1]
+    assert engine.triggered == 1
     assert await guard.open_batches() == []
+
+
+async def test_guard_reset_of_a_readable_state_does_nothing() -> None:
+    guard, batch_id = await _guard_with_batch()
+    client, engine = _FakeClient(), _Engine()
+    await _run(_handler(client, guard, engine), _message("!guard reset"))
+    assert "nothing to reset" in client.sends[0][1]
+    assert engine.triggered == 0
+    assert [b.id for b in await guard.open_batches()] == [batch_id]
 
 
 async def test_a_stranger_cannot_confirm() -> None:
@@ -152,6 +192,13 @@ async def test_reports_before_the_room_is_bound_are_posted_once_it_is() -> None:
     assert client.sends == []
     await notifier.bind(ROOM)
     assert client.sends == [(ROOM, "Paused: abc")]
+
+
+async def test_an_unreadable_guard_state_is_posted() -> None:
+    notifier, bus, client = _notifier()
+    await notifier.bind(ROOM)
+    await bus.emit(Signal.guard_state_unreadable, detail="broken", text="The guard cannot read its state")
+    assert client.sends == [(ROOM, "The guard cannot read its state")]
 
 
 async def test_guard_and_lifecycle_reports_reach_the_room() -> None:

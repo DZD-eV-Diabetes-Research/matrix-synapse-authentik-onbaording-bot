@@ -242,21 +242,117 @@ def test_an_unconfirmed_batch_expires_and_is_proposed_again_if_it_still_applies(
     assert outcomes == ["expired"]
 
 
+def _reject(state: GuardState, batch_id: str) -> None:
+    state.batches[batch_id].status = BatchStatus.rejected
+    state.batches[batch_id].decided_by = "@admin:x"
+    state.batches[batch_id].decided_at = 0
+
+
+def _ended(notices: list[Any]) -> list[str]:
+    return [n.payload["batch_id"] for n in notices if n.payload.get("outcome") == "rejection_ended"]
+
+
 def test_a_rejected_batch_is_not_proposed_again_while_the_incident_lasts() -> None:
     state = state_with_baseline()
     planned = [kick(1), kick(2)]
     batch_id = _proposed(state, planned, counts(1, 10))
-    state.batches[batch_id].status = BatchStatus.rejected
-    for now in (1, 500, 10_000):  # no expiry for a rejection
+    _reject(state, batch_id)
+    for now in (1, 50, 99):
         decision = decide(state, counts(1, 10), planned, LIMITS, now=now)
         assert decision.permitted == frozenset()
         assert record(state, decision, planned, LIMITS, now=now, complete=True) == []
     assert list(state.batches) == [batch_id]
 
     # The incident ends (the token was fixed): nothing of it is planned any more.
-    decision = decide(state, counts(), [], LIMITS, now=10_001)
-    record(state, decision, [], LIMITS, now=10_001, complete=True)
+    decision = decide(state, counts(), [], LIMITS, now=99)
+    notices = record(state, decision, [], LIMITS, now=99, complete=True)
     assert state.batches == {}
+    assert _ended(notices) == [batch_id]
+
+
+def test_a_rejected_batch_ends_when_the_input_is_plausible_again_and_its_actions_are_judged_afresh() -> None:
+    """Wave 2 review: a token fixed while one user was really deleted; that lock must not wait forever."""
+    state = state_with_baseline(100, 10)
+    batch_id = _proposed(state, [lock(1), lock(2), lock(3)], counts(1, 10))
+    _reject(state, batch_id)
+
+    decision = decide(state, counts(99, 10), [lock(3)], LIMITS, now=1)
+    assert decision.permitted == {lock(3).key}
+    assert decision.ended_rejections == ((batch_id, "the condition that created it is gone"),)
+    notices = record(state, decision, [lock(3)], LIMITS, now=1, complete=True)
+    assert state.batches == {}
+    assert _ended(notices) == [batch_id]
+    assert "rejected by @admin:x" in notices[0].payload["text"]
+    # Reported once: the batch is gone.
+    decision = decide(state, counts(99, 10), [lock(3)], LIMITS, now=2)
+    assert record(state, decision, [lock(3)], LIMITS, now=2, complete=True) == []
+
+
+def test_a_rejected_batch_that_expires_while_the_input_is_still_implausible_becomes_a_new_batch() -> None:
+    state = state_with_baseline()
+    planned = [kick(1), kick(2)]
+    batch_id = _proposed(state, planned, counts(1, 10))
+    _reject(state, batch_id)
+    decision = decide(state, counts(1, 10), planned, LIMITS, now=100)  # the expiry
+    assert decision.permitted == frozenset()
+    assert decision.ended_rejections == ((batch_id, "it expired"),)
+    notices = record(state, decision, planned, LIMITS, now=100, complete=True, id_factory=lambda: "newnew")
+    assert list(state.batches) == ["newnew"]
+    assert state.batches["newnew"].status is BatchStatus.pending
+    assert _ended(notices) == [batch_id]
+    assert [n.payload["batch_id"] for n in notices if n.signal is Signal.destructive_actions_suppressed] == [
+        "newnew"
+    ]
+
+
+def test_a_rejected_layer_2_batch_holds_while_the_pass_still_exceeds_the_limit_with_its_actions() -> None:
+    state = state_with_baseline()
+    planned = [kick(n) for n in range(11)]
+    batch_id = _proposed(state, planned, counts())
+    assert state.batches[batch_id].over_limit
+    _reject(state, batch_id)
+
+    decision = decide(state, counts(), planned, LIMITS, now=1)
+    assert decision.permitted == frozenset()
+    assert decision.ended_rejections == ()
+    # One fresh kick on top: with the batch's eleven still over the limit, so everything waits.
+    decision = decide(state, counts(), [*planned, kick(50)], LIMITS, now=1)
+    assert decision.permitted == {kick(50).key}
+    assert decision.ended_rejections == ()
+
+    fewer = planned[:4]
+    decision = decide(state, counts(), fewer, LIMITS, now=2)
+    assert decision.permitted == {a.key for a in fewer}
+    assert [b for b, _ in decision.ended_rejections] == [batch_id]
+
+
+def test_a_rejected_batch_holds_while_its_metric_is_not_measured() -> None:
+    state = state_with_baseline(100, 10)
+    batch_id = _proposed(state, [kick(1)], counts(100, 1))
+    _reject(state, batch_id)
+    decision = decide(state, counts(100, None), [kick(1)], LIMITS, now=1)  # the room stage failed
+    assert decision.permitted == frozenset()
+    assert decision.ended_rejections == ()
+
+
+def test_a_rejected_batch_whose_actions_were_not_seen_survives_an_incomplete_pass() -> None:
+    state = state_with_baseline()
+    batch_id = _proposed(state, [kick(1)], counts(1, 10))
+    _reject(state, batch_id)
+    decision = decide(state, counts(), [], LIMITS, now=1)
+    assert record(state, decision, [], LIMITS, now=1, complete=False) == []
+    assert batch_id in state.batches
+
+
+def test_a_rejected_batch_stored_before_its_cause_was_recorded_still_ends() -> None:
+    state = state_with_baseline()
+    batch_id = _proposed(state, [lock(1)], counts(1, 10))
+    _reject(state, batch_id)
+    state.batches[batch_id].metrics = []  # as written by the first wave 2 build
+    decision = decide(state, counts(1, 10), [lock(1)], LIMITS, now=1)
+    assert decision.permitted == frozenset()
+    decision = decide(state, counts(), [lock(1)], LIMITS, now=2)
+    assert decision.permitted == {lock(1).key}
 
 
 def test_a_pending_batch_that_no_longer_applies_is_closed() -> None:
@@ -317,6 +413,7 @@ def _service(store: Any = None) -> tuple[DestructiveActionGuard, Clock, list[Eve
 
     bus.subscribe(Signal.destructive_actions_suppressed, collect)
     bus.subscribe(Signal.guard_batch_closed, collect)
+    bus.subscribe(Signal.guard_state_unreadable, collect)
     clock = Clock()
     guard = DestructiveActionGuard(LIMITS, store or MemoryGuardStore(), bus, clock=clock)
     return guard, clock, seen
@@ -367,9 +464,13 @@ async def test_rejecting_closes_the_batch_without_running_it() -> None:
     batch_id = await _pause(guard, [kick(1)])
     ok, reply = await guard.reject(batch_id, "@admin:x")
     assert ok and "rejected" in reply
-    assert await guard.open_batches() == []
+    [batch] = await guard.open_batches()  # still listed while it holds its actions
+    assert batch.status is BatchStatus.rejected
+    assert "rejected by @admin:x" in describe_batch(batch)
     decision = await guard.decide(counts(1, 10), [kick(1)])
     assert decision.permitted == frozenset()
+    ok, reply = await guard.confirm(batch_id, "@admin:x")
+    assert not ok and "was rejected" in reply
 
 
 async def test_the_state_survives_a_restart_in_account_data() -> None:
@@ -386,15 +487,63 @@ async def test_the_state_survives_a_restart_in_account_data() -> None:
     assert (await restarted.confirm(batch_id, "@admin:x"))[0]
 
 
-async def test_an_unreadable_state_starts_empty_and_releases_nothing(
-    caplog: pytest.LogCaptureFixture,
+UNREADABLE_BLOBS = [
+    {"baseline": {"users_in_scope": 100}, "batches": "not a mapping"},
+    {"schema_version": 99, "baseline": {"users_in_scope": 100}},
+    {"baseline": {"users_in_scope": 100}, "batches": {"x": {"bogus": 1}}},
+]
+
+
+@pytest.mark.parametrize("blob", UNREADABLE_BLOBS)
+async def test_an_unreadable_state_holds_everything_reports_once_and_is_never_overwritten(
+    blob: dict[str, Any],
 ) -> None:
+    """Wave 2 review: starting from empty dropped the baseline and the rejected batches (fail open)."""
     account_data = AccountData()
-    account_data.data["org.x.onbot.guard"] = {"batches": "not a mapping"}
-    guard, _, _ = _service(MatrixAccountDataGuardStore(account_data, "@bot:x", "x.org"))
-    decision = await guard.decide(counts(0, 10), [kick(1)])
-    assert decision.permitted == frozenset()  # an empty answer still trips
-    assert "unreadable" in caplog.text
+    account_data.data["org.x.onbot.guard"] = blob
+    guard, _, seen = _service(MatrixAccountDataGuardStore(account_data, "@bot:x", "x.org"))
+
+    for _ in range(3):  # plausible counts and a single kick: still nothing runs
+        decision = await guard.decide(counts(100, 10), [kick(1)])
+        assert decision.permitted == frozenset()
+        assert [a.key for a in decision.held] == [kick(1).key]
+        assert decision.input_implausible
+        await guard.record(decision, [kick(1)], complete=True)
+    assert account_data.data == {"org.x.onbot.guard": blob}
+    [report] = seen
+    assert report.signal is Signal.guard_state_unreadable
+    assert "!guard reset" in report.payload["text"]
+
+    ok, reply = await guard.confirm("abcdef", "@admin:x")
+    assert not ok and "cannot read its state" in reply
+
+
+async def test_guard_reset_keeps_a_verbatim_copy_and_the_readable_baseline() -> None:
+    account_data = AccountData()
+    blob = UNREADABLE_BLOBS[0]
+    account_data.data["org.x.onbot.guard"] = blob
+    guard, clock, seen = _service(MatrixAccountDataGuardStore(account_data, "@bot:x", "x.org"))
+    await guard.record(await guard.decide(counts(100, 10), [kick(1)]), [kick(1)], complete=True)
+
+    ok, reply = await guard.reset("@admin:x")
+    assert ok
+    backup = f"org.x.onbot.guard.unreadable.{int(clock.now)}"
+    assert backup in reply
+    assert account_data.data[backup]["content"] == blob
+    # The baseline survived, so a narrowed answer still trips layer 1 right after the reset.
+    decision = await guard.decide(counts(1, 10), [kick(1)])
+    assert decision.permitted == frozenset()
+    assert "from 100 to 1" in decision.reasons[0]
+    await guard.record(decision, [kick(1)], complete=True)
+    assert [b.status for b in await guard.open_batches()] == [BatchStatus.pending]
+
+    ok, reply = await guard.reset("@admin:x")  # readable now: nothing to do
+    assert not ok and "nothing to reset" in reply
+
+    # A later break is news again.
+    account_data.data["org.x.onbot.guard"] = blob
+    await guard.record(await guard.decide(counts(100, 10), []), [], complete=True)
+    assert [e.signal for e in seen].count(Signal.guard_state_unreadable) == 2
 
 
 _CONFIG: dict[str, Any] = {

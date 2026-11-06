@@ -17,7 +17,15 @@ A tripped guard never just blocks (D13). The paused actions become a :class:`Gua
 id, reported to the admin room; an allowlisted admin releases exactly that batch with ``!confirm <id>``
 or closes it with ``!reject <id>``. Released actions run on the next pass, and only those that still
 apply then: a confirmation never covers more than the admin saw. A batch expires after
-``confirmation_expiry_sec``; if its actions still apply, a later pass proposes them again.
+``confirmation_expiry_sec``; if its actions still apply, a later pass proposes them again. A
+rejected batch holds its actions until the condition that created it is gone (the input looks
+plausible again, or the pass no longer exceeds the limit with them), at the latest until it expires;
+then they are judged again like any others.
+
+The guard fails closed on its own memory: a stored state it cannot read holds every destructive action
+of the pass, is reported once in the admin room and is never overwritten. An allowlisted admin resets
+it with ``!guard reset``, which keeps a verbatim copy of the unreadable blob (see
+:meth:`MatrixAccountDataGuardStore.reset_unreadable`).
 
 Layer 3 (irreversible actions above a small number, review session S5) plugs into the same batch
 store: it only needs its own rule in :func:`decide`.
@@ -151,6 +159,10 @@ class GuardBatch(BaseModel):
     actions: list[DestructiveAction] = Field(default_factory=list)
     decided_by: str | None = None
     decided_at: float | None = None
+    # What created the batch: the layer-1 metrics that dropped, and whether layer 2's limit was
+    # exceeded. A rejected batch ends once none of them holds any more.
+    metrics: list[str] = Field(default_factory=list)
+    over_limit: bool = False
 
     @property
     def keys(self) -> frozenset[str]:
@@ -193,9 +205,23 @@ class GuardDecision:
     confirmed_batches: tuple[str, ...]  # confirmed batches whose actions run in this pass
     decided_at: float = 0.0
     tripped_metrics: frozenset[str] = frozenset()  # their baseline must not move
+    over_limit: bool = False  # layer 2 paused the reversible actions of this pass
+    # Rejected batches that end with this pass (id, why); their actions were judged afresh.
+    ended_rejections: tuple[tuple[str, str], ...] = ()
+    # The stored guard state could not be read: everything is held and nothing is recorded.
+    state_unreadable: bool = False
 
     def permits(self, action: DestructiveAction) -> bool:
         return action.key in self.permitted
+
+    @property
+    def input_implausible(self) -> bool:
+        """Whether the pass's user list is not trusted (layer 1 on users, or no readable state).
+
+        Offboarding bookkeeping that reads "gone from Authentik" as final (forgetting a lock record)
+        waits as long as this holds.
+        """
+        return self.state_unreadable or "users_in_scope" in self.tripped_metrics
 
 
 @dataclass(frozen=True, slots=True)
@@ -240,6 +266,51 @@ def input_drops_by_metric(
     return reasons
 
 
+def _batch_conditions(batch: GuardBatch) -> tuple[frozenset[str], bool]:
+    """The layer-1 metrics and the layer-2 flag that created ``batch``.
+
+    Batches stored before these were recorded carry neither: a layer-1 batch (one with ``observed``
+    counts) then counts every metric it observed, any other batch counts as a layer-2 batch.
+    """
+    if batch.metrics or batch.over_limit:
+        return frozenset(batch.metrics), batch.over_limit
+    if batch.observed is not None:
+        return frozenset(m for m, _ in _METRICS if getattr(batch.observed, m) is not None), False
+    return frozenset(), True
+
+
+def _rejection_end(
+    batch: GuardBatch,
+    *,
+    planned_keys: frozenset[str],
+    reversible_keys: frozenset[str],
+    fresh_reversible: int,
+    counts: InputCounts,
+    drops: dict[str, str],
+    limits: GuardLimits,
+    now: float,
+) -> str | None:
+    """Why the rejected ``batch`` ends with this pass, or ``None`` while it still holds (D13).
+
+    It ends when it expires, or when the condition that created it is gone: none of its layer-1
+    metrics dropped in this pass (a metric this pass did not measure still counts as dropped), and,
+    for a layer-2 batch, this pass no longer exceeds the limit with its actions. A batch none of whose
+    actions this pass planned is left to :func:`record`, which only ends it after a complete pass.
+    """
+    if now >= batch.expires_at:
+        return "it expired"
+    if not batch.keys & planned_keys:
+        return None
+    metrics, over_limit = _batch_conditions(batch)
+    if any(m in drops or getattr(counts, m) is None for m in metrics):
+        return None
+    if over_limit:
+        mine = len(batch.keys & planned_keys & reversible_keys)
+        if mine and fresh_reversible + mine > limits.max_reversible_actions_per_pass:
+            return None
+    return "the condition that created it is gone"
+
+
 def decide(
     state: GuardState,
     counts: InputCounts,
@@ -251,19 +322,48 @@ def decide(
     """Decide which planned actions may run this pass (pure).
 
     * Actions of a confirmed batch run if they are still planned (the re-check of D13).
-    * Actions of an open batch (pending, or rejected while the incident lasts) stay paused: only
-      confirming *that* batch releases them, never a later pass that happens to look normal.
+    * Actions of a pending batch stay paused until it expires: only confirming *that* batch releases
+      them, never a later pass that happens to look normal.
+    * Actions of a rejected batch stay paused while the condition that created the batch lasts (see
+      :func:`_rejection_end`). Once it ends they are judged afresh, like everything else.
     * Everything else passes layer 1 (implausible input pauses all of it) and layer 2 (too many
       reversible actions pauses those).
     """
+    unique = list({a.key: a for a in planned}.values())
+    planned_keys = frozenset(a.key for a in unique)
+    reversible_keys = frozenset(a.key for a in unique if a.reversible)
+    drops = input_drops_by_metric(state.baseline, counts, limits.max_drop_percent)
+
     confirmed: dict[str, str] = {}
     waiting: dict[str, str] = {}
+    rejected: list[GuardBatch] = []
     for batch in state.batches.values():
         if batch.status is BatchStatus.confirmed:
             confirmed.update(dict.fromkeys(batch.keys, batch.id))
-        elif batch.status is BatchStatus.rejected or now < batch.expires_at:
+        elif batch.status is BatchStatus.rejected:
+            rejected.append(batch)
+        elif now < batch.expires_at:
             waiting.update(dict.fromkeys(batch.keys, batch.id))
-    unique = list({a.key: a for a in planned}.values())
+    in_rejected = {key for batch in rejected for key in batch.keys}
+    fresh_reversible = len(reversible_keys - confirmed.keys() - waiting.keys() - in_rejected)
+    ended: list[tuple[str, str]] = []
+    for batch in rejected:
+        why = _rejection_end(
+            batch,
+            planned_keys=planned_keys,
+            reversible_keys=reversible_keys,
+            fresh_reversible=fresh_reversible,
+            counts=counts,
+            drops=drops,
+            limits=limits,
+            now=now,
+        )
+        if why is None:
+            for key in batch.keys:
+                waiting.setdefault(key, batch.id)
+        else:
+            ended.append((batch.id, why))
+
     permitted = {a.key for a in unique if a.key in confirmed}
     held = [a for a in unique if a.key not in confirmed and a.key in waiting]
     rest = [a for a in unique if a.key not in confirmed and a.key not in waiting]
@@ -272,7 +372,6 @@ def decide(
     if held:
         reasons.append("waiting for open batch(es) " + ", ".join(sorted({waiting[a.key] for a in held})))
 
-    drops = input_drops_by_metric(state.baseline, counts, limits.max_drop_percent)
     reasons += drops.values()
     if "users_in_scope" in drops:
         # Fewer users: every removal of the pass is judged on that answer.
@@ -283,9 +382,11 @@ def decide(
         # judged on the users alone, so a deployment with no group rooms is not stuck.
         held += [a for a in rest if a.room_id is not None]
         rest = [a for a in rest if a.room_id is None]
+    over_limit = False
     if rest:
         reversible = [a for a in rest if a.reversible]
         if len(reversible) > limits.max_reversible_actions_per_pass:
+            over_limit = True
             held += reversible
             reasons.append(
                 f"{len(reversible)} reversible destructive actions in one pass, more than the "
@@ -302,6 +403,25 @@ def decide(
         confirmed_batches=confirmed_batches,
         decided_at=now,
         tripped_metrics=frozenset(drops),
+        over_limit=over_limit,
+        ended_rejections=tuple(ended),
+    )
+
+
+def hold_everything(
+    counts: InputCounts, planned: Sequence[DestructiveAction], reason: str, *, now: float
+) -> GuardDecision:
+    """The decision when the guard cannot read its own state: nothing destructive runs."""
+    held = tuple({a.key: a for a in planned}.values())
+    return GuardDecision(
+        counts=counts,
+        permitted=frozenset(),
+        held=held,
+        reasons=(reason,),
+        input_tripped=False,
+        confirmed_batches=(),
+        decided_at=now,
+        state_unreadable=True,
     )
 
 
@@ -331,12 +451,18 @@ def _utc(ts: float) -> str:
     return time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(ts))
 
 
+def _batch_status_text(batch: GuardBatch) -> str:
+    if batch.status is BatchStatus.rejected:
+        return (
+            f"rejected by {batch.decided_by}; holds its actions until the condition that created it is "
+            f"gone, at the latest until {_utc(batch.expires_at)}"
+        )
+    return f"{batch.status.value}, expires {_utc(batch.expires_at)}"
+
+
 def describe_batch(batch: GuardBatch, *, limit: int = MAX_LISTED_ACTIONS) -> str:
     """The admin-room text for a batch: why, what, and how to release it."""
-    lines = [
-        f"Batch {batch.id} ({batch.status.value}, expires {_utc(batch.expires_at)}): "
-        f"{summarize_actions(batch.actions)}.",
-    ]
+    lines = [f"Batch {batch.id} ({_batch_status_text(batch)}): {summarize_actions(batch.actions)}."]
     lines += [f"Why: {reason}." for reason in batch.reasons]
     actions = sorted(batch.actions, key=lambda a: (a.kind.value, a.room_id or "", a.target))
     lines += [f"- {a.describe()}" for a in actions[:limit]]
@@ -394,6 +520,12 @@ def record(
         # Every metric that looked plausible moves; one that dropped keeps its last known good value.
         state.baseline = _merge_counts(state.baseline, decision.counts, keep=decision.tripped_metrics)
 
+    for batch_id, why in decision.ended_rejections:
+        ended = state.batches.get(batch_id)
+        if ended is not None and ended.status is BatchStatus.rejected:
+            del state.batches[batch_id]
+            notices.append(_rejection_ended(ended, why))
+
     for batch_id in list(state.batches):
         batch = state.batches[batch_id]
         if batch.status is BatchStatus.pending and now >= batch.expires_at:
@@ -411,13 +543,15 @@ def record(
             # The incident is over: nothing in the batch is planned any more (the token was fixed,
             # the users came back). A rejected batch stops covering its actions here as well.
             del state.batches[batch_id]
-            if batch.status is BatchStatus.pending:
-                text = f"Batch {batch.id} closed: none of its actions applies any more."
-                notices.append(
-                    GuardNotice(
-                        Signal.guard_batch_closed, {"batch_id": batch.id, "outcome": "obsolete", "text": text}
-                    )
+            if batch.status is BatchStatus.rejected:
+                notices.append(_rejection_ended(batch, "none of its actions applies any more"))
+                continue
+            text = f"Batch {batch.id} closed: none of its actions applies any more."
+            notices.append(
+                GuardNotice(
+                    Signal.guard_batch_closed, {"batch_id": batch.id, "outcome": "obsolete", "text": text}
                 )
+            )
 
     covered: set[str] = set()
     for batch in state.batches.values():
@@ -435,6 +569,8 @@ def record(
             reasons=list(decision.reasons),
             observed=decision.counts if decision.input_tripped else None,
             actions=uncovered,
+            metrics=sorted(decision.tripped_metrics),
+            over_limit=decision.over_limit,
         )
         state.batches[batch_id] = batch
         text = (
@@ -457,14 +593,81 @@ def record(
     return notices
 
 
+def _rejection_ended(batch: GuardBatch, why: str) -> GuardNotice:
+    text = (
+        f"Rejected batch {batch.id} ({summarize_actions(batch.actions)}, rejected by {batch.decided_by}) "
+        f"ended: {why}. Its actions that still apply are judged again like any others: a plausible "
+        "pass carries them out, an implausible one pauses them in a new batch."
+    )
+    return GuardNotice(
+        Signal.guard_batch_closed, {"batch_id": batch.id, "outcome": "rejection_ended", "text": text}
+    )
+
+
 # --- persistence --------------------------------------------------------------------------------
+
+
+class GuardStateUnreadable(RuntimeError):
+    """The stored guard state cannot be read as a whole; every destructive action is held."""
+
+
+# What an admin does about an unreadable state; part of every report and refusal.
+RESET_HINT = (
+    "Every destructive action stays paused until an allowlisted admin runs !guard reset in the admin "
+    "control room, which keeps a verbatim copy of the unreadable state in the bot's account data and "
+    "starts a new one"
+)
+
+
+def parse_guard_state(raw: Any) -> GuardState:
+    """Read a stored guard state; raise :class:`GuardStateUnreadable` instead of guessing.
+
+    Nothing stored yet is an empty state. A blob that does not validate, or that a newer onbot wrote,
+    is unreadable: starting from empty would drop the baseline (so a narrowed token no longer trips
+    layer 1) and the rejected batches (so their actions run).
+    """
+    if not raw:
+        return GuardState()
+    if not isinstance(raw, dict):
+        raise GuardStateUnreadable("the guard state is not a JSON object")
+    version = raw.get("schema_version", SCHEMA_VERSION)
+    if not isinstance(version, int) or version > SCHEMA_VERSION:
+        raise GuardStateUnreadable(
+            f"the guard state has schema_version {version!r}, this onbot understands up to "
+            f"{SCHEMA_VERSION} (written by a newer onbot?)"
+        )
+    try:
+        return GuardState.model_validate(raw)
+    except ValidationError as exc:
+        raise GuardStateUnreadable(
+            f"the guard state does not validate ({exc.error_count()} error(s))"
+        ) from exc
+
+
+def _salvage_baseline(raw: Any) -> InputCounts:
+    """The last known good counts of an unreadable state, if that part still reads."""
+    if isinstance(raw, dict):
+        try:
+            return InputCounts.model_validate(raw.get("baseline") or {})
+        except ValidationError:
+            pass
+    return InputCounts()
 
 
 @runtime_checkable
 class GuardStore(Protocol):
-    async def load(self) -> GuardState: ...
+    async def load(self) -> GuardState:
+        """The stored state; raises :class:`GuardStateUnreadable` when it cannot be read."""
+        ...
 
     async def save(self, state: GuardState) -> None: ...
+
+    async def reset_unreadable(self, *, now: float) -> str | None:
+        """Set an unreadable state aside and start a new one; return where the copy went.
+
+        ``None`` when the state is readable (nothing to reset).
+        """
+        ...
 
 
 class MemoryGuardStore:
@@ -479,6 +682,9 @@ class MemoryGuardStore:
     async def save(self, state: GuardState) -> None:
         self.state = state.model_copy(deep=True)
 
+    async def reset_unreadable(self, *, now: float) -> str | None:
+        return None  # an in-memory state is always readable
+
 
 class MatrixAccountDataGuardStore:
     """Persists the guard state as an account-data blob on the bot user (AD-1)."""
@@ -489,19 +695,29 @@ class MatrixAccountDataGuardStore:
         self.data_type = guard_account_data_type(server_name)
 
     async def load(self) -> GuardState:
-        raw = await self.client.get_account_data(self.bot_id, self.data_type)
-        if not raw:
-            return GuardState()
-        try:
-            return GuardState.model_validate(raw)
-        except ValidationError:
-            # Losing the baseline only means the next pass sets a new one; losing batches only means
-            # paused actions are proposed again. Neither releases anything.
-            log.error("guard state in account data %s is unreadable; starting from empty", self.data_type)
-            return GuardState()
+        return parse_guard_state(await self.client.get_account_data(self.bot_id, self.data_type))
 
     async def save(self, state: GuardState) -> None:
         await self.client.set_account_data(self.bot_id, self.data_type, state.model_dump(mode="json"))
+
+    async def reset_unreadable(self, *, now: float) -> str | None:
+        """Copy an unreadable state verbatim to ``<type>.unreadable.<unix time>``, then start anew.
+
+        The new state keeps the old baseline when that part still reads, so layer 1 keeps comparing
+        against the last known good counts. Open batches are gone: actions they paused are judged
+        again on the next pass (an implausible pass pauses them in a new batch).
+        """
+        raw = await self.client.get_account_data(self.bot_id, self.data_type)
+        try:
+            parse_guard_state(raw)
+        except GuardStateUnreadable:
+            pass
+        else:
+            return None
+        backup_type = f"{self.data_type}.unreadable.{int(now)}"
+        await self.client.set_account_data(self.bot_id, backup_type, {"saved_at": now, "content": raw})
+        await self.save(GuardState(baseline=_salvage_baseline(raw)))
+        return backup_type
 
 
 class ReadOnlyGuardStore:
@@ -515,6 +731,10 @@ class ReadOnlyGuardStore:
 
     async def save(self, state: GuardState) -> None:
         log.info("[dry-run] would save the guard state (%d open batches)", len(state.batches))
+
+    async def reset_unreadable(self, *, now: float) -> str | None:
+        log.info("[dry-run] would set an unreadable guard state aside")
+        return None
 
 
 # --- service ------------------------------------------------------------------------------------
@@ -542,44 +762,65 @@ class DestructiveActionGuard:
         self.clock = clock
         self.id_factory = id_factory
         self._lock = asyncio.Lock()
+        # The unreadable-state problem last reported, so the admin room hears it once, not every pass.
+        self._reported_unreadable: str | None = None
 
     async def decide(self, counts: InputCounts, planned: Sequence[DestructiveAction]) -> GuardDecision:
         async with self._lock:
-            state = await self.store.load()
+            try:
+                state = await self.store.load()
+            except GuardStateUnreadable as exc:
+                log.error("guard: %s; holding every destructive action of this pass", exc)
+                return hold_everything(counts, planned, f"{exc}. {RESET_HINT}", now=self.clock())
         return decide(state, counts, planned, self.limits, now=self.clock())
 
     async def record(
         self, decision: GuardDecision, planned: Sequence[DestructiveAction], *, complete: bool
     ) -> None:
         async with self._lock:
-            state = await self.store.load()
-            before = state.model_dump(mode="json")
-            notices = record(
-                state,
-                decision,
-                planned,
-                self.limits,
-                now=self.clock(),
-                complete=complete,
-                id_factory=self.id_factory,
-            )
-            if state.model_dump(mode="json") != before:
-                await self.store.save(state)
+            try:
+                state = await self.store.load()
+            except GuardStateUnreadable as exc:
+                # Nothing is recorded and nothing overwrites the blob: an admin decides (!guard reset).
+                notices = self._unreadable_notices(str(exc), planned)
+            else:
+                self._reported_unreadable = None
+                before = state.model_dump(mode="json")
+                notices = record(
+                    state,
+                    decision,
+                    planned,
+                    self.limits,
+                    now=self.clock(),
+                    complete=complete,
+                    id_factory=self.id_factory,
+                )
+                if state.model_dump(mode="json") != before:
+                    await self.store.save(state)
         for notice in notices:
             await self.events.emit(notice.signal, **notice.payload)
 
+    def _unreadable_notices(self, problem: str, planned: Sequence[DestructiveAction]) -> list[GuardNotice]:
+        if self._reported_unreadable == problem:
+            return []
+        self._reported_unreadable = problem
+        held = list({a.key: a for a in planned}.values())
+        text = (
+            f"The destructive-action guard cannot read its state: {problem}. {RESET_HINT}. "
+            f"Paused this pass: {summarize_actions(held)}."
+        )
+        return [GuardNotice(Signal.guard_state_unreadable, {"detail": problem, "text": text})]
+
     async def open_batches(self) -> list[GuardBatch]:
-        """Pending batches that have not expired, and confirmed ones still waiting for a pass."""
+        """Pending and rejected batches that have not expired, and confirmed ones waiting for a pass.
+
+        Raises :class:`GuardStateUnreadable` when the state cannot be read.
+        """
         async with self._lock:
             state = await self.store.load()
         now = self.clock()
         return sorted(
-            (
-                b
-                for b in state.batches.values()
-                if b.status is BatchStatus.confirmed
-                or (b.status is BatchStatus.pending and now < b.expires_at)
-            ),
+            (b for b in state.batches.values() if b.status is BatchStatus.confirmed or now < b.expires_at),
             key=lambda b: b.created_at,
         )
 
@@ -591,14 +832,37 @@ class DestructiveActionGuard:
         """Close one batch without running it; returns (rejected, reply text)."""
         return await self._decide_batch(batch_id, admin, BatchStatus.rejected)
 
+    async def reset(self, admin: str) -> tuple[bool, str]:
+        """``!guard reset``: replace an unreadable state, keeping a verbatim copy; (done, reply)."""
+        async with self._lock:
+            backup = await self.store.reset_unreadable(now=self.clock())
+        if backup is None:
+            return False, "The guard state is readable; there is nothing to reset."
+        self._reported_unreadable = None
+        log.warning("guard: %s replaced the unreadable guard state; the old one is kept in %s", admin, backup)
+        return True, (
+            f"Guard state replaced. The unreadable state is kept verbatim in the bot's account data "
+            f"{backup}. The last known good counts were kept where they could be read; open batches "
+            "are gone, so actions that still need a confirmation are proposed again under new ids."
+        )
+
     async def _decide_batch(self, raw_id: str, admin: str, status: BatchStatus) -> tuple[bool, str]:
         batch_id = normalize_batch_id(raw_id)
         async with self._lock:
-            state = await self.store.load()
+            try:
+                state = await self.store.load()
+            except GuardStateUnreadable as exc:
+                return False, f"The guard cannot read its state: {exc}. {RESET_HINT}."
             batch = state.batches.get(batch_id)
             now = self.clock()
-            if batch is None or batch.status is BatchStatus.rejected:
+            if batch is None:
                 return False, f"There is no open batch {batch_id!r}. !pending lists the open batches."
+            if batch.status is BatchStatus.rejected:
+                return False, (
+                    f"Batch {batch_id} was rejected by {batch.decided_by}. It holds its actions until "
+                    f"the condition that created it is gone, at the latest until {_utc(batch.expires_at)}; "
+                    "then they are judged again."
+                )
             if batch.status is BatchStatus.confirmed:
                 return False, f"Batch {batch_id} is already confirmed; it runs on the next pass."
             if now >= batch.expires_at:
@@ -620,6 +884,7 @@ class DestructiveActionGuard:
             )
         log.warning("guard: %s rejected batch %s (%s)", admin, batch_id, summarize_actions(batch.actions))
         return True, (
-            f"Batch {batch_id} rejected: none of its actions runs, and they are not proposed again while "
-            "this incident lasts."
+            f"Batch {batch_id} rejected: none of its actions runs while the condition that created it "
+            f"lasts, at the latest until {_utc(batch.expires_at)}. Then its actions are judged again "
+            "like any others; !pending shows it meanwhile."
         )

@@ -308,6 +308,7 @@ class World:
         self.guard_events: list[Event] = []
         self.events.subscribe(Signal.destructive_actions_suppressed, self._on_guard)
         self.events.subscribe(Signal.guard_batch_closed, self._on_guard)
+        self.events.subscribe(Signal.guard_state_unreadable, self._on_guard)
         from onbot.lifecycle.accounts import MatrixAccountDataLedgerStore
 
         self.manager = AccountLifecycleManager(
@@ -978,3 +979,49 @@ async def test_an_unreadable_ledger_does_not_close_the_open_batches() -> None:
     await w.tick()
     assert proposal.payload["batch_id"] in w.store.raw[GUARD_TYPE]["batches"]
     assert [e for e in w.guard_events if e.signal is Signal.guard_batch_closed] == []
+
+
+# --- wave 2 review: rejected batches and an unreadable guard state ---------------------------------
+
+
+async def _rejected_narrowed_token(w: World) -> str:
+    for name in ("anna", "ben", "cleo", "dino"):
+        w.person(name)
+    await w.tick()
+    w.directory.visible = {"anna"}
+    await w.tick()
+    await w.tick(DAY)
+    [proposal] = _proposals(w)
+    batch_id: str = proposal.payload["batch_id"]
+    ok, _ = await w.guard.reject(batch_id, "@admin:company.org")
+    assert ok
+    await w.tick()
+    assert w.mas.calls == []
+    return batch_id
+
+
+async def test_a_rejected_batch_ends_with_its_incident_and_a_genuine_deletion_is_still_offboarded() -> None:
+    """The token is fixed, but dino really was deleted meanwhile: the reject must not hold that forever."""
+    w = World(guard=True)
+    batch_id = await _rejected_narrowed_token(w)
+    w.directory.visible = None
+    dino_pk = next(pk for pk, u in w.directory.users.items() if u["username"] == "dino")
+    w.directory.delete(dino_pk)
+    for _ in range(3):
+        await w.tick(DAY)
+    assert w.mas.ops("lock") == ["dino"]
+    ended = [e for e in w.guard_events if e.payload.get("outcome") == "rejection_ended"]
+    assert [e.payload["batch_id"] for e in ended] == [batch_id]  # reported once
+
+
+async def test_an_unreadable_guard_state_holds_the_locks_of_a_rejected_batch() -> None:
+    """Starting from empty dropped the baseline and the rejection, so the narrowed token's locks ran."""
+    w = World(guard=True)
+    await _rejected_narrowed_token(w)
+    broken = {"schema_version": 1, "baseline": {}, "batches": {"x": {"bogus": 1}}}
+    w.store.raw[GUARD_TYPE] = broken
+    for _ in range(3):
+        await w.tick()
+    assert w.mas.calls == []
+    assert w.store.raw[GUARD_TYPE] == broken
+    assert [e.signal for e in w.guard_events].count(Signal.guard_state_unreadable) == 1

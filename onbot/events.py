@@ -39,8 +39,13 @@ class Signal(StrEnum):
     # (D13): ``action`` (the kinds, comma-separated), ``reason``, ``batch_id`` and ``summary`` (the
     # full report). Emitted once per batch, not on every pass that keeps the actions paused.
     destructive_actions_suppressed = "destructive_actions_suppressed"
-    # A guard batch was closed: ``batch_id``, ``outcome`` (executed, expired, obsolete) and ``text``.
+    # A guard batch was closed: ``batch_id``, ``outcome`` (executed, expired, obsolete,
+    # rejection_ended) and ``text``.
     guard_batch_closed = "guard_batch_closed"
+    # The guard cannot read its stored state and holds every destructive action until an admin
+    # replaces it (``!guard reset``): ``detail`` (the problem) and ``text`` (the report). Emitted once
+    # per problem per process, not on every pass.
+    guard_state_unreadable = "guard_state_unreadable"
 
 
 @dataclass(frozen=True, slots=True)
