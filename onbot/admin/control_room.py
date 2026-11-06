@@ -38,6 +38,8 @@ from onbot.admin.broadcast import BroadcastService
 from onbot.admin.commands import (
     ANNOUNCE,
     CONFIRM,
+    GUARD,
+    GUARD_RESET,
     PENDING,
     REJECT,
     STATUS,
@@ -47,7 +49,7 @@ from onbot.admin.commands import (
 )
 from onbot.clients.matrix import ApiClientMatrix, SyncResult
 from onbot.config import OnbotConfig
-from onbot.guard import DestructiveActionGuard, describe_batch
+from onbot.guard import RESET_HINT, DestructiveActionGuard, GuardStateUnreadable, describe_batch
 from onbot.logging import get_logger
 from onbot.reconciler.engine import ReconcilerEngine
 from onbot.reconciler.state import event_type_name
@@ -163,6 +165,8 @@ class ControlRoomHandler:
             await self._reply(await self._pending())
         elif command.name in (CONFIRM, REJECT):
             await self._decide_batch(command, sender)
+        elif command.name == GUARD:
+            await self._guard_command(command, sender)
         else:
             # !help, and anything unrecognised: answering is friendlier than silence, which reads
             # as the bot being down.
@@ -178,10 +182,29 @@ class ControlRoomHandler:
     async def _pending(self) -> str:
         if self.guard is None:
             return "The destructive-action guard is not available in this process."
-        batches = await self.guard.open_batches()
+        try:
+            batches = await self.guard.open_batches()
+        except GuardStateUnreadable as exc:
+            return f"The guard cannot read its state: {exc}. {RESET_HINT}."
         if not batches:
             return "No destructive actions are waiting for a confirmation."
         return "\n\n".join(describe_batch(b) for b in batches)
+
+    async def _guard_command(self, command: Command, sender: str) -> None:
+        """``!guard reset``: replace an unreadable guard state; the old blob is kept verbatim."""
+        if command.argument.strip().lower() != GUARD_RESET:
+            await self._reply(
+                f"Usage: !{GUARD} {GUARD_RESET}. It replaces a guard state the bot cannot read and keeps "
+                "a copy of the old one; it does nothing while the state is readable."
+            )
+            return
+        if self.guard is None:
+            await self._reply("The destructive-action guard is not available in this process.")
+            return
+        done, reply = await self.guard.reset(sender)
+        await self._reply(reply)
+        if done and self.engine is not None:
+            self.engine.trigger()  # re-judge what was paused now, not a whole tick later
 
     async def _decide_batch(self, command: Command, sender: str) -> None:
         """``!confirm <id>`` / ``!reject <id>``: exactly one batch, never all of them (D13)."""
@@ -206,7 +229,13 @@ class ControlRoomHandler:
     async def _status(self) -> str:
         status = await self._status_line()
         if self.guard is not None:
-            waiting = len(await self.guard.open_batches())
+            try:
+                waiting = len(await self.guard.open_batches())
+            except GuardStateUnreadable:
+                return (
+                    status
+                    + "; the guard cannot read its state and pauses every destructive action, see !pending"
+                )
             status += f"; destructive actions paused in {waiting} batch(es)" + (
                 ", see !pending" if waiting else ""
             )

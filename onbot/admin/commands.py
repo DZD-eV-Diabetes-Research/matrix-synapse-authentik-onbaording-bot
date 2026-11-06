@@ -22,8 +22,11 @@ STATUS = "status"
 PENDING = "pending"
 CONFIRM = "confirm"
 REJECT = "reject"
+# ``!guard reset``: replace a guard state the bot cannot read (the copy is kept).
+GUARD = "guard"
+GUARD_RESET = "reset"
 
-KNOWN_COMMANDS = frozenset({ANNOUNCE, HELP, STATUS, PENDING, CONFIRM, REJECT})
+KNOWN_COMMANDS = frozenset({ANNOUNCE, HELP, STATUS, PENDING, CONFIRM, REJECT, GUARD})
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,7 +75,8 @@ def help_text() -> str:
             f"{COMMAND_PREFIX}{STATUS}             bot version, last reconcile, managed rooms",
             f"{COMMAND_PREFIX}{PENDING}            destructive actions paused by the guard, by batch",
             f"{COMMAND_PREFIX}{CONFIRM} <id>       carry out exactly that batch (what still applies)",
-            f"{COMMAND_PREFIX}{REJECT} <id>        discard that batch; it is not proposed again",
+            f"{COMMAND_PREFIX}{REJECT} <id>        keep that batch paused while its cause lasts",
+            f"{COMMAND_PREFIX}{GUARD} {GUARD_RESET}        replace a guard state the bot cannot read",
             f"{COMMAND_PREFIX}{HELP}               this message",
             "",
             "Only users on the bot's admin allowlist may run commands.",

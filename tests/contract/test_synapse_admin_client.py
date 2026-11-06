@@ -3,9 +3,11 @@
 import json
 
 import httpx
+import pytest
 import respx
 
-from onbot.clients.synapse_admin import ApiClientSynapseAdmin
+from onbot.clients.base import ApiError
+from onbot.clients.synapse_admin import ApiClientSynapseAdmin, RoomDeletionFailed
 
 
 def _client() -> ApiClientSynapseAdmin:
@@ -57,11 +59,21 @@ async def test_list_rooms_follows_next_batch_and_excludes_spaces() -> None:
     assert [r["room_id"] for r in rooms] == ["!r1:x", "!r2:x"]
 
 
+ADMIN = "https://matrix.test/_synapse/admin"
+
+
+def _deletion_done(delete_id: str = "d1") -> respx.Route:
+    return respx.get(f"{ADMIN}/v2/rooms/delete_status/{delete_id}").mock(
+        return_value=httpx.Response(200, json={"status": "complete"})
+    )
+
+
 @respx.mock
 async def test_delete_room_sends_body() -> None:
-    route = respx.delete("https://matrix.test/_synapse/admin/v1/rooms/!r:x").mock(
+    route = respx.delete(f"{ADMIN}/v2/rooms/!r:x").mock(
         return_value=httpx.Response(200, json={"delete_id": "d1"})
     )
+    _deletion_done()
     client = _client()
     try:
         await client.delete_room("!r:x", purge=True, message="bye")
@@ -69,6 +81,124 @@ async def test_delete_room_sends_body() -> None:
         await client.aclose()
     body = json.loads(route.calls[0].request.content)
     assert body == {"block": False, "purge": True, "force_purge": False, "message": "bye"}
+
+
+# --- delete_room: the asynchronous v2 API (wave 2 review) ---------------------------------------------
+
+
+def _waiting_client() -> tuple[ApiClientSynapseAdmin, list[float]]:
+    waits: list[float] = []
+
+    async def sleep(seconds: float) -> None:
+        waits.append(seconds)
+
+    return ApiClientSynapseAdmin(server_url="https://matrix.test", access_token="adm", sleep=sleep), waits
+
+
+@respx.mock
+async def test_delete_room_waits_for_the_background_deletion() -> None:
+    respx.delete(f"{ADMIN}/v2/rooms/!r:x").mock(return_value=httpx.Response(200, json={"delete_id": "d1"}))
+    status = respx.get(f"{ADMIN}/v2/rooms/delete_status/d1").mock(
+        side_effect=[
+            httpx.Response(200, json={"status": "scheduled"}),
+            httpx.Response(200, json={"status": "active"}),
+            httpx.Response(200, json={"status": "complete", "shutdown_room": {"kicked_users": []}}),
+        ]
+    )
+    client, waits = _waiting_client()
+    try:
+        result = await client.delete_room("!r:x", poll_interval_sec=2)
+    finally:
+        await client.aclose()
+    assert result["status"] == "complete"
+    assert status.call_count == 3
+    assert waits == [2, 2]
+
+
+@respx.mock
+async def test_a_timed_out_delete_waits_for_the_deletion_it_started_instead_of_failing() -> None:
+    """v1 ran the purge inside the request: a slow purge timed out and the retry reported a failure."""
+    delete = respx.delete(f"{ADMIN}/v2/rooms/!r:x").mock(side_effect=httpx.ReadTimeout("slow"))
+    respx.get(f"{ADMIN}/v2/rooms/!r:x/delete_status").mock(
+        return_value=httpx.Response(200, json={"results": [{"delete_id": "d7", "status": "active"}]})
+    )
+    _deletion_done("d7")
+    client, _ = _waiting_client()
+    try:
+        result = await client.delete_room("!r:x")
+    finally:
+        await client.aclose()
+    assert result["status"] == "complete"
+    assert delete.call_count == 1  # never sent twice
+
+
+@respx.mock
+async def test_a_deletion_already_running_is_awaited() -> None:
+    respx.delete(f"{ADMIN}/v2/rooms/!r:x").mock(
+        return_value=httpx.Response(400, json={"errcode": "M_UNKNOWN", "error": "Purge already in progress"})
+    )
+    respx.get(f"{ADMIN}/v2/rooms/!r:x/delete_status").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "results": [
+                    {"delete_id": "old", "status": "failed"},
+                    {"delete_id": "d2", "status": "scheduled"},
+                ]
+            },
+        )
+    )
+    _deletion_done("d2")
+    client, _ = _waiting_client()
+    try:
+        assert (await client.delete_room("!r:x"))["status"] == "complete"
+    finally:
+        await client.aclose()
+
+
+@respx.mock
+async def test_a_refused_delete_without_a_deletion_under_way_raises() -> None:
+    respx.delete(f"{ADMIN}/v2/rooms/!r:x").mock(
+        return_value=httpx.Response(400, json={"errcode": "M_INVALID_PARAM", "error": "bad room"})
+    )
+    respx.get(f"{ADMIN}/v2/rooms/!r:x/delete_status").mock(
+        return_value=httpx.Response(404, json={"errcode": "M_NOT_FOUND"})
+    )
+    client, _ = _waiting_client()
+    try:
+        with pytest.raises(ApiError) as caught:
+            await client.delete_room("!r:x")
+    finally:
+        await client.aclose()
+    assert caught.value.status_code == 400
+
+
+@respx.mock
+async def test_a_failed_deletion_raises() -> None:
+    respx.delete(f"{ADMIN}/v2/rooms/!r:x").mock(return_value=httpx.Response(200, json={"delete_id": "d1"}))
+    respx.get(f"{ADMIN}/v2/rooms/delete_status/d1").mock(
+        return_value=httpx.Response(200, json={"status": "failed", "error": "database is gone"})
+    )
+    client, _ = _waiting_client()
+    try:
+        with pytest.raises(RoomDeletionFailed, match="database is gone"):
+            await client.delete_room("!r:x")
+    finally:
+        await client.aclose()
+
+
+@respx.mock
+async def test_a_deletion_still_running_after_the_wait_is_left_to_synapse() -> None:
+    respx.delete(f"{ADMIN}/v2/rooms/!r:x").mock(return_value=httpx.Response(200, json={"delete_id": "d1"}))
+    respx.get(f"{ADMIN}/v2/rooms/delete_status/d1").mock(
+        return_value=httpx.Response(200, json={"status": "active"})
+    )
+    client, _ = _waiting_client()
+    try:
+        result = await client.delete_room("!r:x", wait_sec=0)
+    finally:
+        await client.aclose()
+    assert result["status"] == "active"
 
 
 @respx.mock
@@ -222,9 +352,10 @@ async def test_logout_account_deletes_every_device() -> None:
 
 @respx.mock
 async def test_delete_room_omits_message_when_absent() -> None:
-    route = respx.delete("https://matrix.test/_synapse/admin/v1/rooms/!r:x").mock(
+    route = respx.delete(f"{ADMIN}/v2/rooms/!r:x").mock(
         return_value=httpx.Response(200, json={"delete_id": "d1"})
     )
+    _deletion_done()
     client = _client()
     try:
         await client.delete_room("!r:x", block=True)

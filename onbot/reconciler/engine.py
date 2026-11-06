@@ -143,6 +143,9 @@ class _PassInputs:
 
     users_in_scope: int | None = None
     mapped_groups: int | None = None
+    # The lifecycle refused its step (an unreadable ledger): its locks and erasures are unknown this
+    # pass, so the guard must not read their absence as "no longer applies".
+    lifecycle_refused: bool = False
 
     def counts(self) -> InputCounts:
         return InputCounts(users_in_scope=self.users_in_scope, mapped_groups=self.mapped_groups)
@@ -283,7 +286,9 @@ class ReconcilerEngine:
             if snapshot is not None:
                 await self._run_lifecycle(snapshot, decision)
             if not self.dry_run:
-                await self.guard.record(decision, plan.actions, complete=not stage_errors)
+                await self.guard.record(
+                    decision, plan.actions, complete=not stage_errors and not inputs.lifecycle_refused
+                )
         finally:
             self.last_pass_report = report
             await self._publish_report(report)
@@ -305,12 +310,15 @@ class ReconcilerEngine:
         prefix = "[dry-run] " if self.dry_run else ""
         if decision.held:
             log.warning(
-                "%sguard: paused %d destructive action(s) this pass (%s): %s. An admin releases them "
-                "with !confirm <batch id> in the admin control room (!pending lists the batches)",
+                "%sguard: paused %d destructive action(s) this pass (%s): %s.%s",
                 prefix,
                 len(decision.held),
                 summarize_actions(decision.held),
                 "; ".join(decision.reasons),
+                ""  # the reason already says what the admin does (!guard reset)
+                if decision.state_unreadable
+                else " An admin releases them with !confirm <batch id> in the admin control room "
+                "(!pending lists the batches)",
             )
             # A preview lists every one; a live pass has the batch report, so only at debug level.
             level = logging.INFO if self.dry_run else logging.DEBUG
@@ -1101,9 +1109,9 @@ class ReconcilerEngine:
         below the bot's own level where that level is finite. A steady state costs one state read, one
         account data read and one power-level read, and no writes.
 
-        A withdrawal is destructive and goes through the guard (D13): only the users in ``withdraw``
-        lose their level here. Every other withdrawal is held: the entry stays at its level and in the
-        record, and its MXID is returned so the caller can ask the guard about it.
+        A withdrawal or demotion is destructive and goes through the guard (D13): only the users in
+        ``withdraw`` get a lower level here. Every other one is held: the entry stays at its level
+        (see :func:`hold_withdrawals`), and its MXID is returned so the caller can ask the guard.
         """
         room_id = room.room_id
         bot_id = self.config.synapse_server.bot_user_id
@@ -1304,11 +1312,12 @@ class ReconcilerEngine:
             inputs.users_in_scope = len(
                 {u.mxid for u in snapshot.users if u.is_active and u.in_scope and not u.ignored and u.mxid}
             )
+        steps = await self.lifecycle.plan_accounts(snapshot)
+        if steps is None:
+            inputs.lifecycle_refused = True  # reconcile_accounts aborts the step and reports it
+            return snapshot
         plan.note(
-            [
-                DestructiveAction(kind=_LIFECYCLE_ACTION_KINDS[step.action], target=step.mxid)
-                for step in await self.lifecycle.plan_accounts(snapshot)
-            ]
+            [DestructiveAction(kind=_LIFECYCLE_ACTION_KINDS[step.action], target=step.mxid) for step in steps]
         )
         return snapshot
 
@@ -1317,6 +1326,8 @@ class ReconcilerEngine:
         assert self.lifecycle is not None
 
         def permit(mxid: str, action: LifecycleAction) -> bool:
+            if action is LifecycleAction.forget:
+                return not decision.input_implausible  # "gone from Authentik" must be trusted
             kind = _LIFECYCLE_ACTION_KINDS.get(action)
             return kind is not None and decision.permits(DestructiveAction(kind=kind, target=mxid))
 

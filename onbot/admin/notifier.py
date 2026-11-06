@@ -5,7 +5,8 @@ into the control room as ``m.notice`` messages, which the command router ignores
 
 * ``destructive_actions_suppressed``: the guard paused destructive actions and proposed a batch
   (D13), with what dropped, from how many to how many, and who or what would be affected;
-* ``guard_batch_closed``: a batch ran, expired or no longer applies;
+* ``guard_batch_closed``: a batch ran, expired or no longer applies, or a rejected batch ended;
+* ``guard_state_unreadable``: the guard cannot read its state and holds every destructive action;
 * ``lifecycle_attention``: an offboarding user was frozen (D9), a step failed, or the step was aborted
   on an empty Authentik answer;
 * ``room_not_converged``: a managed room the pass could not fully converge (REC-03).
@@ -75,6 +76,7 @@ class AdminRoomNotifier:
     def subscribe(self, events: EventBus) -> None:
         events.subscribe(Signal.destructive_actions_suppressed, self._on_suppressed)
         events.subscribe(Signal.guard_batch_closed, self._on_batch_closed)
+        events.subscribe(Signal.guard_state_unreadable, self._on_batch_closed)
         events.subscribe(Signal.lifecycle_attention, self._on_lifecycle_attention)
         events.subscribe(Signal.room_not_converged, self._on_room_not_converged)
         events.subscribe(Signal.reconcile_completed, self._on_reconcile_completed)

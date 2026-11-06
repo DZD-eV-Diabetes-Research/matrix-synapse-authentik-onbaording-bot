@@ -309,6 +309,7 @@ class World:
         self.guard_events: list[Event] = []
         self.events.subscribe(Signal.destructive_actions_suppressed, self._on_guard)
         self.events.subscribe(Signal.guard_batch_closed, self._on_guard)
+        self.events.subscribe(Signal.guard_state_unreadable, self._on_guard)
         from onbot.lifecycle.accounts import MatrixAccountDataLedgerStore
 
         self.manager = AccountLifecycleManager(
@@ -935,3 +936,147 @@ async def test_a_preview_shows_what_switching_dry_run_off_would_pause(
     assert "[dry-run] guard: paused 11 destructive action(s)" in caplog.text
     assert "11 reversible destructive actions in one pass" in caplog.text
     assert _proposals(w) == []  # a preview records no batch
+
+
+# --- wave 2 review: an unreadable ledger through the engine ----------------------------------------
+
+LEDGER_TYPE = "org.company.onbot.lifecycle"
+GUARD_TYPE = "org.company.onbot.guard"
+
+
+@pytest.mark.parametrize("blob_key", [LEDGER_TYPE, "org.company.onbot.known_users"])
+async def test_an_unreadable_ledger_aborts_the_step_reports_once_and_the_pass_still_succeeds(
+    blob_key: str,
+) -> None:
+    """S1 reported an unreadable ledger once; the guard's planning step (S3) lost that and raised."""
+    w = World(guard=True)
+    pk = w.person("anna")
+    w.person("ben")
+    await w.tick()
+    broken = {"schema_version": 99, "entries": {}} if blob_key == LEDGER_TYPE else {"users": {"1": 5}}
+    w.store.raw[blob_key] = broken
+    w.directory.set_active(pk, False)
+    for _ in range(3):
+        await w.tick()  # must not raise
+        assert w.engine.last_reconcile_at is not None
+
+    aborts = [e for e in w.reports if e.payload.get("action") == "abort"]
+    assert len(aborts) == 1
+    assert w.mas.calls == []
+    assert w.store.raw[blob_key] == broken  # never overwritten
+
+
+async def test_an_unreadable_ledger_does_not_close_the_open_batches() -> None:
+    """Its locks are unknown while the step is refused; that is not "no longer applies"."""
+    w = World(guard=True)
+    for name in ("anna", "ben", "cleo", "dino"):
+        w.person(name)
+    await w.tick()
+    w.directory.visible = {"anna"}
+    await w.tick()
+    await w.tick(DAY)
+    [proposal] = _proposals(w)
+    w.store.raw[LEDGER_TYPE] = {"schema_version": 99, "entries": {}}
+    await w.tick()
+    assert proposal.payload["batch_id"] in w.store.raw[GUARD_TYPE]["batches"]
+    assert [e for e in w.guard_events if e.signal is Signal.guard_batch_closed] == []
+
+
+# --- wave 2 review: rejected batches and an unreadable guard state ---------------------------------
+
+
+async def _rejected_narrowed_token(w: World) -> str:
+    for name in ("anna", "ben", "cleo", "dino"):
+        w.person(name)
+    await w.tick()
+    w.directory.visible = {"anna"}
+    await w.tick()
+    await w.tick(DAY)
+    [proposal] = _proposals(w)
+    batch_id: str = proposal.payload["batch_id"]
+    ok, _ = await w.guard.reject(batch_id, "@admin:company.org")
+    assert ok
+    await w.tick()
+    assert w.mas.calls == []
+    return batch_id
+
+
+async def test_a_rejected_batch_ends_with_its_incident_and_a_genuine_deletion_is_still_offboarded() -> None:
+    """The token is fixed, but dino really was deleted meanwhile: the reject must not hold that forever."""
+    w = World(guard=True)
+    batch_id = await _rejected_narrowed_token(w)
+    w.directory.visible = None
+    dino_pk = next(pk for pk, u in w.directory.users.items() if u["username"] == "dino")
+    w.directory.delete(dino_pk)
+    for _ in range(3):
+        await w.tick(DAY)
+    assert w.mas.ops("lock") == ["dino"]
+    ended = [e for e in w.guard_events if e.payload.get("outcome") == "rejection_ended"]
+    assert [e.payload["batch_id"] for e in ended] == [batch_id]  # reported once
+
+
+async def test_a_lock_record_is_not_forgotten_while_the_user_list_is_implausible() -> None:
+    """Wave 2 review: retention read "deleted from Authentik" as final while layer 1 was tripped."""
+    w = World(guard=True)
+    for name in ("anna", "ben", "cleo"):
+        w.person(name)
+    dino = w.person("dino")
+    await w.tick()
+    w.directory.set_active(dino, False)
+    await w.tick()  # mark
+    await w.tick()  # lock
+    assert w.locked("dino")
+
+    w.directory.visible = {"anna"}  # dino is only disabled, but now looks deleted
+    for _ in range(3):
+        await w.tick(100 * DAY)
+    assert mx("dino") in w.store.ledger().entries
+    assert w.mas.ops("unlock") == []
+
+    w.directory.visible = None
+    w.directory.set_active(dino, True)  # dino comes back: onbot still knows it set the lock
+    await w.tick()
+    assert w.mas.ops("unlock") == ["dino"]
+
+
+async def test_a_step_that_became_due_after_the_plan_is_not_logged_as_waiting_for_an_admin(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    w = World(guard=True)
+    w.lc.deactivate_after_n_sec = 10
+    for name in ("anna", "ben", "cleo"):
+        w.person(name)
+    pk = w.person("dino")
+    await w.tick()
+    w.directory.set_active(pk, False)
+    await w.tick()  # mark
+
+    plan = w.manager.plan_accounts
+
+    async def plan_then_let_time_pass(snapshot: Any) -> Any:
+        planned = await plan(snapshot)
+        w.clock.now += 20  # the lock becomes due between the plan and the run
+        return planned
+
+    w.manager.plan_accounts = plan_then_let_time_pass  # type: ignore[method-assign]
+    with caplog.at_level(logging.INFO, logger="onbot.lifecycle.audit"):
+        await w.tick()
+    assert w.mas.calls == []
+    assert "DEFERRED logout of @dino:company.org" in caplog.text
+    assert "until an admin confirms" not in caplog.text
+    w.manager.plan_accounts = plan  # type: ignore[method-assign]
+    await w.tick()
+    assert w.mas.ops("lock") == ["dino"]
+
+
+async def test_an_unreadable_guard_state_holds_the_locks_of_a_rejected_batch() -> None:
+    """Starting from empty dropped the baseline and the rejection, so the narrowed token's locks ran."""
+    w = World(guard=True)
+    await _rejected_narrowed_token(w)
+    broken = {"schema_version": 1, "baseline": {}, "batches": {"x": {"bogus": 1}}}
+    w.store.raw[GUARD_TYPE] = broken
+    for _ in range(3):
+        await w.tick()
+    assert w.mas.calls == []
+    assert w.store.raw[GUARD_TYPE] == broken
+    assert [e.signal for e in w.guard_events].count(Signal.guard_state_unreadable) == 1

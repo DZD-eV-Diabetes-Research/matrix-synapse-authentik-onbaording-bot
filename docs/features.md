@@ -568,9 +568,9 @@ to a shell.
 
 - **As an ordinary user:** an announcement simply appears in your welcome / notice-board room.
 - **As an administrator:** you are invited to the control room. Typing `!announce <message>`,
-  `!status`, `!pending`, `!confirm <id>`, `!reject <id>` or `!help` does something; any message
-  *without* a `!` prefix is ignored, so admins can discuss an incident in the room without a stray
-  sentence paging the whole company.
+  `!status`, `!pending`, `!confirm <id>`, `!reject <id>`, `!guard reset` or `!help` does something;
+  any message *without* a `!` prefix is ignored, so admins can discuss an incident in the room
+  without a stray sentence paging the whole company.
 - The bot also reports into the room: destructive actions it paused (see
   [guard against mass removals](#guard-against-mass-removals)), offboarding that needs a decision
   (a frozen user, a failing step) and rooms it could not fully bring in line. A report is not
@@ -668,29 +668,45 @@ lock every account that now looks deleted.
 ### What an admin should know
 
 - **Two checks, before anything is removed.** Each pass first works out everything it would remove:
-  kicks, withdrawals of power levels Onbot granted, teardowns of rooms whose group disappeared,
-  account locks and erasures. Then:
+  kicks, withdrawals of power levels Onbot granted, lowered power levels of members who stay (for
+  example 100 to 50 when a power-level group drops out of the answer), teardowns of rooms whose group
+  disappeared, account locks and erasures. Then:
   - *Plausibility:* the number of active users in the sync scope and the number of groups mapped to
     rooms are compared with the last answer Onbot trusted. An empty answer, or a drop of more than
     `max_drop_percent` (20 % by default), pauses removals: fewer users pauses *every* removal of the
-    pass, fewer groups pauses what happens in rooms (kicks, withdrawals, teardowns) but not account
+    pass, fewer groups pauses what happens in rooms (kicks, lowered levels, teardowns) but not account
     locks, which do not depend on groups. Each number moves with every pass in which it looked
     normal, so removing people a few at a time never trips it.
   - *Volume:* more than `max_reversible_actions_per_pass` (10 by default) kicks, locks, teardowns and
-    withdrawals in one pass pauses all of them.
+    lowered or withdrawn power levels in one pass pauses all of them.
 - **Everything else goes on.** Rooms are still created and named, users still added and welcomed,
   locked users who come back still unlocked.
 - **Paused actions become a batch with a short id**, for example `k7m3qp`, posted in the admin control
   room with what dropped (from how many to how many) and who or what would be affected. In the room:
-  - `!pending` lists the open batches;
+  - `!pending` lists the open batches, rejected ones included (marked as rejected, with the time
+    they end at the latest);
   - `!confirm <id>` releases exactly that batch. It runs at once, and only what still applies is done:
     somebody who is back in Authentik meanwhile is left alone. A confirmation never covers more than
     the batch showed; actions that came up later get a batch of their own. After a confirmed drop the
     new numbers count as normal;
-  - `!reject <id>` discards the batch. Nothing in it runs, and it is not proposed again while the
-    situation lasts (for example a broken token that you are about to replace).
+  - `!reject <id>` holds the batch without running it, and it is not proposed again while the
+    situation that created it lasts (for example a broken token that you are about to replace). The
+    rejection ends when that situation is over (the numbers look plausible again, or the pass no
+    longer has too many removals with these), at the latest when the batch expires. Its actions that
+    still apply are then judged again like any others: one user who really was deleted meanwhile is
+    locked as usual, a still implausible answer pauses them in a new batch. The end is reported in
+    the room.
 - **A batch expires** after `confirmation_expiry_sec` (72 hours by default). Its actions stay paused
   meanwhile; if they still apply afterwards, a later pass proposes them again under a new id.
+- **An unreadable guard state** (the bot's account data `<reversed server name>.onbot.guard` edited
+  by hand, or written by a newer Onbot) pauses *every* removal: the guard has lost its last known
+  good numbers and the rejected batches, so it cannot judge anything. This is reported once in the
+  control room and the state is never overwritten. After checking the Authentik side, an admin runs
+  `!guard reset`: it copies the unreadable state verbatim to
+  `<reversed server name>.onbot.guard.unreadable.<unix time>` in the bot's account data, starts a new
+  state that keeps the last known good numbers where they could still be read, and runs a pass.
+  Open batches are gone after that; what still needs a confirmation is proposed again under a new
+  id.
 - **Without the admin control room** nobody can confirm. Paused actions are then only logged
   (`guard: paused ...` at warning level, each action at debug level) and stay paused; raise the limits
   if a large change is intended.

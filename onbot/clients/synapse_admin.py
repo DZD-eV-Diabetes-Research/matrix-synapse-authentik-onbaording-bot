@@ -4,7 +4,8 @@ Ported from legacy ``onbot/api_client_synapse_admin.py`` onto the async :class:`
 fixing the BATTLE_PLAN §3 bugs:
 
 * full pagination on users/rooms/media (legacy read only page 1, ``limit=None`` was a no-op);
-* ``delete_room`` now actually sends its body (legacy built it then discarded it);
+* ``delete_room`` now actually sends its body (legacy built it then discarded it), and uses the
+  asynchronous v2 API, so a long purge is neither cut off by the client timeout nor repeated;
 * ``set_room_admin`` / ``set_user_server_admin_state`` call the correct endpoints (legacy did a
   stray GET / raised ``NotImplementedError``);
 * ``room_is_blocked`` returns a plain bool instead of string-matching.
@@ -12,13 +13,15 @@ fixing the BATTLE_PLAN §3 bugs:
 
 from __future__ import annotations
 
+import asyncio
+import time
 from collections.abc import Callable
 from typing import Any
 
 import httpx
 
 from onbot.auth.token_provider import TokenProvider
-from onbot.clients.base import ApiError, BaseApiClient, resend_unless_done
+from onbot.clients.base import ApiError, BaseApiClient, may_have_been_processed, resend_unless_done
 from onbot.logging import get_logger
 
 log = get_logger(__name__)
@@ -26,6 +29,18 @@ log = get_logger(__name__)
 _DEFAULT_PAGE_SIZE = 100
 
 NextParams = Callable[[Any, dict[str, Any]], dict[str, Any] | None]
+
+# How often and how long ``delete_room`` waits for Synapse's background deletion.
+DELETE_POLL_INTERVAL_SEC = 2.0
+DELETE_WAIT_SEC = 600.0
+# Delete statuses that end a deletion (the others: scheduled, active, and the older
+# shutting_down and purging).
+_DELETE_DONE = "complete"
+_DELETE_FAILED = "failed"
+
+
+class RoomDeletionFailed(RuntimeError):
+    """Synapse reported the room deletion as failed."""
 
 
 def _next_token_params(token_key: str) -> NextParams:
@@ -205,10 +220,76 @@ class ApiClientSynapseAdmin(BaseApiClient):
         purge: bool = True,
         force_purge: bool = False,
         message: str | None = None,
+        poll_interval_sec: float = DELETE_POLL_INTERVAL_SEC,
+        wait_sec: float = DELETE_WAIT_SEC,
     ) -> dict[str, Any]:
-        # https://element-hq.github.io/synapse/latest/admin_api/rooms.html#delete-room-api
+        """Delete a room through the asynchronous v2 API and wait until Synapse reports the outcome.
+
+        v1 ran the whole purge inside the request: a purge longer than the client timeout ended in a
+        read timeout, and the automatic retry failed while the first deletion went on, so a done
+        teardown was reported as failed. v2 answers at once with a delete id, which is polled.
+
+        The DELETE is not retried blindly. When it fails in a way that may hide a success, or with
+        400 because a deletion of this room is already running (an earlier pass, or a timed-out
+        attempt), the room's own delete status is read and that deletion is awaited instead.
+        Returns the final status; a deletion still running after ``wait_sec`` is left to Synapse
+        (logged, not an error). Raises :class:`RoomDeletionFailed` when Synapse reports a failure.
+        https://element-hq.github.io/synapse/latest/admin_api/rooms.html#version-2-new-version
+        """
         body: dict[str, Any] = {"block": block, "purge": purge, "force_purge": force_purge}
         if message:
             body["message"] = message
-        result: dict[str, Any] = await self.delete_json(f"v1/rooms/{room_id}", json_body=body)
-        return result
+        try:
+            started = await self.request_json(
+                "DELETE", f"v2/rooms/{room_id}", json_body=body, idempotent=False
+            )
+            delete_id = str(started["delete_id"])
+        except (ApiError, httpx.TransportError) as exc:
+            already_running = isinstance(exc, ApiError) and exc.status_code == 400
+            if not (already_running or may_have_been_processed(exc)):
+                raise
+            existing = await self._existing_room_deletion(room_id)
+            if existing is None:
+                raise
+            log.warning(
+                "deleting room %s failed (%s), but a deletion of it is under way; waiting for it",
+                room_id,
+                exc,
+            )
+            delete_id = existing
+        return await self._wait_for_room_deletion(room_id, delete_id, poll_interval_sec, wait_sec)
+
+    async def _existing_room_deletion(self, room_id: str) -> str | None:
+        """The delete id of a deletion of ``room_id`` that is running or done, if Synapse knows one."""
+        try:
+            result = await self.get_json(f"v2/rooms/{room_id}/delete_status")
+        except ApiError as exc:
+            if exc.status_code == 404:
+                return None  # "No delete task for room_id ... found"
+            raise
+        for entry in (result or {}).get("results") or []:
+            if entry.get("status") != _DELETE_FAILED and entry.get("delete_id"):
+                return str(entry["delete_id"])
+        return None
+
+    async def _wait_for_room_deletion(
+        self, room_id: str, delete_id: str, poll_interval_sec: float, wait_sec: float
+    ) -> dict[str, Any]:
+        sleep = self._sleep or asyncio.sleep
+        deadline = time.monotonic() + wait_sec
+        while True:
+            status: dict[str, Any] = await self.get_json(f"v2/rooms/delete_status/{delete_id}")
+            state = status.get("status")
+            if state == _DELETE_DONE:
+                return status
+            if state == _DELETE_FAILED:
+                raise RoomDeletionFailed(f"Synapse could not delete room {room_id}: {status.get('error')}")
+            if time.monotonic() >= deadline:
+                log.warning(
+                    "deletion of room %s is still %s after %ds; Synapse finishes it on its own",
+                    room_id,
+                    state,
+                    wait_sec,
+                )
+                return status
+            await sleep(poll_interval_sec)

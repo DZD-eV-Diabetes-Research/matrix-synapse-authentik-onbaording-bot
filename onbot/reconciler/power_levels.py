@@ -237,7 +237,7 @@ class PowerLevelPlan:
     released: tuple[str, ...]
     """Users whose bot-granted entry a human changed: dropped from the record, left alone."""
     held: tuple[str, ...] = ()
-    """Users whose withdrawal is paused for the destructive-action guard (see :func:`hold_withdrawals`)."""
+    """Users whose withdrawal or demotion is paused for the guard (see :func:`hold_withdrawals`)."""
 
 
 def plan_power_levels(
@@ -318,20 +318,34 @@ def hold_withdrawals(
     *,
     users_default: int,
 ) -> PowerLevelPlan:
-    """Keep every withdrawal in ``plan`` except those in ``withdraw`` (D13).
+    """Keep every withdrawal and demotion in ``plan`` except those in ``withdraw`` (D13).
 
-    A withdrawal is a destructive action the guard decides on, so the plan is first made without
-    them: each held user keeps their current entry and stays in the bot's record (an entry that
-    predates the record is recorded at its current level), so it can still be withdrawn once the guard
-    permits it. The held MXIDs are listed in :attr:`PowerLevelPlan.held`.
+    Taking a level away is a destructive action the guard decides on, whether the entry goes
+    (a withdrawal) or a still-desired user is set lower (a demotion, for example 100 to 50 when a
+    power-level group drops out of the Authentik answer). So the plan is first made without them: each
+    held user keeps their current entry. A held withdrawal stays in the bot's record (an entry that
+    predates the record is recorded at its current level), so it can still be withdrawn once the
+    guard permits it; a held demotion keeps the record as it was. The held MXIDs are listed in
+    :attr:`PowerLevelPlan.held`.
     """
-    held = sorted(m for m in current_users if m not in plan.users and m not in withdraw)
+
+    def lowered(mxid: str) -> bool:
+        if mxid not in plan.users:
+            return True
+        new = _as_level(plan.users[mxid], users_default)
+        return new < _as_level(current_users[mxid], users_default)
+
+    held = sorted(m for m in current_users if m not in withdraw and lowered(m))
     if not held:
         return plan
     users = dict(plan.users)
     granted = dict(plan.granted)
     for mxid in held:
+        demotion = mxid in plan.users
         users[mxid] = current_users[mxid]
         level = recorded.get(mxid)
-        granted[mxid] = level if level is not None else _as_level(current_users[mxid], users_default)
+        if demotion and mxid not in recorded:
+            granted.pop(mxid, None)  # a level the bot did not set stays somebody else's
+        else:
+            granted[mxid] = level if level is not None else _as_level(current_users[mxid], users_default)
     return replace(plan, users=users, granted=granted, held=tuple(held))
