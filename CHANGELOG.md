@@ -58,6 +58,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   This `CHANGELOG.md`.
 
 ### Changed
+- **`!reject <id>` holds a batch only while the condition that created it lasts** (review W2R, D13),
+  at the latest until it expires; then its actions are judged again and the end is reported.
+  `!pending` and `!status` list rejected batches.
 - **`admin_room.enabled` now defaults to `true` (breaking for configs without admins, review W2F,
   D19):** the admin room and `!confirm` are available out of the box. An enabled admin room needs at
   least one admin in `admin_room.admin_user_ids` or `admin_room.authentik_group_pks_granting_bot_admin`,
@@ -146,6 +149,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   troubleshooting.
 
 ### Fixed
+- **An unreadable lifecycle ledger is reported once again** instead of every pass failing (a
+  regression of the guard work, review W2R).
+- **Room deletion uses Synapse's asynchronous v2 API and waits for it,** so a long purge is no longer
+  reported as a failed teardown.
+- **A lock or erase that became due after the pass was planned is logged as deferred,** not as waiting
+  for an admin.
 - **Media deletion removes all of a user's uploads** over several passes, not just the first 100
   (review S4, LIF-12).
 - **A freeze from `authentik_user_ignore_list` no longer ends when the user is deleted in Authentik.**
@@ -211,6 +220,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   model forbids unknown keys, so remove these two settings if present.
 
 ### Security
+- **An unreadable guard state fails closed (review W2R):** it no longer starts empty (which dropped
+  the last known good counts and rejected batches, so implausible removals could run). It pauses
+  every destructive action, is reported once in the admin room and is never overwritten. `!guard
+  reset` replaces it and keeps a verbatim copy in the bot's account data.
+- **Retention no longer forgets lock records while the guard distrusts the pass's user list.**
+- **Power-level demotions of members who stay** (for example 100 to 50 when a power-level group drops
+  out) go through the guard like withdrawals.
 - **No fake offboarding on a MAS-backed homeserver without `mas_admin` (review W2F, LIF-09, D19):**
   onbot used to "lock" users through the Synapse admin API there, which left every MAS session valid.
   It now refuses to lock or erase, logs it at ERROR and reports it once in the admin room. Disabled

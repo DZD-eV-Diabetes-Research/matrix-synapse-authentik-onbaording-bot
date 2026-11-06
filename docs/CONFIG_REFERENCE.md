@@ -2769,7 +2769,9 @@ max_reversible_actions_per_pass: 50
 
 How long a paused batch waits for `!confirm <id>` or `!reject <id>` before it
 expires. Its actions stay paused meanwhile. If they still apply after it expired, a
-later pass proposes them again under a new id. The default is 72 hours.
+later pass proposes them again under a new id. A rejected batch ends at this expiry at
+the latest (earlier when the condition that created it is gone); its remaining
+actions are then judged again. The default is 72 hours.
 
 | Property | Value |
 |---|---|
