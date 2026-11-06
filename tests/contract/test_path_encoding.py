@@ -165,7 +165,7 @@ async def test_an_absolute_url_is_followed_only_to_the_clients_own_origin() -> N
     client = _matrix()
     try:
         assert await client.get_json("https://matrix.test/_matrix/media/v3/config") == {}
-        with pytest.raises(ValueError, match="evil.test"):
+        with pytest.raises(ValueError, match=r"evil\.test"):
             await client.get_json("https://evil.test/_matrix/media/v3/config")
         with pytest.raises(ValueError):
             await client.get_json("http://matrix.test/_matrix/media/v3/config")  # scheme downgrade
