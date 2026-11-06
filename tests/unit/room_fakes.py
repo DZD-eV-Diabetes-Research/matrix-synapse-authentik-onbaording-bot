@@ -31,9 +31,10 @@ def marker_content(room_type: OnbotRoomType, group_id: str | None = None) -> dic
     if room_type is OnbotRoomType.visitor_lobby:
         assert group_id is not None
         return dump_room_state(VisitorLobbyRoomState(group_id=group_id))
+    # The configured aliases default to the config defaults.
     if room_type is OnbotRoomType.space:
-        return dump_room_state(SpaceRoomState())
-    return dump_room_state(AdminRoomState())
+        return dump_room_state(SpaceRoomState(configured_alias=group_id or "OnBotSpace"))
+    return dump_room_state(AdminRoomState(configured_alias=group_id or "onbot-admin"))
 
 
 def room_state(

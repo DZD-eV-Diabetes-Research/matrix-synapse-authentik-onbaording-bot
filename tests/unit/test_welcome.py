@@ -467,7 +467,7 @@ class _SpaceIdentity:
     async def identify(self, room_id: str) -> RoomIdentity | None:
         if room_id not in self.trusted:
             return None
-        return RoomIdentity(room_id=room_id, key=RoomKey(OnbotRoomType.space), locked=True)
+        return RoomIdentity(room_id=room_id, key=RoomKey(OnbotRoomType.space, name="OnBotSpace"), locked=True)
 
 
 async def test_the_dm_goes_into_the_space_the_reconciler_found() -> None:

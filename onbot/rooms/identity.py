@@ -46,8 +46,10 @@ from onbot.logging import get_logger
 from onbot.models import MatrixRoom
 from onbot.reconciler.state import (
     MANAGED_ROOM_TYPES,
+    AdminRoomState,
     GroupRoomState,
     OnbotRoomType,
+    SpaceRoomState,
     VisitorLobbyRoomState,
     event_type_name,
     parse_room_state,
@@ -70,6 +72,9 @@ class RoomKey:
 
     kind: OnbotRoomType
     group_id: str | None = None
+    # The configured alias localpart of a space or control room (see SpaceRoomState); `None` in a
+    # marker of an older version.
+    name: str | None = None
 
     def describe(self) -> str:
         if self.kind is OnbotRoomType.group_room:
@@ -77,9 +82,9 @@ class RoomKey:
         if self.kind is OnbotRoomType.visitor_lobby:
             return f"visitor lobby of group {self.group_id}"
         if self.kind is OnbotRoomType.space:
-            return "space"
+            return f"space {self.name}" if self.name else "space"
         if self.kind is OnbotRoomType.admin_room:
-            return "admin control room"
+            return f"admin control room {self.name}" if self.name else "admin control room"
         return f"{self.kind.value} room"
 
 
@@ -154,7 +159,8 @@ def classify_room(
         identity.problem = f"has an unreadable onbot {room_type.value} marker"
         return identity
     group_id = parsed.group_id if isinstance(parsed, GroupRoomState | VisitorLobbyRoomState) else None
-    identity.key = RoomKey(room_type, group_id)
+    name = parsed.configured_alias if isinstance(parsed, SpaceRoomState | AdminRoomState) else None
+    identity.key = RoomKey(room_type, group_id, name)
     power = (by_type.get(POWER_LEVELS_EVENT_TYPE) or {}).get("content") or {}
     identity.locked = markers_locked(power, server_name, bot_id, room_version=room_version)
     return identity
@@ -360,7 +366,7 @@ class RoomIdentityResolver:
                 + (f" (creator {creator})" if creator else "")
                 + "; not adopted, and no second room is created (SEC-02)"
             )
-        if identity.key != key or identity.problem is not None:
+        if not _claims_role(identity, key) or identity.problem is not None:
             what = identity.problem or (
                 f"is the {identity.key.describe()}" if identity.key else "carries no onbot marker"
             )
@@ -369,6 +375,8 @@ class RoomIdentityResolver:
                 "second room is created"
             )
         # A marked room of the bot's at the configured alias, from before markers were locked.
+        if identity.key != key:
+            await self._name(identity, key)
         await self._lock(identity)
         log.warning(
             "room identity: adopted %s as the %s (found at its alias %s); from now on it is found by "
@@ -421,6 +429,13 @@ class RoomIdentityResolver:
             )
         return await self._resolved(index, new)
 
+    async def _name(self, identity: RoomIdentity, key: RoomKey) -> None:
+        """Record the configured alias in a legacy space or control room marker that lacks it."""
+        assert identity.marker_type is not None
+        content = {**(identity.marker_content or {}), "configured_alias": key.name}
+        await self.writer.put_room_state(identity.room_id, identity.marker_type, content)
+        identity.marker_content, identity.key = content, key
+
     async def _lock(self, identity: RoomIdentity) -> None:
         await lock_markers(
             self.writer,
@@ -438,6 +453,14 @@ class RoomIdentityResolver:
             return
         self._reported.add(room_id)
         log.warning("room identity: %s", message)
+
+
+def _claims_role(identity: RoomIdentity, key: RoomKey) -> bool:
+    """Whether ``identity``'s marker claims ``key`` (a legacy marker without a configured alias does)."""
+    if identity.key == key:
+        return True
+    legacy = identity.key is not None and identity.key.name is None and key.name is not None
+    return legacy and identity.key == RoomKey(key.kind, key.group_id)
 
 
 def stray_claims(index: RoomIndex) -> list[RoomIdentity]:

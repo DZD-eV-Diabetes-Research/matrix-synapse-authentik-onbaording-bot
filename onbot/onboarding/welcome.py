@@ -314,7 +314,8 @@ class WelcomeService:
         if candidate is None:
             return None
         identity = await self.rooms.identify(candidate)
-        if identity is None or not identity.trusted or identity.key != RoomKey(OnbotRoomType.space):
+        wanted = RoomKey(OnbotRoomType.space, name=self.config.create_matrix_rooms_in_a_matrix_space.alias)
+        if identity is None or not identity.trusted or identity.key != wanted:
             log.warning(
                 "the space alias %s points at %s, which is not the bot's space; not placing DMs there",
                 self._space_alias,

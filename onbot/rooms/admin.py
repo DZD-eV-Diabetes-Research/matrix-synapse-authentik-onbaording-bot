@@ -150,7 +150,7 @@ class AdminRoomProvisioner:
         room, or two rooms claim to be it: that needs an admin. A problem that may clear by itself (bot
         rooms that could not be read) raises, so the startup step tries again.
         """
-        key = RoomKey(OnbotRoomType.admin_room)
+        key = RoomKey(OnbotRoomType.admin_room, name=self.cfg.alias)
         resolution = await self.rooms.resolve(await self.rooms.scan(), key, self.alias)
         if resolution.problem is not None:
             if resolution.transient:
@@ -171,7 +171,7 @@ class AdminRoomProvisioner:
         room_id = await create_managed_room(
             self.client,
             ManagedRoomSpec(
-                marker=AdminRoomState(),
+                marker=AdminRoomState(configured_alias=self.cfg.alias),
                 alias_localpart=self.cfg.alias,
                 name=self.cfg.name,
                 topic=self.cfg.topic,
@@ -224,7 +224,7 @@ class AdminRoomProvisioner:
     async def _load_state(self, room_id: str) -> AdminRoomState:
         content = await self.client.get_room_state_event(room_id, self._state_event_type)
         if content is None:
-            return AdminRoomState()
+            return AdminRoomState(configured_alias=self.cfg.alias)
         parsed = parse_room_state(OnbotRoomType.admin_room, content)
         assert isinstance(parsed, AdminRoomState)
         return parsed

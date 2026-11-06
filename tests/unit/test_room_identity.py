@@ -398,3 +398,39 @@ async def test_the_lock_never_lowers_an_existing_level(version: str) -> None:
     await rooms.resolve(await rooms.scan(), G1, G1_ALIAS)
     await rooms.resolve(await rooms.scan(), G1, G1_ALIAS)
     assert len(server.power_writes) == 1
+
+
+# --- the space and the control room: one per configuration ----------------------------------------
+
+
+async def test_spaces_of_two_configurations_do_not_conflict() -> None:
+    server = FakeServer()
+    server.add("!a", room_state(OnbotRoomType.space, "SpaceA"))
+    server.add("!b", room_state(OnbotRoomType.space, "SpaceB"))
+    rooms = _resolver(server)
+    index = await rooms.scan()
+    resolution = await rooms.resolve(
+        index, RoomKey(OnbotRoomType.space, name="SpaceB"), "#SpaceB:company.org"
+    )
+    assert resolution.room is not None and resolution.room.room_id == "!b"
+
+
+async def test_a_legacy_space_is_adopted_by_alias_and_learns_its_configured_alias() -> None:
+    server = FakeServer()
+    legacy = room_state(
+        OnbotRoomType.space, content={"schema_version": 1, "room_type": "space"}, locked=False
+    )
+    server.add("!space", legacy, alias="#OnBotSpace:company.org")
+    key = RoomKey(OnbotRoomType.space, name="OnBotSpace")
+    rooms = _resolver(server)
+
+    resolution = await rooms.resolve(await rooms.scan(), key, "#OnBotSpace:company.org")
+    assert resolution.adopted and resolution.room is not None and resolution.room.room_id == "!space"
+    ((_room, event_type, content),) = server.state_writes
+    assert event_type == "org.company.onbot.space" and content["configured_alias"] == "OnBotSpace"
+
+    # A fresh process finds it by marker alone.
+    del server.aliases["#OnBotSpace:company.org"]
+    fresh = _resolver(server)
+    resolution = await fresh.resolve(await fresh.scan(), key, "#OnBotSpace:company.org")
+    assert resolution.room is not None and resolution.room.room_id == "!space"

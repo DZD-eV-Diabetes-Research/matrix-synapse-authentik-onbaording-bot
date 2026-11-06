@@ -515,7 +515,8 @@ class ReconcilerEngine:
         if not cfg.enabled:
             return None
         target_alias = build_canonical(cfg.alias, self.server_name, "#")
-        resolution = await self.rooms.resolve(index, RoomKey(OnbotRoomType.space), target_alias)
+        key = RoomKey(OnbotRoomType.space, name=cfg.alias)
+        resolution = await self.rooms.resolve(index, key, target_alias)
         if resolution.problem is not None:
             raise ConfigurationError(f"space {target_alias}: {resolution.problem}")
         if resolution.room is not None:
@@ -530,7 +531,7 @@ class ReconcilerEngine:
             create = cfg.create_matrix_space_if_not_exists
             room_id = await self.effectors.create_managed_room(
                 ManagedRoomSpec(
-                    marker=SpaceRoomState(),
+                    marker=SpaceRoomState(configured_alias=cfg.alias),
                     alias_localpart=cfg.alias,
                     name=create.name,
                     topic=create.topic,
@@ -539,7 +540,7 @@ class ReconcilerEngine:
                 )
             )
             space = MatrixRoom(room_id=room_id, canonical_alias=target_alias, is_space=True)
-            self.rooms.register(space, RoomKey(OnbotRoomType.space))
+            self.rooms.register(space, key)
         self.rooms.space_id = space.room_id
         return space
 
@@ -577,7 +578,7 @@ class ReconcilerEngine:
             space.room_id,
             OnbotRoomType.space,
             space_cfg.avatar_url,
-            SpaceRoomState(),
+            SpaceRoomState(configured_alias=self.config.create_matrix_rooms_in_a_matrix_space.alias),
         )
 
     async def _converge_rooms(

@@ -51,8 +51,15 @@ class _OnbotRoomState(BaseModel):
     global_admins: list[str] = Field(default_factory=list)
 
 
+# The space and the admin control room exist once per configuration, not once per group. Their marker
+# records the alias localpart the configuration gave them when the bot created or adopted them, so the
+# rooms of two configurations on one homeserver (a test stack, a second deployment) never claim the
+# same role. Markers from before this field read as `None` and are adopted once by alias (D20).
+
+
 class SpaceRoomState(_OnbotRoomState):
     room_type: Literal[OnbotRoomType.space] = OnbotRoomType.space
+    configured_alias: str | None = None
 
 
 class GroupRoomState(_OnbotRoomState):
@@ -101,6 +108,7 @@ class AdminRoomState(_OnbotRoomState):
     """
 
     room_type: Literal[OnbotRoomType.admin_room] = OnbotRoomType.admin_room
+    configured_alias: str | None = None
     help_text_hash: str | None = None
     help_event_id: str | None = None
 
