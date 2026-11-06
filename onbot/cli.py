@@ -78,7 +78,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Send a message to every user's onboarding room.",
         description=(
             "Send one message, as a notice, into the read-only onboarding room of every user the "
-            "bot has onboarded. Exits non-zero if any room could not be reached."
+            "bot maps from Authentik and has onboarded (users who left their room are skipped). "
+            "Reads Authentik to know who that is. Exits non-zero if any room could not be reached "
+            "or nobody can be mapped."
         ),
     )
     bcast.add_argument("message", help="The message to send, e.g. 'Maintenance at 22:00 UTC'.")

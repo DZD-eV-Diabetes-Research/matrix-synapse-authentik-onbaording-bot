@@ -29,8 +29,9 @@ Process lifecycle (review findings RUN-02, RUN-09, RUN-12, RUN-13):
 * **One-shot commands only do what they need.** ``reconcile-once`` runs every startup step once
   (device, rate-limit override, bot avatar, admin room and its re-invites), because a cron-driven
   deployment never runs the service and still needs all of them, and then one pass. ``broadcast``
-  builds only the Matrix clients, registers the device and lifts the rate limit. Neither starts the
-  sync stream, and neither writes the heartbeat file.
+  only registers the device and lifts the rate limit; it reads Authentik and the identity record to
+  know who the mapped users are (SEC-06), but runs no pass. Neither starts the sync stream, and
+  neither writes the heartbeat file.
 * **``reconcile-once --dry-run`` changes nothing** (MNT-09). It reads the real state and logs every
   change the pass would make, including what the destructive-action guard would pause, but every
   write goes to a recording wrapper, offboarding runs in its own dry-run mode, and no bookkeeping
@@ -435,7 +436,8 @@ async def build_app(
         welcome = WelcomeService(matrix, config, admin=admin, media=media, rooms=rooms)
         # Not started here: the welcome flow is subscribed by the "onboarding" startup step.
         listener = OnboardingListener(matrix, welcome, config, events)
-        broadcast = BroadcastService(matrix, config)
+        # Broadcasts reach the users the last pass mapped, nobody else (SEC-06).
+        broadcast = BroadcastService(matrix, config, recipients=listener.mapped_users)
         # One sync connection, fanned out to every consumer of the event stream (see onbot/sync.py).
         pump = SyncPump(matrix, heartbeat=heartbeat)
         # Watches Authentik cheaply and wakes the engine on a real change, so the engine's own tick
@@ -596,17 +598,21 @@ async def run_reconcile_once(config: OnbotConfig, *, dry_run: bool = False) -> N
 async def run_broadcast(config: OnbotConfig, message: str) -> int:
     """Send one announcement to every managed direct room (``onbot broadcast``).
 
-    Returns a shell exit code: non-zero when any room refused the message, so a script can tell a
-    partial delivery from a clean one. Builds only the Matrix clients it needs.
+    Returns a shell exit code: non-zero when any room refused the message, or the broadcast was
+    refused as a whole, so a script can tell a partial delivery from a clean one. Runs no pass, but
+    maps the users the way a pass would (Authentik, the recorded bindings, MAS), read-only, so the
+    announcement reaches the same accounts as ``!announce`` (SEC-06). Starts only the startup steps a
+    send needs.
     """
-    async with AsyncExitStack() as stack:
-        matrix, admin = _matrix_clients(stack, config)
+    async with build_app(config) as app:
         await StartupSupervisor(
             [
-                StartupStep("device registration", matrix.ensure_device_registered),
-                StartupStep("rate-limit override", lambda: _relax_bot_ratelimit(admin, config)),
+                StartupStep("device registration", app.matrix.ensure_device_registered),
+                StartupStep("rate-limit override", app.relax_ratelimit),
             ]
         ).run_once()
-        result = await BroadcastService(matrix, config).broadcast(message)
+        result = await BroadcastService(app.matrix, config, recipients=app.engine.mapped_mxids).broadcast(
+            message
+        )
     print(result.summary())
-    return 1 if result.failures else 0
+    return 1 if result.failures or result.refused else 0

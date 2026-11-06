@@ -668,6 +668,14 @@ to a shell.
 - **Broadcasts are fail-soft.** They go out as quiet `m.notice` messages, rate-limited across the
   fan-out, and one unreachable room is reported rather than allowed to silence the announcement for
   everyone else. The `onbot broadcast` CLI command does the same job without a room.
+- **Broadcasts reach mapped users who are still in their notice board.** Only users the reconciler
+  maps (the same set that gets welcomed) are announced to, so an account that is not in Authentik
+  never receives one, even when an older Onbot gave it a notice board. `!announce` uses the set of
+  the last pass and is refused until the first pass has mapped anybody; `onbot broadcast` reads
+  Authentik and the identity record itself (read-only), so it needs Authentik reachable. A user who
+  left their notice board is skipped and counted apart ("1 skipped"), so the "sent to" count is the
+  number of users who can read the message. Notice boards of deactivated (erased) accounts and of
+  accounts on other homeservers are dropped from the bot's `m.direct` on the next pass.
 
 **Settings:** all the fields under [`admin_room`](CONFIG_REFERENCE.md). The rationale for admitting a
 command-reading room at all is in [ADR-0010](adr/0010-admin-control-room.md).

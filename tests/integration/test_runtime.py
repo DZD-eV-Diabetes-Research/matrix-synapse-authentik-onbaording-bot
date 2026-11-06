@@ -108,7 +108,9 @@ async def test_pump_recovers_from_an_unknown_position_and_the_control_room_answe
     assert rejected.value.status_code == 400
     assert rejected.value.payload["errcode"] == "M_UNKNOWN_POS"
 
-    handler = ControlRoomHandler(matrix_client, config, BroadcastService(matrix_client, config), resolver)
+    handler = ControlRoomHandler(
+        matrix_client, config, BroadcastService(matrix_client, config, recipients=S.recipients()), resolver
+    )
     await handler.start(control_room)
     pump = SyncPump(matrix_client)
     pump.register(handler)

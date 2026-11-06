@@ -24,6 +24,7 @@ import hashlib
 import os
 import re
 import secrets
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import parse_qs, quote, urlencode, urljoin, urlparse
@@ -392,6 +393,16 @@ def uniq(prefix: str) -> str:
 
 
 DEFAULT_PASSWORD = "onbot-Compl3x-Pw-123"
+
+
+def recipients(*mxids: str) -> Callable[[], Awaitable[frozenset[str] | None]]:
+    """A broadcast recipient source naming exactly ``mxids``, standing in for the users the last
+    reconcile pass mapped (the service hands the broadcast that set, SEC-06)."""
+
+    async def source() -> frozenset[str] | None:
+        return frozenset(mxids)
+
+    return source
 
 
 def whoami_status(access_token: str) -> int:

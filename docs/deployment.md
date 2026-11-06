@@ -62,7 +62,7 @@ The image runs `onbot run` by default. You can override the command to run any o
 onbot run               # long-running service: reconcile loop + event-driven onboarding (default)
 onbot reconcile-once    # one idempotent reconcile pass, then exit
 onbot reconcile-once --dry-run  # log what one pass would change, change nothing
-onbot broadcast "..."   # send one notice to every user's onboarding room; exit 1 if a room failed
+onbot broadcast "..."   # send one notice to every mapped user's onboarding room; exit 1 if a room failed or nobody is mapped
 onbot generate-config   # print a minimal config template (config.example.yml is the rich one)
 onbot healthcheck       # is the running service alive? reads its heartbeat file; exit 0 healthy, 1 not
 onbot healthcheck --deep  # probe Synapse/Authentik/MAS with the real credentials; exit 0 healthy, 1 not

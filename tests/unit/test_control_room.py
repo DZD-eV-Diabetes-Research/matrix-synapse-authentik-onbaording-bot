@@ -344,6 +344,19 @@ async def test_status_reports_version_reconcile_time_and_room_count() -> None:
     assert "managed rooms: 2" in body
 
 
+async def test_status_without_mapped_users_says_the_room_count_is_unknown() -> None:
+    from onbot.admin.broadcast import RecipientsUnknown
+
+    class _Unmapped(_FakeBroadcast):
+        async def target_rooms(self) -> dict[str, str]:
+            raise RecipientsUnknown("not yet")
+
+    client = _FakeClient()
+    await _run(_handler(client, _Unmapped()), _message("!status"))
+
+    assert "managed rooms: unknown until a pass has mapped the users" in client.sends[0][1]
+
+
 async def test_status_before_the_first_reconcile_says_so() -> None:
     client, broadcast = _FakeClient(), _FakeBroadcast()
 

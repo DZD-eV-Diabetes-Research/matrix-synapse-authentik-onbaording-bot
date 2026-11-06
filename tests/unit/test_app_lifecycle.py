@@ -457,6 +457,14 @@ async def test_broadcast_touches_only_what_a_broadcast_needs() -> None:
         router.get(f"{HS}/_matrix/client/v3/user/@bot:example.test/account_data/m.direct").respond(
             200, json={}
         )
+        # Who the mapped users are (SEC-06): the accounts, the directory and the recorded bindings.
+        router.get(f"{HS}/_synapse/admin/v2/users").respond(200, json={"users": [], "total": 0})
+        router.get("https://authentik.test/api/v3/core/users/").respond(
+            200, json={"results": [], "pagination": {"count": 0, "next": 0}}
+        )
+        router.get(
+            f"{HS}/_matrix/client/v3/user/@bot:example.test/account_data/test.example.onbot.known_users"
+        ).respond(200, json={})
 
         assert await run_broadcast(config, "hello") == 0
         called = _called_paths(router)
@@ -465,8 +473,30 @@ async def test_broadcast_touches_only_what_a_broadcast_needs() -> None:
         "GET /_matrix/client/v3/account/whoami",
         "POST /_matrix/client/v3/keys/upload",
         "POST /_synapse/admin/v1/users/@bot:example.test/override_ratelimit",
+        "GET /_synapse/admin/v2/users",
+        "GET /api/v3/core/users/",
+        "GET /_matrix/client/v3/user/@bot:example.test/account_data/test.example.onbot.known_users",
         "GET /_matrix/client/v3/user/@bot:example.test/account_data/m.direct",
     }
+
+
+async def test_broadcast_without_user_sync_is_refused_and_fails_the_command(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config = _config()
+    config.sync_authentik_users_with_matrix_rooms.enabled = False
+    with respx.mock(assert_all_mocked=False, assert_all_called=False) as router:
+        router.get(f"{HS}/_matrix/client/v3/account/whoami").respond(
+            200, json={"user_id": "@bot:example.test", "device_id": "DEV"}
+        )
+        router.get(f"{HS}/_synapse/admin/v2/users").respond(200, json={"users": [], "total": 0})
+        router.get(
+            f"{HS}/_matrix/client/v3/user/@bot:example.test/account_data/test.example.onbot.known_users"
+        ).respond(200, json={})
+
+        assert await run_broadcast(config, "hello") == 1
+
+    assert capsys.readouterr().out.startswith("not sent:")
 
 
 async def test_reconcile_once_runs_every_startup_step_before_its_pass(

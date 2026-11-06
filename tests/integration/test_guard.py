@@ -140,7 +140,7 @@ async def test_a_narrowed_token_pauses_everything_until_an_admin_confirms(
     handler = ControlRoomHandler(
         matrix_client,
         config,
-        BroadcastService(matrix_client, config),
+        BroadcastService(matrix_client, config, recipients=S.recipients()),
         AdminResolver(authentik_client, config, ttl_sec=0),
         guard=guard,
     )
@@ -236,7 +236,7 @@ async def test_three_erasures_wait_for_a_confirmation_in_the_admin_room(
     handler = ControlRoomHandler(
         matrix_client,
         config,
-        BroadcastService(matrix_client, config),
+        BroadcastService(matrix_client, config, recipients=S.recipients()),
         AdminResolver(authentik_client, config, ttl_sec=0),
         guard=guard,
     )
