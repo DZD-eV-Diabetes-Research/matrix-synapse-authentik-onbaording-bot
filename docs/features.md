@@ -517,6 +517,7 @@ within.
   catches that drop and pauses every lock and erasure until an administrator confirms. It also
   limits how many accounts one pass may lock, which matters most when you switch `dry_run` off after
   a long dry run: everybody marked in the meantime would otherwise be locked in the first live pass.
+  Erasures are irreversible, so from three in one pass on they wait for a confirmation as well.
   To see that pass before it happens, set `dry_run: false` and run `onbot reconcile-once --dry-run`
   first: it lists the locks and what the guard would pause, and changes nothing.
 - **Leaving the scope freezes.** A user who is being offboarded (marked or locked) but leaves the sync
@@ -634,7 +635,8 @@ that nobody owns.
   onboarding notice boards — are structurally out of reach.
 - **Deletion is a further, irreversible step.** `delete_disabled_rooms` (off by default) also deletes
   the room through the Synapse admin API instead of only blocking it, destroying its history for good.
-  Leave it off unless you are sure.
+  Leave it off unless you are sure. From three deletions in one pass on, they wait for an
+  administrator's `!confirm` (see [guard against mass removals](#guard-against-mass-removals)).
 - A group's [visitor lobby](#visitor-lobby) is torn down together with its group room, so a blocked
   room is never left beside a still-open lobby.
 - **Teardowns go through the guard.** If Authentik suddenly returns no groups, or far fewer than
@@ -667,10 +669,10 @@ lock every account that now looks deleted.
 
 ### What an admin should know
 
-- **Two checks, before anything is removed.** Each pass first works out everything it would remove:
+- **Three checks, before anything is removed.** Each pass first works out everything it would remove:
   kicks, withdrawals of power levels Onbot granted, lowered power levels of members who stay (for
   example 100 to 50 when a power-level group drops out of the answer), teardowns of rooms whose group
-  disappeared, account locks and erasures. Then:
+  disappeared and their deletion, account locks and erasures. Then:
   - *Plausibility:* the number of active users in the sync scope and the number of groups mapped to
     rooms are compared with the last answer Onbot trusted. An empty answer, or a drop of more than
     `max_drop_percent` (20 % by default), pauses removals: fewer users pauses *every* removal of the
@@ -679,6 +681,12 @@ lock every account that now looks deleted.
     normal, so removing people a few at a time never trips it.
   - *Volume:* more than `max_reversible_actions_per_pass` (10 by default) kicks, locks, teardowns and
     lowered or withdrawn power levels in one pass pauses all of them.
+  - *Irreversible actions:* `confirm_irreversible_actions_from` (3 by default) or more account
+    erasures and room deletions in one pass pause all of them; one or two run on their own. The batch
+    report marks them as irreversible. Once an erasure ran, the deletion of the account's media that
+    continues over later passes needs no new confirmation. A room is only deleted in a pass that also
+    closes it (blocks it and kicks its members): while that closing waits for a confirmation, so does
+    the deletion, even one already confirmed.
 - **Everything else goes on.** Rooms are still created and named, users still added and welcomed,
   locked users who come back still unlocked.
 - **Paused actions become a batch with a short id**, for example `k7m3qp`, posted in the admin control
