@@ -60,7 +60,7 @@ synapse_server:
   server_name: company.org                  # your Matrix domain (the part after the ':')
   server_url: https://internal.matrix       # how the bot reaches Synapse (an internal URL is fine)
   bot_user_id: "@welcome-bot:company.org"
-  bot_access_token: syt_REPLACE_ME          # or an `oauth2:` block instead
+  bot_access_token: syt_REPLACE_ME          # a MAS compatibility token (scripts/provision-bot-account.sh)
 
 authentik_server:
   url: https://authentik.company.org/

@@ -12,9 +12,9 @@ not care which is in use:
   of MAS and mints short-lived access tokens via the ``client_credentials`` grant,
   transparently refreshing them before they expire (using the ``refresh_token`` grant
   when MAS returns a refresh token, otherwise a fresh ``client_credentials`` exchange).
-  Used for the MAS admin API (``mas_admin``). For the Synapse APIs
-  (``synapse_server.oauth2``) it does not work with MAS 0.14: MAS refuses the Matrix API
-  and Synapse admin scopes for this grant (``tests/integration/test_http_layer.py``).
+  Used for the MAS admin API (``mas_admin``) only. The Synapse APIs need the static
+  token: MAS refuses the Matrix API and Synapse admin scopes for this grant, which is why
+  ``synapse_server.oauth2`` was removed (RUN-11).
 
 Both satisfy the :class:`TokenProvider` protocol (``get_token()``, plus ``invalidate()`` for a
 token the server rejected), which :class:`~onbot.clients.base.BaseApiClient` calls per request, so

@@ -7,8 +7,11 @@
 * RUN-14: the totals the pagination check relies on are present in the real Authentik and Synapse
   answers, and a listing read one entry per page passes the check.
 * LIF-10: the deep healthcheck resolves the bot itself in MAS.
-* RUN-11: the ``synapse_server.oauth2`` path, end to end. MAS refuses it today; the test pins down
-  how, so a MAS that starts allowing it shows up here.
+
+``synapse_server.oauth2`` was checked here too, and removed after MAS 0.14 refused it (RUN-11): MAS
+does not grant the Matrix API or Synapse admin scopes to ``client_credentials``, even for a client in
+``admin_clients``, and Synapse answers a client token without them with ``401 M_UNKNOWN_TOKEN``. The
+config now rejects the option (``tests/unit/test_config_validation.py``).
 """
 
 from __future__ import annotations
@@ -19,14 +22,12 @@ from typing import Any
 import httpx
 import pytest
 
-from onbot.app import build_matrix_token_provider
-from onbot.auth.token_provider import OAuth2ClientCredentialsTokenProvider, OAuth2TokenError
+from onbot.auth.token_provider import OAuth2ClientCredentialsTokenProvider
 from onbot.clients.authentik import ApiClientAuthentik, _next_page_params, _total
-from onbot.clients.base import ApiError
 from onbot.clients.mas_admin import ApiClientMasAdmin, mxid_localpart
 from onbot.clients.matrix import CREATION_NONCE_KEY, ApiClientMatrix
 from onbot.clients.synapse_admin import ApiClientSynapseAdmin, _next_token_params
-from onbot.config import MatrixOAuth2, OnbotConfig
+from onbot.config import OnbotConfig
 from onbot.healthcheck import run_healthcheck
 from tests.integration import stack_api as S
 
@@ -245,47 +246,3 @@ async def test_deep_healthcheck_fails_when_mas_does_not_know_the_bot(
     config = make_config()
     config.synapse_server.bot_user_id = "@not-a-mas-user:onbot.test"
     assert await run_healthcheck(config) == 1
-
-
-# --- RUN-11: synapse_server.oauth2 end to end -----------------------------------------------------
-
-
-async def test_synapse_oauth2_path_is_refused_by_mas(make_config: Callable[[], OnbotConfig]) -> None:
-    """The bot as a confidential MAS client on the CS API. MAS (0.14) refuses the Matrix API and
-    Synapse admin scopes for the client_credentials grant, even for a client in ``admin_clients``,
-    and Synapse refuses a client token without them. So this path cannot work today; see RUN-11."""
-    config = make_config()
-    config.synapse_server.bot_access_token = None
-    config.synapse_server.oauth2 = MatrixOAuth2(
-        token_endpoint=f"{S.MAS_URL}/oauth2/token",
-        client_id=S.MAS_ADMIN_CLIENT_ID,
-        client_secret=S.MAS_ADMIN_CLIENT_SECRET,
-        scope="urn:matrix:org.matrix.msc2967.client:api:* urn:synapse:admin:*",
-    )
-    matrix = ApiClientMatrix(
-        server_url=config.synapse_server.server_url,
-        token_provider=build_matrix_token_provider(config.synapse_server),
-        server_name=config.synapse_server.server_name,
-    )
-    try:
-        with pytest.raises(OAuth2TokenError) as refused:
-            await matrix.get_json("v3/account/whoami")
-    finally:
-        await matrix.aclose()
-    assert refused.value.error == "invalid_scope"
-    assert not refused.value.is_transient
-
-    # A client token MAS does issue carries no user rights, and Synapse says so.
-    config.synapse_server.oauth2.scope = "urn:mas:admin"
-    matrix = ApiClientMatrix(
-        server_url=config.synapse_server.server_url,
-        token_provider=build_matrix_token_provider(config.synapse_server),
-        server_name=config.synapse_server.server_name,
-    )
-    try:
-        with pytest.raises(ApiError) as rejected:
-            await matrix.get_json("v3/account/whoami")
-    finally:
-        await matrix.aclose()
-    assert rejected.value.status_code == 401
-    assert rejected.value.errcode == "M_UNKNOWN_TOKEN"

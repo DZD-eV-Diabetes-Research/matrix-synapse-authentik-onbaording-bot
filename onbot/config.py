@@ -140,67 +140,14 @@ LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
 LOG_LEVELS: tuple[str, ...] = get_args(LogLevel)
 
 
-class MatrixOAuth2(_StrictModel):
-    """OAuth2 client-credentials auth against MAS (AD-6, Phase 6).
-
-    The forward-looking alternative to a static compatibility token: the bot is a confidential
-    OAuth2 client of MAS and mints short-lived access tokens that refresh transparently. Exclusive
-    with ``bot_access_token``: :class:`SynapseServer` rejects a config that sets both (MNT-03).
-    """
-
-    token_endpoint: Annotated[
-        str,
-        Field(
-            title="MAS token endpoint",
-            description=inspect.cleandoc(
-                """The `token_endpoint` advertised by the Matrix Authentication Service, as listed in
-                its OpenID discovery document at `/.well-known/openid-configuration`."""
-            ),
-            examples=["https://auth.company.org/oauth2/token"],
-        ),
-    ]
-    client_id: Annotated[
-        str,
-        Field(
-            title="OAuth2 client id",
-            description=inspect.cleandoc(
-                """Client id of the OAuth2 client registered for the bot in the Matrix
-                Authentication Service. The client must be allowed to use the `client_credentials`
-                grant."""
-            ),
-            examples=["01HXQ3B9ZK7Y2QW8N4V6M0EXAMPLE"],
-        ),
-    ]
-    client_secret: Annotated[
-        SecretStr,
-        Field(
-            title="OAuth2 client secret",
-            description=inspect.cleandoc(
-                """Client secret belonging to `client_id`. Provide the bare secret — the bot builds
-                the HTTP authorization header itself. Treat this as a credential: prefer supplying it
-                through the `ONBOT_SYNAPSE_SERVER__OAUTH2__CLIENT_SECRET` environment variable rather
-                than committing it to the config file."""
-            ),
-            examples=["ONLY_AN_EXAMPLE_SECRET_pMv1kZ8sQ0"],
-        ),
-    ]
-    scope: Annotated[
-        str | None,
-        Field(
-            title="Requested OAuth2 scopes",
-            description=inspect.cleandoc(
-                """Space-separated scopes to request with the token. The bot needs the Matrix
-                client-server API scope, plus the Synapse admin scope for the room and account
-                management it performs. `null` requests the client's default scopes."""
-            ),
-            examples=["urn:matrix:org.matrix.msc2967.client:api:* urn:synapse:admin:*"],
-        ),
-    ] = None
-
-    @field_validator("token_endpoint")
-    @classmethod
-    def _v_token_endpoint(cls, value: str) -> str:
-        return _check_http_url(value)
+# ``synapse_server.oauth2`` (the bot as a MAS client_credentials client on the Synapse APIs) was removed
+# after the live test in review session S11: MAS refuses the Matrix API and Synapse admin scopes for that
+# grant, and Synapse refuses a client token without them.
+OAUTH2_REMOVED_MESSAGE = (
+    "synapse_server.oauth2 is no longer supported: MAS does not grant the Matrix API scopes to "
+    "client_credentials; set synapse_server.bot_access_token to a compatibility token "
+    "(scripts/provision-bot-account.sh)"
+)
 
 
 class MasAdmin(_StrictModel):
@@ -409,33 +356,20 @@ class SynapseServer(_StrictModel):
         ),
     ]
     bot_access_token: Annotated[
-        SecretStr | None,
+        SecretStr,
         Field(
             title="Bot access token",
             description=inspect.cleandoc(
                 """Access token authorising the bot against the Synapse APIs. On a homeserver fronted
                 by the Matrix Authentication Service this is a compatibility token, issued with
-                `mas-cli manage issue-compatibility-token`. Provide the bare token; do not prefix it
-                with `Bearer` (the client adds that). Leave unset (`null`) when using `oauth2`
-                instead. Prefer supplying it through the
-                `ONBOT_SYNAPSE_SERVER__BOT_ACCESS_TOKEN` environment variable rather than committing
-                it to the config file."""
+                `mas-cli manage issue-compatibility-token` (`scripts/provision-bot-account.sh` does
+                that for you). Provide the bare token; do not prefix it with `Bearer` (the client
+                adds that). Prefer supplying it through the `ONBOT_SYNAPSE_SERVER__BOT_ACCESS_TOKEN`
+                environment variable rather than committing it to the config file."""
             ),
             examples=["syt_ONLY_AN_EXAMPLE_TOKEN_sadaw4"],
         ),
-    ] = None
-    oauth2: Annotated[
-        MatrixOAuth2 | None,
-        Field(
-            title="OAuth2 authentication (alternative to the access token)",
-            description=inspect.cleandoc(
-                """Authenticate as an OAuth2 client of the Matrix Authentication Service instead of
-                carrying a static token. When set, this is used in place of `bot_access_token` and
-                the short-lived tokens it mints refresh automatically. Provide exactly one of
-                `bot_access_token` or `oauth2`."""
-            ),
-        ),
-    ] = None
+    ]
     bot_avatar_url: Annotated[
         str | None,
         Field(
@@ -483,22 +417,27 @@ class SynapseServer(_StrictModel):
         ),
     ] = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def _oauth2_was_removed(cls, data: Any) -> Any:
+        """Name the removed ``oauth2`` block instead of the generic unknown-key error (RUN-11).
+
+        Only the key is looked at, never its values, so no secret reaches the error message.
+        """
+        if isinstance(data, dict) and "oauth2" in data:
+            raise ValueError(OAUTH2_REMOVED_MESSAGE)
+        return data
+
     @field_validator("bot_access_token", mode="before")
     @classmethod
-    def _blank_token_is_unset(cls, value: Any) -> Any:
-        # An empty ONBOT_SYNAPSE_SERVER__BOT_ACCESS_TOKEN is how an environment "unsets" the token.
+    def _token_not_blank(cls, value: Any) -> Any:
         if isinstance(value, str) and not value.strip():
-            return None
+            raise ValueError("must not be empty: set it to the bot's compatibility token")
         return value
 
     @model_validator(mode="after")
-    def _check_credentials_and_bot_server(self) -> SynapseServer:
-        """Exactly one bot credential, and the bot account lives on ``server_name`` (MNT-03)."""
-        has_token = self.bot_access_token is not None
-        has_oauth2 = self.oauth2 is not None
-        if has_token == has_oauth2:
-            state = "both are set" if has_token else "neither is set"
-            raise ValueError(f"set exactly one of bot_access_token or oauth2 ({state})")
+    def _check_bot_server(self) -> SynapseServer:
+        """The bot account lives on ``server_name`` (MNT-03)."""
         bot_server = self.bot_user_id.split(":", 1)[1]
         if bot_server.lower() != self.server_name.lower():
             raise ValueError(
@@ -1319,7 +1258,7 @@ class OnbotConfig(BaseSettings):
             title="Synapse server",
             description=inspect.cleandoc(
                 """Connection data and credentials for the Matrix client-server and Synapse admin
-                APIs. Authenticate with either `bot_access_token` or `oauth2`, not both."""
+                APIs. The bot authenticates with `bot_access_token`."""
             ),
         ),
     ]
@@ -1676,7 +1615,7 @@ def generate_example_config() -> str:
     # source and runs no validation, which the placeholders (empty, so not valid values) also need.
     model = OnbotConfig.model_construct(
         synapse_server=SynapseServer.model_construct(
-            server_name="", server_url="", bot_user_id="", bot_access_token=None
+            server_name="", server_url="", bot_user_id="", bot_access_token=SecretStr("")
         ),
         authentik_server=AuthentikServer.model_construct(url="", api_key=SecretStr("")),
     )

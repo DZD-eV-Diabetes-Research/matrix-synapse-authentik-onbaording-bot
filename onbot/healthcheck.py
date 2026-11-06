@@ -7,7 +7,7 @@ single lightweight authenticated request.
 
 This is an operator tool, not the container ``HEALTHCHECK`` any more (RUN-04, RUN-11, SUP-09). It
 cannot see the bot itself, it fails while Authentik is down although the bot will catch up, and with
-``mas_admin`` (or ``synapse_server.oauth2``) every run mints a fresh MAS token. The container check is
+``mas_admin`` every run mints a fresh MAS token. The container check is
 the plain ``onbot healthcheck``, which reads the service's heartbeat file (:mod:`onbot.heartbeat`).
 
 Exit code contract:

@@ -95,18 +95,12 @@ log = get_logger(__name__)
 
 
 def build_matrix_token_provider(synapse: SynapseServer) -> TokenProvider:
-    """Pick the bot's auth strategy (AD-6): OAuth2 client-credentials if configured, else a static
-    compatibility/legacy token. Raises if neither is provided."""
-    if synapse.oauth2 is not None:
-        return OAuth2ClientCredentialsTokenProvider(
-            token_endpoint=synapse.oauth2.token_endpoint,
-            client_id=synapse.oauth2.client_id,
-            client_secret=synapse.oauth2.client_secret.get_secret_value(),
-            scope=synapse.oauth2.scope,
-        )
-    if synapse.bot_access_token:
-        return StaticTokenProvider(synapse.bot_access_token.get_secret_value())
-    raise ValueError("synapse_server needs either bot_access_token or an oauth2 block")
+    """The bot's credential for the Synapse APIs (AD-6): its static compatibility token.
+
+    OAuth2 client credentials are used for the MAS admin API only (``mas_admin``); MAS does not grant
+    the Matrix API scopes to that grant (RUN-11).
+    """
+    return StaticTokenProvider(synapse.bot_access_token.get_secret_value())
 
 
 def _fetch_policy(config: OnbotConfig) -> FetchPolicy:

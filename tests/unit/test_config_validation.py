@@ -109,24 +109,44 @@ def test_a_typo_in_a_nested_environment_variable_fails(monkeypatch: pytest.Monke
 # --- bot credentials -----------------------------------------------------------------------------
 
 
-def test_both_bot_credentials_are_rejected() -> None:
-    data = _with("synapse_server.oauth2", _OAUTH2)
-    assert _locs(data) == ["synapse_server"]
-    assert "exactly one of bot_access_token or oauth2 (both are set)" in _messages(data)
+@pytest.mark.parametrize("with_token", [True, False])
+def test_the_removed_oauth2_block_is_named_not_reported_as_an_unknown_key(with_token: bool) -> None:
+    """``synapse_server.oauth2`` was removed (RUN-11): MAS does not grant the Matrix API scopes to
+    client_credentials. A config that still sets it gets a specific message, without its values."""
+    data = _with("synapse_server.oauth2", {**_OAUTH2, "client_secret": "OAUTH_SECRETISH"})
+    if not with_token:
+        del data["synapse_server"]["bot_access_token"]
+    errors = _errors(data)
+    assert [".".join(str(p) for p in e["loc"]) for e in errors] == ["synapse_server"]
+    message = errors[0]["msg"]
+    assert "synapse_server.oauth2 is no longer supported" in message
+    assert "bot_access_token" in message and "scripts/provision-bot-account.sh" in message
+    assert "Extra inputs" not in message
+    assert "OAUTH_SECRETISH" not in message and "mas.company.org" not in message
 
 
-@pytest.mark.parametrize("token", [None, "", "   "])
-def test_missing_bot_credential_is_rejected(token: str | None) -> None:
-    data = _with("synapse_server.bot_access_token", token)
-    assert "exactly one of bot_access_token or oauth2 (neither is set)" in _messages(data)
+def test_the_removed_oauth2_block_is_rejected_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ONBOT_SYNAPSE_SERVER__SERVER_NAME", "company.org")
+    monkeypatch.setenv("ONBOT_SYNAPSE_SERVER__SERVER_URL", "https://internal.matrix")
+    monkeypatch.setenv("ONBOT_SYNAPSE_SERVER__BOT_USER_ID", "@bot:company.org")
+    monkeypatch.setenv("ONBOT_SYNAPSE_SERVER__OAUTH2__CLIENT_SECRET", "OAUTH_SECRETISH")
+    monkeypatch.setenv("ONBOT_AUTHENTIK_SERVER__URL", "https://authentik.company.org")
+    monkeypatch.setenv("ONBOT_AUTHENTIK_SERVER__API_KEY", "key")
+    with pytest.raises(ValidationError, match=r"synapse_server\.oauth2 is no longer supported"):
+        load_config()
 
 
-def test_oauth2_alone_is_accepted() -> None:
-    data = _with("synapse_server.oauth2", _OAUTH2)
+def test_missing_bot_access_token_is_rejected() -> None:
+    data = copy.deepcopy(_MINIMAL)
     del data["synapse_server"]["bot_access_token"]
-    cfg = OnbotConfig.model_validate(data)
-    assert cfg.synapse_server.bot_access_token is None
-    assert cfg.synapse_server.oauth2 is not None
+    assert _locs(data) == ["synapse_server.bot_access_token"]
+
+
+@pytest.mark.parametrize("token", ["", "   "])
+def test_blank_bot_access_token_is_rejected(token: str) -> None:
+    data = _with("synapse_server.bot_access_token", token)
+    assert _locs(data) == ["synapse_server.bot_access_token"]
+    assert "must not be empty" in _messages(data)
 
 
 # --- URLs, Matrix IDs, aliases -------------------------------------------------------------------
@@ -150,12 +170,9 @@ def test_urls_need_an_http_scheme_and_a_host(path: str, url: str) -> None:
     assert "must be an http:// or https:// URL with a host" in _messages(data)
 
 
-def test_mas_and_oauth2_urls_need_an_http_scheme() -> None:
+def test_mas_url_needs_an_http_scheme() -> None:
     data = _with("mas_admin", {"url": "mas.company.org", "client_id": "c", "client_secret": "s"})
     assert _locs(data) == ["mas_admin.url"]
-    data = _with("synapse_server.oauth2", {**_OAUTH2, "token_endpoint": "mas/oauth2/token"})
-    del data["synapse_server"]["bot_access_token"]
-    assert _locs(data) == ["synapse_server.oauth2.token_endpoint"]
 
 
 @pytest.mark.parametrize(
@@ -286,13 +303,11 @@ _SECRETS = {
     "bot_access_token": "syt_SECRET_BOT_TOKEN",
     "api_key": "AK_SECRET_KEY",
     "mas_client_secret": "MAS_SECRET",
-    "oauth2_client_secret": "OAUTH_SECRET",
 }
 
 
-def _oauth2_config() -> OnbotConfig:
-    data = _with("synapse_server.oauth2", {**_OAUTH2, "client_secret": _SECRETS["oauth2_client_secret"]})
-    del data["synapse_server"]["bot_access_token"]
+def _mas_config() -> OnbotConfig:
+    data = _with("synapse_server.bot_access_token", _SECRETS["bot_access_token"])
     data["authentik_server"]["api_key"] = _SECRETS["api_key"]
     data["mas_admin"] = {
         "url": "https://mas/",
@@ -306,7 +321,7 @@ def _token_config() -> OnbotConfig:
     return OnbotConfig.model_validate(_with("synapse_server.bot_access_token", _SECRETS["bot_access_token"]))
 
 
-@pytest.mark.parametrize("build", [_oauth2_config, _token_config])
+@pytest.mark.parametrize("build", [_mas_config, _token_config])
 def test_secrets_never_show_in_repr_str_or_dumps(build: Any) -> None:
     cfg = build()
     for rendered in (
@@ -322,7 +337,7 @@ def test_secrets_never_show_in_repr_str_or_dumps(build: Any) -> None:
 
 
 def test_secrets_never_show_in_logs(caplog: pytest.LogCaptureFixture) -> None:
-    cfg = _oauth2_config()
+    cfg = _mas_config()
     with caplog.at_level(logging.DEBUG):
         logging.getLogger("test").debug("config: %s / %r", cfg, cfg)
     for secret in _SECRETS.values():
@@ -330,14 +345,11 @@ def test_secrets_never_show_in_logs(caplog: pytest.LogCaptureFixture) -> None:
 
 
 def test_secret_values_stay_reachable_for_the_clients() -> None:
-    cfg = _oauth2_config()
-    assert cfg.synapse_server.oauth2 is not None
-    assert cfg.synapse_server.oauth2.client_secret.get_secret_value() == _SECRETS["oauth2_client_secret"]
+    cfg = _mas_config()
     assert cfg.authentik_server.api_key.get_secret_value() == _SECRETS["api_key"]
     assert cfg.mas_admin is not None
     assert cfg.mas_admin.client_secret.get_secret_value() == _SECRETS["mas_client_secret"]
     token = _token_config().synapse_server.bot_access_token
-    assert token is not None
     assert token.get_secret_value() == _SECRETS["bot_access_token"]
 
 

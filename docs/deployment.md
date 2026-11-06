@@ -137,8 +137,8 @@ each dependency and exits non-zero if any is unreachable or rejects the credenti
 - the MAS admin API, when `mas_admin` is configured.
 
 Each dependency logs its own line, distinguishing unreachable from auth-rejected. The `matrix-cs`
-line also flags a token or `bot_user_id` mismatch. With `mas_admin` (or `synapse_server.oauth2`) every
-run mints a fresh MAS token, which is why this is not the container healthcheck any more.
+line also flags a token or `bot_user_id` mismatch. With `mas_admin` every run mints a fresh
+MAS token, which is why this is not the container healthcheck any more.
 
 ```bash
 docker exec onbot onbot healthcheck --deep
