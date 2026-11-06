@@ -11,8 +11,8 @@ from typing import Any
 import pytest
 
 from onbot.clients.base import ApiError
-from onbot.reconciler.state import DirectRoomState, GroupRoomState, OnbotRoomType
 from onbot.models import MatrixRoom
+from onbot.reconciler.state import DirectRoomState, GroupRoomState, OnbotRoomType
 from onbot.rooms.identity import RoomIdentityResolver, RoomKey, classify_room, stray_claims
 from onbot.rooms.provision import (
     PRIVILEGED_LOCK_LEVEL,
