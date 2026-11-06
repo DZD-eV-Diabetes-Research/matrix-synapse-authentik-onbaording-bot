@@ -106,14 +106,27 @@ async def test_a_permanent_refusal_is_given_up_after_one_attempt() -> None:
     assert step.done.is_set() and not step.succeeded
 
 
+_REQ = httpx.Request("GET", "https://cdn.example/avatar.png")
+
+
 @pytest.mark.parametrize(
     ("exc", "permanent"),
     [
-        (ApiError("GET", "u", 403), True),
-        (ApiError("GET", "u", 400), True),
-        (ApiError("GET", "u", 401), False),  # MAS may not introspect tokens yet
-        (ApiError("GET", "u", 429), False),
+        (ApiError("GET", "u", 403, {"errcode": "M_FORBIDDEN", "error": "no"}), True),
+        (ApiError("GET", "u", 400, {"errcode": "M_BAD_JSON"}), True),
+        (ApiError("GET", "u", 404, {"errcode": "M_UNRECOGNIZED"}), True),
+        (ApiError("GET", "u", 401, {"errcode": "M_UNKNOWN_TOKEN"}), False),  # MAS not introspecting yet
+        (ApiError("GET", "u", 429, {"errcode": "M_LIMIT_EXCEEDED"}), False),
         (ApiError("GET", "u", 502), False),
+        # A reverse proxy in front of a homeserver that is still booting (RUN-02): no Matrix body.
+        (ApiError("GET", "u", 404, "<html><body>404 Not Found</body></html>"), False),
+        (ApiError("GET", "u", 403, "Forbidden"), False),
+        (ApiError("GET", "u", 403), False),
+        (ApiError("GET", "u", 421, {"detail": "misdirected"}), False),
+        (ApiError("GET", "u", 404, {"errcode": ""}), False),
+        # The avatar's own host: a 4xx there is final, a 5xx is not.
+        (httpx.HTTPStatusError("x", request=_REQ, response=httpx.Response(404, request=_REQ)), True),
+        (httpx.HTTPStatusError("x", request=_REQ, response=httpx.Response(503, request=_REQ)), False),
         (httpx.ConnectError("refused"), False),
         (RuntimeError("anything else"), False),
     ],
@@ -262,6 +275,36 @@ async def test_onboarding_opens_even_when_device_registration_is_refused_for_goo
         await asyncio.wait_for(StartupSupervisor(app.service_steps()).run(), timeout=2)
 
         assert app.events._handlers[Signal.user_synced]  # as before the fix: try the sends anyway
+
+
+async def test_a_proxy_404_during_boot_does_not_open_onboarding_without_a_device(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """RUN-02 behind a reverse proxy: a bare 404 while Synapse boots is retried, not given up."""
+    attempts: list[int] = []
+
+    async with build_app(_config()) as app:
+
+        async def booting() -> None:
+            attempts.append(1)
+            if len(attempts) < 3:
+                raise ApiError("POST", "keys/upload", 404, "<html><body>404 Not Found</body></html>")
+
+        async def noop(*_a: object) -> None:
+            return None
+
+        monkeypatch.setattr(app.matrix, "negotiate_versions", noop)
+        monkeypatch.setattr(app.matrix, "ensure_device_registered", booting)
+        monkeypatch.setattr(app.admin, "override_ratelimit", noop)
+
+        steps = app.service_steps()
+        supervisor = StartupSupervisor(steps, initial_backoff_sec=0.001, max_backoff_sec=0.01)
+        await asyncio.wait_for(supervisor.run(), timeout=2)
+
+        assert len(attempts) == 3
+        device = next(s for s in steps if s.name == "device registration")
+        assert device.succeeded
+        assert app.events._handlers[Signal.user_synced]
 
 
 async def test_a_late_control_room_replays_the_stream_it_missed(monkeypatch: pytest.MonkeyPatch) -> None:
