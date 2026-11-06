@@ -186,6 +186,9 @@ async def test_known_user_deleted_without_disable_is_offboarded(
     """LIF-02: a user deleted directly (no disable phase) is locked after the cooldown."""
     username = S.uniq("lifedirect")
     user, login = S.provision(authentik_admin, username)
+    # Four active colleagues, so one deletion stays under the guard's 20 % drop limit (D13) even on
+    # a fresh stack with few users (the test used to depend on what earlier tests had created).
+    _scope_anchors(authentik_admin, 4)
 
     config = make_config()
     _live_lifecycle(config)
