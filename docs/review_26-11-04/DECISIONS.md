@@ -87,5 +87,48 @@ rules.
 
 ## D12 CI dependency updates and formatting (S15)
 
-Dependabot for GitHub Actions, the Docker base image and Python dependencies. CI only checks
-`ruff format` and fails; it no longer commits formatting fixes to `main`.
+Dependabot for GitHub Actions and the Docker base image. CI only checks `ruff format` and fails; it
+no longer commits formatting fixes to `main`.
+
+Python dependencies (2026-11-06): no extra monitoring. Dependabot cannot update `pdm.lock`, and the
+maintainer accepts that: the bot has no inbound port, talks only to trusted upstreams and has six
+hash-pinned runtime packages. Packages are updated by hand with `pdm update`; `docs/development.md`
+says so, so the gap is deliberate. No pip-audit job, no Renovate.
+
+## D13 Guard confirmation (D4 layers 1 to 3, decided 2026-11-06)
+
+A tripped guard never just blocks. It pauses only the destructive part of the pass (onboarding,
+invites and room upkeep go on), records the would-be actions as a pending batch with its own stable
+id and posts a summary to the admin room (what dropped, from how many to how many, which users or
+rooms would be affected). An allowlisted admin releases exactly that batch with `!confirm <id>`;
+`!pending` lists all open batches. There is no `!confirm` without an id, so parallel incidents never
+release each other. A batch expires after 72 hours and is proposed again on a later pass if it still
+applies. After a confirmed drop the new counts become the last known good.
+
+Defaults (configurable):
+
+- Layer 1: a drop of more than 20 % in users in scope or in mapped groups against the last known good
+  counts needs confirmation. The baseline moves with every normal pass, so gradual removals never
+  trip it. An empty list always needs confirmation.
+- Layer 2: more than 10 reversible destructive actions (kick, MAS lock, room teardown, withdrawal of
+  bot-granted power levels) in one pass need confirmation.
+- Layer 3: 3 or more irreversible actions (deactivate, erase) in one pass need confirmation; 1 or 2
+  run as today.
+
+Placement: S3 builds the batch store, `!confirm`, `!pending` and the expiry, and uses them for layers
+1 and 2. S5 only adds layer 3 on top.
+
+## D14 Known user disabled and out of scope at the same time (wave 1 review, decided 2026-11-06)
+
+A user with a `KnownUsers` binding (positively mapped by onbot earlier) who is disabled in Authentik is
+offboarded normally even when they left the sync scope in the same interval (other path, removed from
+the synced group, opt-in attribute removed). This restores the pre-S1 behaviour for the common
+"disable, archive and strip groups" flow. D9 still applies to users who leave the scope while active
+and already locked or in the pipeline, and accounts onbot never mapped stay untouched (REC-14).
+
+## D15 Confirmations of merged wave 1 behaviour (2026-11-06)
+
+- S13: config combinations that do nothing (`delete_disabled_rooms` without disabling rooms, onboarding
+  rooms in a space without a configured space) stay hard startup errors (exit 2).
+- S15: releases only from tags on `main`, gated on the full CI including the integration suite.
+- S15: the image moves from Debian bookworm to trixie (small separate change with an integration run).

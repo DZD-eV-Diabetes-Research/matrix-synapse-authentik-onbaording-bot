@@ -31,6 +31,7 @@ Start a session by pointing Claude at this file and the session ID, for example:
 | 1 | S0 | Tooling baseline | S | | done (e3282ef) |
 | 2 | S1 | Offboarding fails open (critical hotfix) | M | S0 | done (merged in wave 1a) |
 | 3 | S2 | Reconciler pass robustness | M | S0 | done (merged in wave 1a) |
+| 3a | W1F | Wave 1 review fixups (D14, startup 4xx, reconcile-once, base image) | S | S1, S10 | open |
 | 4 | S3 | Guard layers 1 and 2, reconciler dry-run | M | S2 | open |
 | 5 | S16 | Git history scrub | S | S0, no open branches | open |
 | 6 | S4 | Offboarding completeness | M | S1 | open |
@@ -63,6 +64,7 @@ every merge and the integration suite once per wave. Nothing is pushed; the main
 | 0 | S0 | Alone. Also makes the integration stack runnable in parallel (per-worktree compose project name and host ports). |
 | 1a | S1, S2, S10 | S1 and S2 touch different parts of `engine.py`. |
 | 1b | S13, S15 | |
+| 1c | W1F | Fixups from the wave 1 review, merged before wave 2. |
 | between 1 and 2 | S16 | History scrub, only when no review branch is open. |
 | 2 | S3, S4, S11 | |
 | 3 | S5, S6, S12 | S6 is the largest session. |
@@ -83,6 +85,29 @@ orchestrator's summary) and checks that every listed finding is really fixed and
 - Product decisions not covered by `DECISIONS.md`: stop and report the question instead of guessing.
 - Commit on your branch in small, reviewable commits. No push, no AI attribution, no em or en dashes.
 - Use your own integration stack instance (see `tests/README.md` after S0) and tear it down at the end.
+
+---
+
+## W1F Wave 1 review fixups
+
+**Goal:** close what the cold review of waves 0 and 1 found before wave 2 starts.
+
+- D14: a known user (`KnownUsers` binding) who is disabled and out of scope at the same time is
+  offboarded normally (today: no lock, no report; `accounts.py` `_classify_one` returns frozen and
+  `decide_account_action` turns that into `none` without a ledger entry).
+- RUN-02 behind a reverse proxy: `runtime.is_permanent_failure` treats every 4xx except 401, 408, 425
+  and 429 as final, so a proxy 404 or 403 during a host reboot gives up device registration and opens
+  onboarding anyway. Treat 4xx without a Matrix `errcode` as transient.
+- RUN-12: the avatar fetcher's HTTP client is never closed (`app.py` passes it into `MediaUploader`,
+  which does not own it).
+- `reconcile-once` dropped setting the bot avatar and provisioning the admin room (re-invites);
+  cron-only deployments need both. Restore them as startup steps and fix the stale docs that say it
+  does not lift the rate limit (`app.py` docstrings, `docs/deployment.md`).
+- `scripts/provision-bot-account.sh --revoke-previous` revokes before issuing: issue first, revoke
+  only after the new token is parsed.
+- Base image from bookworm to trixie (D15), same Python patch, tag and digest; update the docs.
+- Config descriptions of `sync_authentik_users_with_matrix_rooms.enabled` (since S2) and
+  `global_room_admins` (cap at 99 in pre-v12 rooms).
 
 ---
 
@@ -183,6 +208,19 @@ entry 2 (MNT-04 part).
 
 ## S3 Guard layers 1 and 2, reconciler dry-run (D4)
 
+**Decisions from 2026-11-06 (D13):** a tripped guard does not just block. It pauses the destructive
+part, stores a pending batch with its own id, reports in the admin room, and `!confirm <id>` releases
+exactly that batch (`!pending` lists them, 72 h expiry, no `!confirm` without an id). This session
+builds the batch store and both commands; S5 only adds layer 3. Defaults: layer 1 at more than 20 %
+drop (users in scope or mapped groups, baseline moves with every normal pass), layer 2 at more than 10
+reversible actions per pass.
+
+**From the wave 1 review:** the withdrawal of bot-granted power levels (D10) is not guarded today. A
+collapsed Authentik answer suppresses kicks but still withdraws every recorded grant in every room.
+Count withdrawals as reversible destructive actions under layer 2 and put them behind the layer 1
+gate. Also fix the stale config descriptions of `sync_authentik_users_with_matrix_rooms.enabled` and
+`global_room_admins` if W1F has not done it.
+
 **Goal:** a collapsed or wrong Authentik answer, or a config mistake, cannot cause mass destruction.
 
 **Findings:** REC-01, LIF-08, MNT-09.
@@ -220,6 +258,12 @@ and `global_room_admins` (the 99 cap in pre-v12 rooms) still need a wording upda
 
 ## S4 Offboarding completeness
 
+**From the wave 1 review:** a freeze caused by `authentik_user_ignore_list` ends when the user is
+deleted in Authentik: the ignore check runs only over present users, so the deleted user falls
+through to "deleted" and resumes, possibly erasing at once if the erase cooldown elapsed during the
+freeze. Keep the freeze for deleted users whose ledger entry is frozen for the ignore reason. Dry-run
+audit lines repeat every tick (LIF-08 noise), coordinate with S3's dry-run work.
+
 **Goal:** offboarding does what the docs say, on both effector paths.
 
 **Findings:** LIF-07, LIV-03, LIF-09, LIF-11 (D7), LIF-12, LIF-14, LIF-15, rest of LIF-16 and MNT-05.
@@ -245,6 +289,10 @@ S1's per-user ledger save and backoff; check before re-doing.
 ---
 
 ## S5 Guard layer 3: confirmation for irreversible actions (D4)
+
+**Decisions from 2026-11-06 (D13):** S3 already builds the batch store, `!confirm <id>`, `!pending`
+and the 72 h expiry. This session only adds layer 3: 3 or more irreversible actions (deactivate,
+erase) in one pass wait for confirmation; 1 or 2 run as today.
 
 **Goal:** deactivate and erase above a small number per pass wait for a human.
 
@@ -371,6 +419,11 @@ it is unhealthy.
 ---
 
 ## S11 HTTP layer
+
+**From the wave 1 review:** the rest of LIF-10: `healthcheck.py` (deep check) still passes when MAS
+answers not-found for the bot's own user; require a 200 there. The `synapse_server.oauth2` path is
+still untested end to end (S10 handover). The SSRF guard in `safe_fetch.py` replaces httpx's private
+`_pool`; keep its unit tests running on every httpx update and consider declaring `httpcore`.
 
 **Goal:** retries never duplicate effects, and auth refresh is safe under concurrency.
 

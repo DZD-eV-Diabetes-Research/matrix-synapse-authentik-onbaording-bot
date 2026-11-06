@@ -90,6 +90,9 @@ reports version `0.0.0`.
   pdm update            # update pdm.lock within the ranges in pyproject.toml
   ```
 
+  This gap is deliberate (review decision D12): onbot has no inbound port, talks only to trusted
+  upstreams and has six hash-pinned runtime packages, so there is no pip-audit job and no Renovate.
+
 Not covered by any updater: the integration stack images (pinned by digest only), the tini checksum
 in the Dockerfile, the gitleaks version in `ci.yml` and `.pre-commit-config.yaml`, and the PDM version
 (`PDM_VERSION` in both workflows, `ONBOT_DEV_PDM_VERSION` in `build_dev_env.sh`).
