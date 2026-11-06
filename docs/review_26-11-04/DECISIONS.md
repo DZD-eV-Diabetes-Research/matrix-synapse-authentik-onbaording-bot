@@ -139,3 +139,12 @@ and already locked or in the pipeline, and accounts onbot never mapped stay unto
   rooms in a space without a configured space) stay hard startup errors (exit 2).
 - S15: releases only from tags on `main`, gated on the full CI including the integration suite.
 - S15: the image moves from Debian bookworm to trixie (small separate change with an integration run).
+- S10: the fixed liveness thresholds stay fixed. The deployment does not restart unhealthy containers
+  (plain docker compose, status only), so a long Authentik outage causes no restart loop.
+
+## D16 Manually closed lobby (S7, REC-10, decided 2026-11-06)
+
+A lobby that a human closed (for example join rule changed to invite) stays closed. The bot detects
+that the change was not its own, logs it at WARNING and reports it once in the admin room, and stops
+reverting it. An allowlisted admin can withdraw the manual close with a control room command (for
+example `!lobby reopen <group or room>`); afterwards the bot manages the lobby from the config again.

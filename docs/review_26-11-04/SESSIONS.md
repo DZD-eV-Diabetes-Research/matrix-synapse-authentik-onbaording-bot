@@ -342,8 +342,8 @@ clears the alias) as integration tests.
 **Findings:** REC-09, REC-10, REC-11.
 
 **Steps:** repair the space child/parent link and the marker on every pass (cheap check first);
-close and detach a lobby when the lobby feature is switched off, and stop reverting a manual close if
-that is intended (confirm); never unblock a room a human server admin blocked (record who blocked).
+close and detach a lobby when the lobby feature is switched off, and stop reverting a manual close
+(D16: keep it closed, log and report once, an admin command withdraws the manual close); never unblock a room a human server admin blocked (record who blocked).
 
 ---
 
