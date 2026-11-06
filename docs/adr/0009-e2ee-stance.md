@@ -37,3 +37,9 @@
 - Welcome delivery must stay in unencrypted DMs; if a client auto-enables encryption on the DM,
   message sends will fail and onboarding for that user degrades to state-only — an accepted,
   visible failure mode rather than a silent one.
+- **The homeserver can override this (review finding ONB-06).** Synapse's
+  `encryption_enabled_by_default_for_room_type` encrypts every new private room, and `createRoom`
+  offers no opt-out. The control room then cannot hear commands from clients that encrypt, and
+  notice boards carry plain text in encrypted rooms. Onbot cannot prevent it; it detects it (an
+  error in the log, and a notice in the control room) and `docs/troubleshooting.md` says how to
+  recover. Deployments of Onbot must not set that option.

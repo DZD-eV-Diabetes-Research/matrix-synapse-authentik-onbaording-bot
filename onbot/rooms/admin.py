@@ -53,6 +53,13 @@ PINNED_EVENTS_TYPE = "m.room.pinned_events"
 NOTICE_MSGTYPE = "m.notice"
 
 BOT_LEVEL = 100
+
+ENCRYPTED_ROOM_NOTICE = (
+    "This room is end-to-end encrypted, and the bot cannot read encrypted messages, so it will not "
+    "see commands sent from your client here. The homeserver encrypts new private rooms by default "
+    "(Synapse: encryption_enabled_by_default_for_room_type). An operator has to turn that setting "
+    "off and then replace this room; see the troubleshooting guide."
+)
 # Members may speak (0) but may not touch the room's state, membership or bans (100).
 _GOVERNED_KEYS = ("state_default", "invite", "kick", "ban", "redact")
 
@@ -107,10 +114,32 @@ class AdminRoomProvisioner:
         if room_id is None:
             return None
         self.room_id = room_id
+        await self._check_unencrypted(room_id)
         await self.ensure_admins_invited()
         await self._ensure_topic(room_id)
         await self._ensure_pinned_help(room_id)
         return room_id
+
+    async def _check_unencrypted(self, room_id: str) -> None:
+        """Say so loudly when the control room is encrypted, so it does not just look alive (ONB-06).
+
+        The bot creates it without encryption, but Synapse's
+        ``encryption_enabled_by_default_for_room_type`` adds ``m.room.encryption`` to every new
+        private room and a client cannot opt out at ``createRoom``. Admins' clients then encrypt
+        their commands and the bot, which has no crypto (ADR-0009), never sees one. The room stays
+        bound: commands sent in plain text still work and the reports still arrive, readable by the
+        admins.
+        """
+        if not await self.client.room_is_encrypted(room_id):
+            return
+        log.error(
+            "the admin control room %s (%s) is end-to-end encrypted, so the bot cannot read commands "
+            "from clients that encrypt them. Synapse encrypts new private rooms when "
+            "encryption_enabled_by_default_for_room_type is set; see docs/troubleshooting.md",
+            self.alias,
+            room_id,
+        )
+        await self.client.send_text_message(room_id, ENCRYPTED_ROOM_NOTICE, msgtype=NOTICE_MSGTYPE)
 
     async def ensure_admins_invited(self) -> None:
         """Resolve the current admin set and invite whoever is not already in the room.

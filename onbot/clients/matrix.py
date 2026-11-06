@@ -416,6 +416,10 @@ class ApiClientMatrix(BaseApiClient):
     async def get_room_power_levels(self, room_id: str) -> dict[str, Any]:
         return await self.get_room_state_event(room_id, "m.room.power_levels") or {}
 
+    async def room_is_encrypted(self, room_id: str) -> bool:
+        """Whether ``room_id`` has ``m.room.encryption`` (which can never be removed again)."""
+        return await self.get_room_state_event(room_id, "m.room.encryption") is not None
+
     async def set_room_power_levels(self, room_id: str, power_levels: Mapping[str, Any]) -> None:
         await self.put_room_state_event(room_id, "m.room.power_levels", power_levels)
 

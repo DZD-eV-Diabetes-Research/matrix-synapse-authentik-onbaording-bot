@@ -187,6 +187,8 @@ class WelcomeService:
         # extends and writes back whole. Without it two users welcomed at once both read the old
         # document and the second write drops the first user's room (RUN-01, ONB-01).
         self._direct_lock = asyncio.Lock()
+        # Whether a new notice board of this process was checked for forced encryption (ONB-06).
+        self._encryption_checked = False
 
     async def welcome_user(self, mxid: str) -> None:
         """Ensure ``mxid`` has a DM with all configured welcome messages delivered (idempotent)."""
@@ -313,6 +315,9 @@ class WelcomeService:
                 marker=DirectRoomState(user_id=mxid, setup_complete=False),
                 name=self.config.onboarding_room_name,
                 topic=self.config.onboarding_room_topic,
+                # Unencrypted on purpose (ADR-0009): the bot has no crypto. Synapse may still add
+                # encryption on its own; see _check_unencrypted.
+                encrypted=False,
                 is_direct=True,
                 invite=(mxid,),
                 room_params={
@@ -324,7 +329,32 @@ class WelcomeService:
             bot_id=self.bot_id,
         )
         await self._record_direct_room(mxid, room_id)
+        await self._check_unencrypted(room_id)
         return room_id, True
+
+    async def _check_unencrypted(self, room_id: str) -> None:
+        """Log once per process when a new notice board came out encrypted after all (ONB-06).
+
+        Synapse's ``encryption_enabled_by_default_for_room_type`` encrypts every new private room,
+        and ``createRoom`` offers no way out. The messages still go out (in plain text, which clients
+        flag as "not encrypted"), but the notice boards are not what ADR-0009 promises, and only the
+        homeserver setting can fix that. The check is skipped once the first new board was checked.
+        """
+        if self._encryption_checked:
+            return
+        self._encryption_checked = True
+        try:
+            encrypted = await self.client.room_is_encrypted(room_id)
+        except ApiError:
+            log.debug("could not check whether %s is encrypted", room_id, exc_info=True)
+            return
+        if encrypted:
+            log.error(
+                "new notice boards are end-to-end encrypted (%s): the homeserver encrypts new private "
+                "rooms (Synapse encryption_enabled_by_default_for_room_type). The bot posts plain text "
+                "into them, which clients flag as unencrypted; see docs/troubleshooting.md",
+                room_id,
+            )
 
     async def _record_direct_room(self, mxid: str, room_id: str) -> None:
         """Add ``room_id`` to ``mxid``'s entry in ``m.direct``, re-read under the lock (RUN-01).

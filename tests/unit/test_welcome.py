@@ -81,6 +81,11 @@ class FakeMatrixClient:
         self.invites.append((room_id, user_id))
         self.memberships[(room_id, user_id)] = "invite"
 
+    async def room_is_encrypted(self, room_id: str) -> bool:
+        if room_id in self.gone:
+            raise ApiError("GET", f"/rooms/{room_id}/state", 403, {"errcode": "M_FORBIDDEN"})
+        return (room_id, "m.room.encryption") in self.room_state
+
     async def joined_rooms(self) -> list[str]:
         rooms = {room for room, _ in self.room_state} | set(self.power_levels)
         return sorted(rooms - self.gone)
@@ -786,3 +791,29 @@ async def test_unparsable_notice_board_state_is_reported_not_guessed() -> None:
     with pytest.raises(NoticeBoardUnreadable, match=re.escape("!dm:matrix.test")):
         await svc.welcome_user(ALICE)
     assert client.sent == []
+
+
+# --- ONB-06: notice boards the homeserver encrypted ---
+
+
+async def test_a_notice_board_encrypted_by_the_homeserver_is_reported_once(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    client = FakeMatrixClient()
+    original = client.create_room
+
+    async def forced(**kwargs: Any) -> str:
+        room = await original(**kwargs)
+        client.room_state[(room, "m.room.encryption")] = {"algorithm": "m.megolm.v1.aes-sha2"}
+        return room
+
+    client.create_room = forced  # type: ignore[method-assign]
+    svc = WelcomeService(client, _config(["hi"]))  # type: ignore[arg-type]
+
+    await svc.welcome_user(ALICE)
+    await svc.welcome_user(BOB)
+
+    errors = [r for r in caplog.records if "encryption_enabled_by_default_for_room_type" in r.getMessage()]
+    assert len(errors) == 1 and errors[0].levelname == "ERROR"
+    assert len(client.sent) == 2  # the welcome still goes out
+    assert client.create_calls[0]["encrypted"] is False
