@@ -11,6 +11,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **`!lobby reopen <group pk | room id | alias>`** hands a manually closed lobby back to the bot (review
+  S7, D16); "Rooms:" reports in the admin room; live tests for room teardown and deletion.
 - **Welcome messages can carry an `id`** so their text can be corrected without re-sending; whitespace-only
   edits no longer re-send (review S8, ONB-18).
 - **An encrypted control room or notice board is reported** in the log and the room (ONB-06; Synapse's
@@ -64,6 +66,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   This `CHANGELOG.md`.
 
 ### Changed
+- **Rooms are repaired on every pass, not only at creation (review S7, REC-09):** the space child and
+  parent links; the onbot marker (restored when removed, rewritten, unreadable or written by somebody
+  else, and completed once for older markers, which drops the legacy `authentik_server` key); the
+  marker's lock; a removed alias (recreated when it is free) and an empty main address. An alias
+  another room holds is reported once. A changed alias setting also adds the new alias to the
+  existing room when it is free.
+- **A visitor lobby whose feature is switched off is closed (join rule `invite`) and removed from the
+  space, without kicks (REC-10, D19);** closing is a reversible destructive action under the guard's
+  layer 2. Switching it on again reopens it.
+- **A visitor lobby a human closed stays closed (D16);** it is logged at WARNING and reported once.
 - **`onbot broadcast` reads Authentik to know who is mapped** and exits 1 when nobody can be mapped;
   `!announce` is refused until the first pass. With user sync off there are no welcomes and no
   broadcasts (review S8).
@@ -194,6 +206,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   troubleshooting.
 
 ### Fixed
+- **A room the bot already closed is no longer torn down again on every pass.** Before, from 11 closed
+  rooms on, every kick and teardown waited for a confirmation (review S7).
 - **Concurrent welcomes no longer lose `m.direct` entries,** which caused duplicate notice boards and
   re-sent welcomes after a restart (review S8, RUN-01, ONB-01).
 - **Welcome sends use deterministic transaction ids,** so a repeated send is deduplicated by Synapse
@@ -277,6 +291,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   model forbids unknown keys, so remove these two settings if present.
 
 ### Security
+- **The bot unblocks only rooms it blocked itself (review S7, REC-11):** a room a server admin blocked
+  stays blocked and unmanaged and is reported once, and teardown keeps an existing foreign block.
+  Lobbies closed by a teardown are now unblocked when their group returns.
 - **Only users the reconciler maps get a notice board and receive broadcasts (review S8, SEC-06,
   ONB-13):** active Authentik users in the sync scope with a Matrix account and no identity conflict.
   Joining a room the bot is in no longer enrols anyone. Notice boards of deactivated or foreign

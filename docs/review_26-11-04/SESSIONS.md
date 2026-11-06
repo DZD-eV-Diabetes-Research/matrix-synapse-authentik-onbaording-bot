@@ -41,7 +41,7 @@ Start a session by pointing Claude at this file and the session ID, for example:
 | 6 | S4 | Offboarding completeness | M | S1 | done (merged in wave 2) |
 | 7 | S5 | Guard layer 3: `!confirm` for irreversible actions | M | S3, S4 | done (merged in wave 3) |
 | 8 | S6 | Room identity (marker plus creator) and unified room provisioning | L | S2 | done (merged in wave 3) |
-| 9 | S7 | Room repair: space link, lobbies, blocks | M | S6 | open |
+| 9 | S7 | Room repair: space link, lobbies, blocks | M | S6 | done (merged in wave 4) |
 | 10 | S8 | Onboarding correctness | M | S6 | done (merged in wave 4) |
 | 11 | S9 | User identity across renames | M | S1, S3 | done (merged in wave 3) |
 | 12 | S10 | Runtime lifecycle: startup, sync recovery, shutdown, liveness | M | S0 | done (merged in wave 1a) |
@@ -519,6 +519,11 @@ only after the allowlist check; key avatars by content hash as well as URL (ONB-
 ---
 
 ## S14 Docs, dead code, cleanup
+
+**From S7:** upkeep costs about 4 extra GETs per room per pass (REC-16); the control room
+(`onbot/rooms/admin.py`) gets no marker, alias or lock repair yet; stale space links to an old space
+are not removed after the space is recreated; a closed lobby keeps the levels the bot granted there;
+the integration teardown tests delete other tests' group rooms on the shared stack (harmless today).
 
 **From D17:** speed up the integration suite (about 20 minutes in CI): cache or reuse the stack start
 (Authentik dominates), run independent test files in parallel where the stack allows it.
