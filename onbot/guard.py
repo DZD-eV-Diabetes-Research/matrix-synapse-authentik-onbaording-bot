@@ -552,6 +552,10 @@ def _batch_status_text(batch: GuardBatch) -> str:
             f"rejected by {batch.decided_by}; holds its actions until the condition that created it is "
             f"gone, at the latest until {_utc(batch.expires_at)}"
         )
+    if batch.status is BatchStatus.confirmed:
+        # Confirmed batches do not expire; one whose room deletions wait for a paused teardown of
+        # the same room stays listed until they can run.
+        return f"confirmed by {batch.decided_by}; runs on the next pass that may carry it out"
     return f"{batch.status.value}, expires {_utc(batch.expires_at)}"
 
 
@@ -608,10 +612,12 @@ def record(
         ran = batch.keys & decision.permitted & planned_keys
         if batch.keys & decision.after_prerequisite:
             # Some of it (a room deletion) waits for a paused teardown of the same room. The batch
-            # stays confirmed for that part; what ran is done.
+            # stays confirmed for that part only; what ran is done, and after a complete pass what
+            # was not planned no longer applies.
             batch.observed = None
+            keep = decision.after_prerequisite if complete else batch.keys - ran
+            batch.actions = [a for a in batch.actions if a.key in keep]
             if ran:
-                batch.actions = [a for a in batch.actions if a.key not in ran]
                 text = (
                     f"Batch {batch.id} confirmed by {batch.decided_by}: ran {len(ran)} action(s); "
                     f"{len(batch.actions)} wait until the teardown of their room may run (it is "

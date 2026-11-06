@@ -780,6 +780,7 @@ def test_a_confirmed_deletion_waits_for_its_paused_teardown_and_keeps_its_confir
     kept = state.batches[first]
     assert kept.status is BatchStatus.confirmed
     assert kept.keys == {room_delete(n).key for n in range(3)}  # the erasure ran and is done
+    assert "confirmed by @admin:x; runs on the next pass that may carry it out" in describe_batch(kept)
     partly = [n for n in notices if n.payload.get("outcome") == "partly_executed"]
     assert "ran 1 action(s); 3 wait until the teardown of their room may run" in partly[0].payload["text"]
     # The new batch covers what the admin has not seen: the eleven teardowns and eight deletions.
