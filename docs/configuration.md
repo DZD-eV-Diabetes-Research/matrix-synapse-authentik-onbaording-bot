@@ -29,16 +29,20 @@ everything from the environment.
 
 > Never commit a real config. `config*.yml` is gitignored (only `config.example.yml` is tracked).
 
-## Bot credentials (pick one)
+## Bot credentials
 
-Onbot authenticates to Synapse as a bot user. Under MAS you choose exactly one of these:
+Onbot authenticates to Synapse as a bot user with `synapse_server.bot_access_token`: under MAS a
+compatibility token, issued with `mas-cli manage issue-compatibility-token` (or
+`scripts/provision-bot-account.sh`, which does that for you). Provide the bare token. The same identity
+drives both the Synapse Admin API and the Client-Server API.
 
-| Option | Field | When to use |
-|---|---|---|
-| Compatibility token | `synapse_server.bot_access_token` | Near-term. Issue one with `mas-cli manage issue-compatibility-token` and provide the bare token. |
-| OAuth2 client-credentials | `synapse_server.oauth2` | Forward-looking. The bot is a confidential MAS client and refreshes its own tokens. |
-
-The same identity drives both the Synapse Admin API and the Client-Server API.
+`synapse_server.oauth2` (the bot as a confidential MAS client that mints its own tokens) was removed. It
+never worked: tested against MAS 0.14 and Synapse with MSC3861, MAS refuses the Matrix API scope
+(`urn:matrix:org.matrix.msc2967.client:api:*`) and the Synapse admin scope for the
+`client_credentials` grant (`invalid_scope`), even for a client listed in `policy.data.admin_clients`,
+and Synapse rejects a client token without those scopes (`401 M_UNKNOWN_TOKEN`). A config that still
+sets it stops at startup (exit code 2) with a message saying so. `mas_admin` keeps using
+`client_credentials`; MAS grants its admin scope to that grant.
 
 ## Validation: what Onbot refuses at startup
 
@@ -61,9 +65,9 @@ What is checked, beyond types and required fields:
 - **Unknown keys are errors at every level**, so a typo such as `dry_rn: false` fails instead of
   leaving the default in place. This includes keys inside `per_authentik_group_pk_matrix_room_settings`
   and nested `ONBOT_*__*` variables. Remove keys an older Onbot version used.
-- **Exactly one bot credential**: `synapse_server.bot_access_token` or `synapse_server.oauth2`, not both
-  and not neither. An empty token counts as unset.
-- **URLs** (`server_url`, `oauth2.token_endpoint`, `mas_admin.url`, `authentik_server.url` and the avatar
+- **A bot credential**: `synapse_server.bot_access_token` is required and must not be empty. The
+  removed `synapse_server.oauth2` block is refused with its own message.
+- **URLs** (`server_url`, `mas_admin.url`, `authentik_server.url` and the avatar
   URLs) need an `http://` or `https://` scheme and a host.
 - **Matrix IDs** (`bot_user_id`, `admin_room.admin_user_ids`, `matrix_user_ignore_list`) must be full
   IDs such as `@alice:company.org`. A bare username in `matrix_user_ignore_list` would protect nobody.
@@ -80,7 +84,7 @@ What is checked, beyond types and required fields:
 
 ## Credentials stay out of logs
 
-The bot access token, the OAuth2 and MAS client secrets and the Authentik API key are held as secret
+The bot access token, the MAS admin client secret and the Authentik API key are held as secret
 values: printing or logging the config shows `**********` in their place, and so does a JSON dump of
 it. Supplying them through `ONBOT_*` variables instead of the file is still the recommended pattern.
 

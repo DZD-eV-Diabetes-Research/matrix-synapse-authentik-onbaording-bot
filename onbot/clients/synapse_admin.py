@@ -15,8 +15,10 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+import httpx
+
 from onbot.auth.token_provider import TokenProvider
-from onbot.clients.base import BaseApiClient
+from onbot.clients.base import ApiError, BaseApiClient, resend_unless_done
 from onbot.logging import get_logger
 
 log = get_logger(__name__)
@@ -63,6 +65,8 @@ class ApiClientSynapseAdmin(BaseApiClient):
             params={"limit": _DEFAULT_PAGE_SIZE, "guests": "false"},
             extract_items=lambda page: page["users"],
             next_params=_next_token_params("next_token"),
+            total=lambda page: page.get("total"),
+            item_key=lambda user: user["name"],
         )
 
     async def list_rooms(self, *, search_term: str | None = None) -> list[dict[str, Any]]:
@@ -74,6 +78,8 @@ class ApiClientSynapseAdmin(BaseApiClient):
             next_params=lambda page, cur: (
                 {**cur, "from": page["next_batch"]} if page.get("next_batch") is not None else None
             ),
+            total=lambda page: page.get("total_rooms"),
+            item_key=lambda room: room["room_id"],
         )
 
     async def list_non_space_rooms(self, *, search_term: str | None = None) -> list[dict[str, Any]]:
@@ -100,13 +106,30 @@ class ApiClientSynapseAdmin(BaseApiClient):
             params={"limit": _DEFAULT_PAGE_SIZE},
             extract_items=lambda page: page["media"],
             next_params=_next_token_params("next_token"),
+            total=lambda page: page.get("total"),
+            item_key=lambda media: media["media_id"],
         )
 
     # --- room membership / state --------------------------------------------
 
     async def add_user_to_room(self, room_id: str, user_id: str) -> None:
         # https://element-hq.github.io/synapse/latest/admin_api/room_membership.html
-        await self.post_json(f"v1/join/{room_id}", json_body={"user_id": user_id})
+        path = f"v1/join/{room_id}"
+        body = {"user_id": user_id}
+        try:
+            await self.post_json(path, json_body=body)
+        except (ApiError, httpx.TransportError) as exc:
+            # A second join of a joined user fails with 403 "already in the room", so after a failure
+            # that may hide a success, look at the members before sending it again (RUN-05).
+            async def joined() -> bool:
+                return user_id in await self.list_room_members(room_id)
+
+            await resend_unless_done(
+                exc,
+                done=joined,
+                resend=lambda: self.post_json(path, json_body=body),
+                what=f"joining {user_id} to {room_id}",
+            )
 
     async def make_room_admin(self, room_id: str, user_id: str) -> None:
         # https://element-hq.github.io/synapse/latest/admin_api/rooms.html#make-room-admin-api
@@ -128,6 +151,7 @@ class ApiClientSynapseAdmin(BaseApiClient):
         await self.post_json(
             f"v1/users/{user_id}/override_ratelimit",
             json_body={"messages_per_second": messages_per_second, "burst_count": burst_count},
+            idempotent=True,  # sets absolute values; repeating it changes nothing
         )
 
     async def room_is_blocked(self, room_id: str) -> bool:

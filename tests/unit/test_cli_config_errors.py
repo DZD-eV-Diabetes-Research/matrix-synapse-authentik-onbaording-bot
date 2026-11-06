@@ -92,6 +92,40 @@ def test_invalid_config_prints_paths_and_no_values(tmp_path: Path, command: list
         assert expected in lines
 
 
+OAUTH2_CONFIG = """\
+synapse_server:
+  server_name: company.org
+  server_url: https://matrix.company.org
+  bot_user_id: "@bot:company.org"
+  oauth2:
+    token_endpoint: https://mas.company.org/oauth2/token
+    client_id: cid
+    client_secret: MAS_X9
+authentik_server:
+  url: https://authentik.company.org
+  api_key: AK_42
+"""
+
+
+def test_removed_oauth2_block_exits_2_with_a_specific_message(tmp_path: Path) -> None:
+    """``synapse_server.oauth2`` was removed (RUN-11). Operators who still set it are told why and what
+    to use instead, not handed the generic unknown-key error, and the secret is not printed."""
+    path = tmp_path / "config.yml"
+    path.write_text(OAUTH2_CONFIG)
+
+    result = _run_onbot(path, "reconcile-once")
+
+    assert result.returncode == 2
+    assert "Traceback" not in result.stderr
+    assert "MAS_X9" not in result.stderr + result.stdout
+    assert (
+        "  synapse_server: synapse_server.oauth2 is no longer supported: MAS does not grant the Matrix "
+        "API scopes to client_credentials; set synapse_server.bot_access_token to a compatibility token "
+        "(scripts/provision-bot-account.sh)"
+    ) in result.stderr.splitlines()
+    assert "Extra inputs" not in result.stderr
+
+
 def test_invalid_yaml_does_not_quote_the_offending_line(tmp_path: Path) -> None:
     path = tmp_path / "config.yml"
     path.write_text('synapse_server:\n  server_name: x\n  bot_access_token: "MAS_X9: [\n')

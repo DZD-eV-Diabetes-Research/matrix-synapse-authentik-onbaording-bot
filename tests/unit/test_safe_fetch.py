@@ -436,3 +436,17 @@ async def test_guard_refuses_a_name_with_any_internal_address() -> None:
     with pytest.raises(MediaFetchRejected, match=r"10\.0\.0\.1"):
         await backend.connect_tcp("cdn.test", 443)
     assert inner.connected == []
+
+
+def test_guard_refuses_to_build_when_httpx_moves_its_pool(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The guard replaces httpx's private ``_pool``. If an httpx update renamed it, the assignment
+    would leave the real, unguarded pool in use; the fetcher must refuse to exist instead."""
+    original = httpx.AsyncHTTPTransport.__init__
+
+    def renamed_pool(self: httpx.AsyncHTTPTransport, *args: Any, **kwargs: Any) -> None:
+        original(self, *args, **kwargs)
+        self._connection_pool = self.__dict__.pop("_pool")  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "__init__", renamed_pool)
+    with pytest.raises(RuntimeError, match="cannot be installed"):
+        SafeImageFetcher()

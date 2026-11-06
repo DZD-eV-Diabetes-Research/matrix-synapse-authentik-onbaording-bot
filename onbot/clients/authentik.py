@@ -20,6 +20,12 @@ log = get_logger(__name__)
 _DEFAULT_PAGE_SIZE = 100
 
 
+def _total(page: Any) -> int | None:
+    """The entry count Authentik reports for the whole listing (``pagination.count``)."""
+    count = ((page or {}).get("pagination") or {}).get("count")
+    return count if isinstance(count, int) else None
+
+
 def _next_page_params(page: Any, current: dict[str, Any]) -> dict[str, Any] | None:
     """Authentik paginates with ``pagination.next`` holding the next page number (0 = end)."""
     pagination = (page or {}).get("pagination", {})
@@ -68,6 +74,8 @@ class ApiClientAuthentik(BaseApiClient):
             params=params,
             extract_items=lambda page: page["results"],
             next_params=_next_page_params,
+            total=_total,
+            item_key=lambda user: user["pk"],
         )
 
     async def list_groups(
@@ -99,6 +107,8 @@ class ApiClientAuthentik(BaseApiClient):
             params=params,
             extract_items=lambda page: page["results"],
             next_params=_next_page_params,
+            total=_total,
+            item_key=lambda group: group["pk"],
         )
 
         if not include_inactive_users_obj:

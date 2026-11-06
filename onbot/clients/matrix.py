@@ -28,11 +28,13 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
+import httpx
+
 if TYPE_CHECKING:
     from onbot.media import MediaUploader
 
 from onbot.auth.token_provider import TokenProvider
-from onbot.clients.base import ApiError, BaseApiClient
+from onbot.clients.base import ApiError, BaseApiClient, may_have_been_processed, resend_unless_done
 from onbot.clients.versions import CLIENT_VERSIONS_PATH, ServerVersions
 from onbot.logging import get_logger
 from onbot.models import RoomCreateAttributes
@@ -43,6 +45,12 @@ log = get_logger(__name__)
 SLIDING_SYNC_PATH = "unstable/org.matrix.simplified_msc3575/sync"
 
 ENCRYPTION_ALGORITHM = "m.megolm.v1.aes-sha2"
+
+# Extra client-side wait on top of the server-side long-poll timeout of a sliding sync request.
+SYNC_TIMEOUT_MARGIN_SEC = 15.0
+
+# Key in ``m.room.create`` content that carries the bot's per-call creation nonce (RUN-05).
+CREATION_NONCE_KEY = "onbot.creation_nonce"
 
 
 class SyncNotSupportedError(RuntimeError):
@@ -84,8 +92,8 @@ class ApiClientMatrix(BaseApiClient):
     ) -> None:
         self.server_url = server_url.rstrip("/")
         base = f"{self.server_url}/_matrix/client"
-        # Sliding sync long-polls; allow a generous read timeout unless the caller overrides it.
-        kwargs.setdefault("timeout", 60.0)
+        # Ordinary calls keep the base client's 30 s timeout; only the sync long-poll gets a longer
+        # one, per request (RUN-10).
         super().__init__(base_url=base, auth_token=access_token, token_provider=token_provider, **kwargs)
         self.server_name = server_name
         # Server-wide room version for createRoom; None leaves rooms to inherit the server default
@@ -100,16 +108,7 @@ class ApiClientMatrix(BaseApiClient):
         """Fetch + cache ``GET /_matrix/client/versions`` (the bot's capability source of truth)."""
         payload = await self.get_json(CLIENT_VERSIONS_PATH)
         self._versions = ServerVersions.from_payload(payload)
-        log.info(
-            "negotiated CS-API: sliding_sync=%s authenticated_media=%s",
-            self._versions.supports_simplified_sliding_sync(),
-            self._versions.supports_authenticated_media(),
-        )
-        return self._versions
-
-    @property
-    def versions(self) -> ServerVersions | None:
-        """Cached negotiation result, or ``None`` until :meth:`negotiate_versions` has run."""
+        log.info("negotiated CS-API: sliding_sync=%s", self._versions.supports_simplified_sliding_sync())
         return self._versions
 
     # --- device registration (MAS compatibility) ----------------------------
@@ -133,8 +132,11 @@ class ApiClientMatrix(BaseApiClient):
         device_id = whoami.get("device_id")
         if not device_id:
             return
+        # Uploading the same (empty) device keys twice is harmless, so a retry after an ambiguous
+        # failure is safe.
         await self.post_json(
             "v3/keys/upload",
+            idempotent=True,
             json_body={
                 "device_keys": {
                     "user_id": whoami["user_id"],
@@ -213,8 +215,7 @@ class ApiClientMatrix(BaseApiClient):
         if combined_initial_state:
             body["initial_state"] = combined_initial_state
 
-        result = await self.post_json("v3/createRoom", json_body=body)
-        room_id: str = result["room_id"]
+        room_id = await self._post_create_room(body)
         if parent_space_id:
             # https://spec.matrix.org/latest/client-server-api/#mspacechild
             # `suggested` nudges clients to surface the room to space members: true for a lobby (a room
@@ -239,9 +240,74 @@ class ApiClientMatrix(BaseApiClient):
         }
         if self.room_version is not None and "room_version" not in body:
             body["room_version"] = self.room_version
-        result = await self.post_json("v3/createRoom", json_body=body)
-        room_id: str = result["room_id"]
-        return room_id
+        return await self._post_create_room(body)
+
+    async def _post_create_room(self, body: dict[str, Any]) -> str:
+        """``POST createRoom`` without ever creating the room twice (RUN-05).
+
+        createRoom is not idempotent, so the base client does not resend it after a failure that may
+        come after the server created the room (a read timeout, a dropped connection, a 502 or 504
+        from the reverse proxy). Instead, each call tags the room with a random nonce in its
+        ``m.room.create`` content, and after such a failure this looks for a room carrying that
+        nonce: by its alias when it has one, else among the rooms the bot joined since just before
+        the call (a one-off read, only for rooms without an alias, which are the onboarding rooms).
+        A room found that way is returned as if the call had succeeded; otherwise the original error
+        is raised, and the caller's next attempt creates the room with a new nonce.
+
+        Remaining gap: a server still working on the request when the check runs finishes the room
+        after it; that room is then left behind unused.
+        """
+        nonce = uuid.uuid4().hex
+        creation_content = {**(body.get("creation_content") or {}), CREATION_NONCE_KEY: nonce}
+        body = {**body, "creation_content": creation_content}
+        alias_localpart: str | None = body.get("room_alias_name")
+        joined_before: set[str] | None = None
+        if not alias_localpart:
+            joined_before = set(await self.joined_rooms())
+        try:
+            result = await self.post_json("v3/createRoom", json_body=body)
+        except (ApiError, httpx.TransportError) as exc:
+            if not may_have_been_processed(exc):
+                raise
+            room_id = await self._find_created_room(nonce, alias_localpart, joined_before)
+            if room_id is None:
+                raise
+            log.warning(
+                "createRoom failed (%s), but the server had created the room; continuing with %s",
+                exc,
+                room_id,
+            )
+            return room_id
+        created: str = result["room_id"]
+        return created
+
+    async def _find_created_room(
+        self, nonce: str, alias_localpart: str | None, joined_before: set[str] | None
+    ) -> str | None:
+        """The room created with ``nonce``, if the server created it after all."""
+        try:
+            if alias_localpart:
+                found = await self.resolve_room_alias(f"#{alias_localpart}:{self.server_name}")
+                candidates = [found] if found else []
+            else:
+                before = joined_before or set()
+                candidates = [r for r in await self.joined_rooms() if r not in before]
+            for room_id in candidates:
+                create = await self.get_room_state_event(room_id, "m.room.create") or {}
+                if create.get(CREATION_NONCE_KEY) == nonce:
+                    return room_id
+        except ApiError, httpx.TransportError:
+            log.warning("could not check whether a failed createRoom created the room", exc_info=True)
+        return None
+
+    async def joined_rooms(self) -> list[str]:
+        """The rooms the bot is joined to.
+
+        https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3joined_rooms
+        """
+        result = await self.get_json("v3/joined_rooms")
+        rooms: list[str] = list((result or {}).get("joined_rooms") or [])
+        return rooms
 
     async def create_direct_message_room(
         self,
@@ -307,11 +373,26 @@ class ApiClientMatrix(BaseApiClient):
         body: dict[str, Any] = {"user_id": user_id}
         if reason:
             body["reason"] = reason
-        await self.post_json(f"v3/rooms/{room_id}/kick", json_body=body)
+        path = f"v3/rooms/{room_id}/kick"
+        try:
+            await self.post_json(path, json_body=body)
+        except (ApiError, httpx.TransportError) as exc:
+            # Kicking twice fails with 403 "not in the room", so a resend is only safe once a look at
+            # the membership shows the first kick did not land (RUN-05).
+            async def gone() -> bool:
+                return await self.get_membership(room_id, user_id) not in ("join", "invite", "knock")
+
+            await resend_unless_done(
+                exc,
+                done=gone,
+                resend=lambda: self.post_json(path, json_body=body),
+                what=f"kicking {user_id} from {room_id}",
+            )
 
     async def invite_user(self, room_id: str, user_id: str) -> None:
         # https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3roomsroomidinvite
-        await self.post_json(f"v3/rooms/{room_id}/invite", json_body={"user_id": user_id})
+        # Re-inviting an invited user succeeds (checked against Synapse), so a retry is safe.
+        await self.post_json(f"v3/rooms/{room_id}/invite", json_body={"user_id": user_id}, idempotent=True)
 
     async def get_membership(self, room_id: str, user_id: str) -> str | None:
         """A user's membership in a room (``join``/``invite``/``leave``/…), or ``None`` if never set."""
@@ -400,6 +481,9 @@ class ApiClientMatrix(BaseApiClient):
             params=params,
             content=content,
             headers={"Content-Type": content_type},
+            # A second upload after an ambiguous failure only leaves an unused copy of the file in
+            # the media store; retrying is worth that.
+            idempotent=True,
         )
         content_uri: str = result["content_uri"]
         return content_uri
@@ -515,7 +599,16 @@ class ApiClientMatrix(BaseApiClient):
                 }
             }
         }
-        data = await self.request_json("POST", SLIDING_SYNC_PATH, params=params, json_body=body)
+        # A read, safe to repeat with the same ``pos``. The server holds the request for up to
+        # ``timeout_ms``, so the client waits that long plus a margin, and only here (RUN-10).
+        data = await self.request_json(
+            "POST",
+            SLIDING_SYNC_PATH,
+            params=params,
+            json_body=body,
+            timeout=timeout_ms / 1000 + SYNC_TIMEOUT_MARGIN_SEC,
+            idempotent=True,
+        )
         data = data or {}
         rooms = [
             RoomSync(
