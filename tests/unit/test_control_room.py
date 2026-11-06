@@ -350,3 +350,49 @@ async def test_status_before_the_first_reconcile_says_so() -> None:
     await _run(_handler(client, broadcast), _message("!status"))
 
     assert "last reconcile: not yet" in client.sends[0][1]
+
+
+# --- !lobby reopen (D16) --------------------------------------------------------------------------
+
+
+class _LobbyEngine:
+    def __init__(self) -> None:
+        self.reopened: list[str] = []
+
+    async def reopen_lobby(self, target: str) -> str:
+        self.reopened.append(target)
+        return f"Reopened {target}"
+
+
+async def test_lobby_reopen_asks_the_engine_and_answers_with_its_reply() -> None:
+    client, broadcast = _FakeClient(), _FakeBroadcast()
+    engine = _LobbyEngine()
+
+    await _run(_handler(client, broadcast, engine=engine), _message("!lobby reopen group-7"))
+
+    assert engine.reopened == ["group-7"]
+    assert client.sends == [(ROOM, "Reopened group-7")]
+
+
+async def test_lobby_without_reopen_and_a_target_explains_the_usage() -> None:
+    client, broadcast = _FakeClient(), _FakeBroadcast()
+    engine = _LobbyEngine()
+
+    await _run(
+        _handler(client, broadcast, engine=engine),
+        _message("!lobby", event_id="$a"),
+        _message("!lobby reopen", event_id="$b"),
+        _message("!lobby close g1", event_id="$c"),
+    )
+
+    assert engine.reopened == []
+    assert len(client.sends) == 3 and all("Usage: !lobby reopen" in body for _, body in client.sends)
+
+
+async def test_lobby_reopen_is_refused_for_somebody_off_the_allowlist() -> None:
+    client, broadcast = _FakeClient(), _FakeBroadcast()
+    engine = _LobbyEngine()
+
+    await _run(_handler(client, broadcast, engine=engine), _message("!lobby reopen g1", sender=STRANGER))
+
+    assert engine.reopened == []
