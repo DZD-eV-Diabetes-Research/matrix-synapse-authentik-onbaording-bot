@@ -535,22 +535,32 @@ class AccountLifecycleManager:
         effectors: LifecycleEffectors,
         *,
         clock: Callable[[], float] = time.time,
+        preview: bool = False,
     ) -> None:
         self.cfg = config.sync_authentik_users_with_matrix_rooms.deactivate_disabled_authentik_users_in_matrix
         self.store = store
         self.effectors = effectors
         self.clock = clock
+        # ``reconcile-once --dry-run``: plan as configured (so the preview shows what the guard would
+        # do with the locks of a live configuration), but act like a dry run.
+        self.preview = preview
         self._effector_name = type(effectors).__name__
         self._reported_warnings: set[str] = set()
         # The step whose "DRY-RUN: would ..." or "HELD" line was last logged per account, so the audit
         # channel gets one line per stage transition instead of one per tick (LIF-08).
         self._noted: dict[str, str] = {}
 
+    @property
+    def dry_run(self) -> bool:
+        """Whether no effector may be called: the configured dry run, or a preview."""
+        return self.cfg.dry_run or self.preview
+
     async def plan_accounts(self, snapshot: DirectorySnapshot) -> list[PlannedAccountAction]:
         """The destructive steps (lock, erase) a pass over ``snapshot`` would take now; acts on nothing.
 
         The reconciler hands these to the destructive-action guard before the real pass, which then
-        only takes the steps the guard permits. Dry-run plans nothing: it destroys nothing either.
+        only takes the steps the guard permits. A configured dry run plans nothing: it destroys
+        nothing either. A preview plans as configured.
         """
         if not self.cfg.enabled or self.cfg.dry_run or not snapshot.users:
             return []
@@ -701,7 +711,7 @@ class AccountLifecycleManager:
             changed = True
         if changed:
             await self.store.save(ledger)  # after every user, never once at the end (LIF-03)
-        return LifecycleOutcome(mxid=mxid, action=action, dry_run=self.cfg.dry_run)
+        return LifecycleOutcome(mxid=mxid, action=action, dry_run=self.dry_run)
 
     async def _freeze(self, ledger: LifecycleLedger, mxid: str, reason: str) -> LifecycleOutcome | None:
         entry = ledger.entries[mxid]
@@ -714,9 +724,7 @@ class AccountLifecycleManager:
             mxid,
             reason,
         )
-        return LifecycleOutcome(
-            mxid=mxid, action=LifecycleAction.freeze, dry_run=self.cfg.dry_run, detail=reason
-        )
+        return LifecycleOutcome(mxid=mxid, action=LifecycleAction.freeze, dry_run=self.dry_run, detail=reason)
 
     async def _record_failure(
         self, ledger: LifecycleLedger, mxid: str, action: LifecycleAction, now: float, exc: Exception
@@ -738,7 +746,7 @@ class AccountLifecycleManager:
             delay,
         )
         log.debug("lifecycle %s of %s failed", action.value, mxid, exc_info=exc)
-        return LifecycleOutcome(mxid=mxid, action=action, dry_run=self.cfg.dry_run, failed=True, detail=error)
+        return LifecycleOutcome(mxid=mxid, action=action, dry_run=self.dry_run, failed=True, detail=error)
 
     def _erase_plan(self) -> str:
         if self.cfg.delete_after_n_sec is None:
@@ -770,7 +778,7 @@ class AccountLifecycleManager:
             return True
 
         if action is LifecycleAction.logout:
-            if self.cfg.dry_run:
+            if self.dry_run:
                 if self._note_once(mxid, f"dry-run:{action.value}"):
                     audit.warning("DRY-RUN: would lock out %s (%s)", mxid, reason)
                 return False
@@ -802,7 +810,7 @@ class AccountLifecycleManager:
             ledger.entries.pop(mxid)
             audit.info("cleared pending offboarding of %s (%s); nothing was locked", mxid, reason)
             return True
-        if self.cfg.dry_run:
+        if self.dry_run:
             if self._note_once(mxid, f"dry-run:{LifecycleAction.reenable.value}"):
                 audit.warning("DRY-RUN: would unlock %s (%s)", mxid, reason)
             return False
@@ -813,7 +821,7 @@ class AccountLifecycleManager:
 
     async def _erase(self, ledger: LifecycleLedger, mxid: str, now: float) -> bool:
         delete_media = self.cfg.include_user_media_on_delete
-        if self.cfg.dry_run:
+        if self.dry_run:
             if self._note_once(mxid, f"dry-run:{LifecycleAction.erase.value}"):
                 audit.warning(
                     "DRY-RUN: would erase %s (deactivate account, delete_media=%s)", mxid, delete_media

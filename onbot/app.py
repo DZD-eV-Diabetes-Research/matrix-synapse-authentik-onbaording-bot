@@ -316,12 +316,6 @@ async def build_app(
     No network I/O happens here; see :class:`StartupSupervisor` for what runs against the servers.
     ``dry_run`` wires the pass for ``reconcile-once --dry-run``: writes are logged, not sent.
     """
-    if dry_run:
-        config = config.model_copy(deep=True)
-        lifecycle_cfg = (
-            config.sync_authentik_users_with_matrix_rooms.deactivate_disabled_authentik_users_in_matrix
-        )
-        lifecycle_cfg.dry_run = True  # offboarding has its own dry run: it calls no effector at all
     async with AsyncExitStack() as stack:
         authentik = ApiClientAuthentik(
             url=config.authentik_server.url,
@@ -360,7 +354,11 @@ async def build_app(
         if dry_run:
             ledger_store = _ReadOnlyLedgerStore(ledger_store)
             guard_store = ReadOnlyGuardStore(guard_store)
-        lifecycle = AccountLifecycleManager(config, store=ledger_store, effectors=lifecycle_effectors)
+        # A preview plans offboarding as configured, so it shows what the guard would do with the
+        # locks of a live configuration, but it calls no effector (offboarding's own dry run).
+        lifecycle = AccountLifecycleManager(
+            config, store=ledger_store, effectors=lifecycle_effectors, preview=dry_run
+        )
         # One guard for the engine (decides, records) and the control room (!confirm, !reject): its
         # state is reloaded under one lock for every operation (D13).
         guard = DestructiveActionGuard(GuardLimits.from_config(config), guard_store, events)

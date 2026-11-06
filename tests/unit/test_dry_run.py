@@ -120,10 +120,11 @@ async def test_build_app_dry_run_wires_recorders_and_read_only_stores() -> None:
         assert isinstance(app.engine.effectors, DryRunEffectors)
         assert isinstance(app.engine.admin, DryRunSynapseAdmin)
         assert isinstance(app.guard.store, ReadOnlyGuardStore)
-        assert app.engine.lifecycle is not None and app.engine.lifecycle.cfg.dry_run is True
+        assert app.engine.lifecycle is not None and app.engine.lifecycle.dry_run is True
+        assert app.engine.lifecycle.cfg.dry_run is False  # plans as configured, acts as a dry run
         assert app.control_room is None and app.notifier is None  # nothing is posted or read
         assert [s.name for s in app.reconcile_once_steps()] == ["version negotiation"]
-    assert life.dry_run is False  # the caller's config is left alone
+    assert life.dry_run is False
 
 
 async def test_the_notifier_is_bound_with_the_control_room(monkeypatch: pytest.MonkeyPatch) -> None:

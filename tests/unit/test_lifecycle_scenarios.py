@@ -253,7 +253,13 @@ class World:
     """
 
     def __init__(
-        self, *, dry_run: bool = False, delete_after: int | None = None, guard: bool = False, **sync: Any
+        self,
+        *,
+        dry_run: bool = False,
+        delete_after: int | None = None,
+        guard: bool = False,
+        preview: bool = False,
+        **sync: Any,
     ) -> None:
         self.config = OnbotConfig.model_validate(_BASE)
         self.config.sync_matrix_rooms_based_on_authentik_groups.enabled = False
@@ -288,6 +294,7 @@ class World:
             MatrixAccountDataLedgerStore(self.store, mx("bot"), SERVER),
             MasLifecycleEffectors(self.mas, synapse_admin=self.media),
             clock=self.clock,
+            preview=preview,
         )
         self.guard: DestructiveActionGuard = (
             DestructiveActionGuard(
@@ -307,6 +314,7 @@ class World:
             events=self.events,
             lifecycle=self.manager,
             guard=self.guard,
+            dry_run=preview,
         )
 
     async def _on_report(self, event: Event) -> None:
@@ -846,3 +854,23 @@ async def test_dry_run_audit_lines_are_written_once_per_stage_not_every_tick(
             await w.tick()
     lines = [r.getMessage() for r in caplog.records if r.name == "onbot.lifecycle.audit"]
     assert sum("DRY-RUN: would lock out" in line for line in lines) == 1
+
+
+async def test_a_preview_shows_what_switching_dry_run_off_would_pause(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """LIF-08 / MNT-09: ``reconcile-once --dry-run`` with ``dry_run: false`` previews the first live pass."""
+    w = World(guard=True, preview=True)
+    staff = [w.person(f"r{n:02d}") for n in range(40)]
+    await w.tick()
+    for week in range(3):
+        for pk in staff[week * 4 : week * 4 + 4][: 11 - week * 4]:
+            w.directory.set_active(pk, False)
+        await w.tick(7 * DAY)
+    caplog.clear()
+    with caplog.at_level(logging.INFO):
+        await w.tick()
+    assert w.mas.calls == []
+    assert "[dry-run] guard: paused 11 destructive action(s)" in caplog.text
+    assert "11 reversible destructive actions in one pass" in caplog.text
+    assert _proposals(w) == []  # a preview records no batch

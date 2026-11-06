@@ -496,6 +496,8 @@ within.
   catches that drop and pauses every lock and erasure until an administrator confirms. It also
   limits how many accounts one pass may lock, which matters most when you switch `dry_run` off after
   a long dry run: everybody marked in the meantime would otherwise be locked in the first live pass.
+  To see that pass before it happens, set `dry_run: false` and run `onbot reconcile-once --dry-run`
+  first: it lists the locks and what the guard would pause, and changes nothing.
 - **Leaving the scope freezes.** A user who is being offboarded (marked or locked) but leaves the sync
   scope while active (or was never known to Onbot as active), lands on an ignore list, or whose
   Matrix ID another active Authentik user now maps to, is *frozen*: no unlock and no further step. Onbot writes one `FROZEN` line to the audit log and posts
