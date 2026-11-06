@@ -11,6 +11,7 @@ import pytest
 
 from onbot.clients.base import ApiError
 from onbot.config import (
+    AdminRoom,
     AuthentikServer,
     CreateMatrixRoomsInAMatrixSpace,
     OnbotConfig,
@@ -127,6 +128,7 @@ def _config(
             bot_access_token="tok",
         ),
         authentik_server=AuthentikServer(url="https://authentik.test", api_key="k"),
+        admin_room=AdminRoom(enabled=False),
         welcome_new_users_messages=messages,
         place_onboarding_rooms_in_space=place_in_space,
         force_join_onboarding_room=force_join,

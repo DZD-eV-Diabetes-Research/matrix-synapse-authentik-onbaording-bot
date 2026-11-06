@@ -14,7 +14,7 @@ import pytest
 from onbot.admin.control_room import ControlRoomHandler
 from onbot.app import build_app
 from onbot.cli import build_parser
-from onbot.config import AuthentikServer, OnbotConfig, SynapseServer
+from onbot.config import AdminRoom, AuthentikServer, OnbotConfig, SynapseServer
 from onbot.events import Signal
 from onbot.guard import ReadOnlyGuardStore
 from onbot.reconciler.effectors import DryRunEffectors, DryRunSynapseAdmin, is_synthetic_room
@@ -31,6 +31,7 @@ def _config() -> OnbotConfig:
             bot_access_token="tok",
         ),
         authentik_server=AuthentikServer(url="https://authentik.test", api_key="ak"),
+        admin_room=AdminRoom(enabled=False),
     )
 
 

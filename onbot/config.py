@@ -215,7 +215,8 @@ class AdminRoom(_StrictModel):
     Authorisation is an allowlist, checked against the event sender — never the sender's room power
     level. The power levels are the fence; the allowlist is the gate. The allowlist is the union of
     ``admin_user_ids`` and the members of the Authentik groups in
-    ``authentik_group_pks_granting_bot_admin``; an empty union means nobody may command the bot.
+    ``authentik_group_pks_granting_bot_admin``. An enabled room needs at least one of the two lists
+    filled; a room nobody may command would leave the guard's pending batches unconfirmable (D19).
     """
 
     enabled: Annotated[
@@ -223,13 +224,18 @@ class AdminRoom(_StrictModel):
         Field(
             title="Enable the admin control room",
             description=inspect.cleandoc(
-                """Create and listen in a control room where administrators can command the bot. Off
-                by default: the room lets anyone on the bot's admin allowlist send a message to every
-                user on the server, so it should be turned on deliberately. The `onbot broadcast`
-                command-line tool does the same job without a room."""
+                """Create and listen in a control room where administrators can command the bot. On
+                by default, because it is where the bot reports what needs a human (paused mass
+                removals, offboarding problems) and where an administrator releases paused removals
+                with `!confirm <id>`. It also lets everyone on the admin allowlist send a message to
+                every user on the server (`!announce`). An enabled room needs at least one
+                administrator in `admin_user_ids` or `authentik_group_pks_granting_bot_admin`, or the
+                bot refuses to start. Set this to `false` to run without the room; the bot then only
+                logs its reports, the destructive-action guard's pauses can only be lifted by raising
+                its limits, and `onbot broadcast` sends announcements from the command line."""
             ),
         ),
-    ] = False
+    ] = True
     alias: Annotated[
         str,
         Field(
@@ -299,8 +305,8 @@ class AdminRoom(_StrictModel):
                 option to make them so: people are made superusers to administer an identity
                 provider, not to page the whole company, and a capability that reaches every user on
                 the server must not widen silently because somebody was granted an unrelated role
-                upstream. Create a group, put people in it, and name it here. An empty list, together
-                with an empty `admin_user_ids`, means nobody may command the bot."""
+                upstream. Create a group, put people in it, and name it here. While the admin room is
+                enabled, this list or `admin_user_ids` must not be empty."""
             ),
             examples=[["1120a6e1124f309bbe96c8be5fb09eab"]],
         ),
@@ -315,6 +321,11 @@ class AdminRoom(_StrictModel):
     @classmethod
     def _v_admin_user_ids(cls, value: list[str]) -> list[str]:
         return [_check_mxid(v) for v in value]
+
+    @property
+    def has_admins(self) -> bool:
+        """Whether the configuration names anybody who may command the bot."""
+        return bool(self.admin_user_ids or self.authentik_group_pks_granting_bot_admin)
 
 
 class SynapseServer(_StrictModel):
@@ -1471,8 +1482,9 @@ class OnbotConfig(BaseSettings):
         Field(
             title="Admin control room",
             description=inspect.cleandoc(
-                """A Matrix room in which listed administrators can command the bot — most notably
-                announcing a message to every user. Disabled by default."""
+                """A Matrix room in which listed administrators command the bot (confirm paused
+                removals, announce a message to every user) and read its reports. Enabled by default;
+                it needs at least one administrator, or `enabled: false`."""
             ),
         ),
     ] = Field(default_factory=AdminRoom)
@@ -1664,6 +1676,21 @@ class OnbotConfig(BaseSettings):
             raise ValueError(
                 "place_onboarding_rooms_in_space requires create_matrix_rooms_in_a_matrix_space to be "
                 "enabled: there is no space to place the rooms in"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _admin_room_needs_an_admin(self) -> OnbotConfig:
+        """An enabled control room nobody may command is a misconfiguration, not a default (D19).
+
+        Checked here rather than on :class:`AdminRoom`, so the default ``AdminRoom()`` (enabled, no
+        admins yet) can still be built for the example config.
+        """
+        if self.admin_room.enabled and not self.admin_room.has_admins:
+            raise ValueError(
+                "the admin room is enabled (the default) but nobody may command the bot: set "
+                "admin_room.admin_user_ids or admin_room.authentik_group_pks_granting_bot_admin, or set "
+                "admin_room.enabled: false to run without an admin room"
             )
         return self
 

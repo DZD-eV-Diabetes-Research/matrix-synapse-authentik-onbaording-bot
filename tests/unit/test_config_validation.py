@@ -25,6 +25,7 @@ _MINIMAL: dict[str, Any] = {
         "bot_access_token": "tok",
     },
     "authentik_server": {"url": "https://authentik.company.org/", "api_key": "key"},
+    "admin_room": {"enabled": False},
 }
 _OAUTH2 = {"token_endpoint": "https://mas.company.org/oauth2/token", "client_id": "cid", "client_secret": "s"}
 
@@ -91,6 +92,7 @@ def test_unrelated_onbot_environment_variables_are_not_config_keys(monkeypatch: 
     monkeypatch.setenv("ONBOT_SYNAPSE_SERVER__BOT_ACCESS_TOKEN", "tok")
     monkeypatch.setenv("ONBOT_AUTHENTIK_SERVER__URL", "https://authentik.company.org")
     monkeypatch.setenv("ONBOT_AUTHENTIK_SERVER__API_KEY", "key")
+    monkeypatch.setenv("ONBOT_ADMIN_ROOM__ENABLED", "false")
     assert load_config().synapse_server.server_name == "company.org"
 
 
@@ -363,4 +365,6 @@ def test_generated_template_validates_once_required_values_are_filled() -> None:
         bot_access_token="tok",
     )
     data["authentik_server"].update(url="https://authentik.company.org", api_key="key")
+    # The admin room is on by default, so the template also needs an admin (D19).
+    data["admin_room"]["admin_user_ids"] = ["@admin:company.org"]
     OnbotConfig.model_validate(data)

@@ -31,7 +31,7 @@ from onbot.admin.control_room import ControlRoomHandler
 from onbot.app import build_app, run_broadcast, run_reconcile_once, run_service
 from onbot.clients.base import ApiError, BaseApiClient
 from onbot.clients.matrix import ApiClientMatrix
-from onbot.config import AuthentikServer, MasAdmin, OnbotConfig, SynapseServer
+from onbot.config import AdminRoom, AuthentikServer, MasAdmin, OnbotConfig, SynapseServer
 from onbot.events import Signal
 from onbot.rooms.admin import AdminRoomProvisioner
 from onbot.runtime import (
@@ -57,6 +57,8 @@ def _homeserver_without_mas(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _config(server_url: str = HS, **overrides: Any) -> OnbotConfig:
+    # Off unless a test turns it on (and then names an admin): most tests are about other steps.
+    overrides.setdefault("admin_room", AdminRoom(enabled=False))
     config = OnbotConfig(
         synapse_server=SynapseServer(
             server_name="example.test",
@@ -645,6 +647,7 @@ def test_sigterm_stops_onbot_run_cleanly(tmp_path: Path) -> None:
             "ONBOT_SYNAPSE_SERVER__BOT_ACCESS_TOKEN": "tok",
             "ONBOT_AUTHENTIK_SERVER__URL": url,
             "ONBOT_AUTHENTIK_SERVER__API_KEY": "ak",
+            "ONBOT_ADMIN_ROOM__ENABLED": "false",
         }
         proc = subprocess.Popen(
             [sys.executable, "-m", "onbot", "run"],

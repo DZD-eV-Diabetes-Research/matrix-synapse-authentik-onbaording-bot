@@ -46,6 +46,7 @@ _BASE: dict[str, Any] = {
         "bot_access_token": "tok",
     },
     "authentik_server": {"url": "https://authentik/", "api_key": "key"},
+    "admin_room": {"enabled": False},
 }
 
 

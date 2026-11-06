@@ -33,6 +33,7 @@ from onbot.clients.authentik import ApiClientAuthentik
 from onbot.clients.matrix import ApiClientMatrix
 from onbot.clients.synapse_admin import ApiClientSynapseAdmin
 from onbot.config import (
+    AdminRoom,
     AuthentikServer,
     MasAdmin,
     OnbotConfig,
@@ -175,6 +176,9 @@ def _build_config(token: str) -> OnbotConfig:
             client_id=S.MAS_ADMIN_CLIENT_ID,
             client_secret=S.MAS_ADMIN_CLIENT_SECRET,
         ),
+        # On by default, but it needs an admin (D19). The tests about the admin room (and the guard's
+        # reports into it) enable it with an admin of their own; the rest run without one.
+        admin_room=AdminRoom(enabled=False),
         server_tick_rate_sec=1,
     )
     # Bot operates outside encrypted rooms (ADR-0009): plain rooms keep the harness simple.

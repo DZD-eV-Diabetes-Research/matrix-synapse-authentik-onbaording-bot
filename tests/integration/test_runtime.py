@@ -274,6 +274,9 @@ async def test_cold_start_with_synapse_down_heals_once_it_is_up(
     config.authentik_poll_rate_sec = 2
     config.admin_room.enabled = True
     config.admin_room.alias = S.uniq("onbot-admin")
+    # An enabled admin room needs an admin, or `onbot run` refuses the config (D19).
+    _admin_user, admin = S.provision(authentik_admin, S.uniq("coldadmin"))
+    config.admin_room.admin_user_ids = [admin.mxid]
     heartbeat = tmp_path / "hb.json"
     log_file = tmp_path / "onbot.log"
     config_file = _write_config(config, tmp_path / "config.yml")

@@ -213,3 +213,33 @@ def test_unknown_log_level_in_the_environment_is_a_config_error(tmp_path: Path) 
     assert result.returncode == 2
     assert "Traceback" not in result.stderr
     assert "  log_level: Input should be 'DEBUG', 'INFO', 'WARNING', 'ERROR' or 'CRITICAL'" in result.stderr
+
+
+NO_ADMIN_CONFIG = """\
+synapse_server:
+  server_name: company.org
+  server_url: https://matrix.company.org
+  bot_user_id: "@bot:company.org"
+  bot_access_token: BOT_TOK_7
+authentik_server:
+  url: https://authentik.company.org
+  api_key: AK_42
+"""
+
+
+def test_admin_room_on_by_default_without_an_admin_exits_2(tmp_path: Path) -> None:
+    """D19: the admin room is on by default; a config that names no admin fails at startup and says
+    which two fields to fill, or how to switch the room off."""
+    path = tmp_path / "config.yml"
+    path.write_text(NO_ADMIN_CONFIG)
+
+    result = _run_onbot(path, "reconcile-once")
+
+    assert result.returncode == 2
+    assert "Traceback" not in result.stderr
+    assert "BOT_TOK_7" not in result.stderr + result.stdout
+    assert (
+        "  config: the admin room is enabled (the default) but nobody may command the bot: set "
+        "admin_room.admin_user_ids or admin_room.authentik_group_pks_granting_bot_admin, or set "
+        "admin_room.enabled: false to run without an admin room"
+    ) in result.stderr.splitlines(), result.stderr

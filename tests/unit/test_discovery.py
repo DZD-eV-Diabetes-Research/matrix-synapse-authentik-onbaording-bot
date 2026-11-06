@@ -6,7 +6,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from onbot.config import AuthentikServer, OnbotConfig, SynapseServer
+from onbot.config import AdminRoom, AuthentikServer, OnbotConfig, SynapseServer
 from onbot.discovery import DiscoveryPoller, fingerprint
 
 ATTR = "username"
@@ -21,6 +21,7 @@ def _config(*, poll_sec: int = 15) -> OnbotConfig:
             bot_access_token="tok",
         ),
         authentik_server=AuthentikServer(url="https://authentik.test", api_key="k"),
+        admin_room=AdminRoom(enabled=False),
         authentik_poll_rate_sec=poll_sec,
     )
 

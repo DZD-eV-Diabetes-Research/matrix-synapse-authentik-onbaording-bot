@@ -19,6 +19,7 @@ _MINIMAL = {
         "bot_access_token": "tok",
     },
     "authentik_server": {"url": "https://authentik.company.org/", "api_key": "key"},
+    "admin_room": {"enabled": False},
 }
 
 

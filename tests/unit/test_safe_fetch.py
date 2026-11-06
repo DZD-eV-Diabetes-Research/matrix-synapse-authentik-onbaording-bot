@@ -267,6 +267,7 @@ def test_policy_comes_from_the_avatar_fetch_config_block() -> None:
                 "bot_access_token": "tok",
             },
             "authentik_server": {"url": "https://authentik.company.org/", "api_key": "key"},
+            "admin_room": {"enabled": False},
             "avatar_fetch": {
                 "allowed_internal_destinations": ["assets.lan", "10.0.0.0/8"],
                 "max_size_bytes": 1000,

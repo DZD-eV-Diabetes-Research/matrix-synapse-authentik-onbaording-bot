@@ -7,7 +7,7 @@ import asyncio
 import pytest
 
 from onbot.admin.broadcast import BroadcastFailure, BroadcastResult, BroadcastService
-from onbot.config import AuthentikServer, OnbotConfig, SynapseServer
+from onbot.config import AdminRoom, AuthentikServer, OnbotConfig, SynapseServer
 
 BOT = "@bot:matrix.test"
 
@@ -21,6 +21,7 @@ def _config(**overrides: object) -> OnbotConfig:
             bot_access_token="tok",
         ),
         authentik_server=AuthentikServer(url="https://authentik.test", api_key="k"),
+        admin_room=AdminRoom(enabled=False),
         **overrides,  # type: ignore[arg-type]
     )
 
