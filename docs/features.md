@@ -655,7 +655,7 @@ lock every account that now looks deleted.
 - **A batch expires** after `confirmation_expiry_sec` (72 hours by default). Its actions stay paused
   meanwhile; if they still apply afterwards, a later pass proposes them again under a new id.
 - **Without the admin control room** nobody can confirm. Paused actions are then only logged
-  (`guard: paused ...` at warning level, each action at info level) and stay paused; raise the limits
+  (`guard: paused ...` at warning level, each action at debug level) and stay paused; raise the limits
   if a large change is intended.
 - **Preview a pass** with `onbot reconcile-once --dry-run`: it reads Authentik and Matrix, logs every
   change it would make (prefixed `[dry-run]`), including what the guard would pause, and changes

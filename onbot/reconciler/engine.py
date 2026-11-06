@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import time
 from collections.abc import Awaitable, Callable, Collection, Sequence
 from dataclasses import dataclass, field
@@ -311,8 +312,10 @@ class ReconcilerEngine:
                 summarize_actions(decision.held),
                 "; ".join(decision.reasons),
             )
+            # A preview lists every one; a live pass has the batch report, so only at debug level.
+            level = logging.INFO if self.dry_run else logging.DEBUG
             for action in decision.held:
-                log.info("%sguard: paused: %s", prefix, action.describe())
+                log.log(level, "%sguard: paused: %s", prefix, action.describe())
         if decision.confirmed_batches:
             log.warning(
                 "%sguard: carrying out confirmed batch(es) %s", prefix, ", ".join(decision.confirmed_batches)
