@@ -16,6 +16,11 @@ name: CI
 #   * Formatting is checked, not fixed: CI never commits.
 #   * The GitHub Actions cache is used on push and PR runs only, never when a release runs this
 #     workflow, so nothing a branch run wrote can feed a release.
+#
+# Duration (review decision D17): the integration job (about 20 minutes) is skipped when a push or PR
+# changes documentation only (scripts/ci_gate.py decides; any other or unknown path runs it). A
+# skipped job counts as passed for required checks. A release always runs it, or reuses a green run
+# of the tagged commit in which it ran (see release.yml).
 
 on:
   push:
@@ -39,6 +44,49 @@ env:
   USE_CACHE: ${{ github.event_name != 'release' }}
 
 jobs:
+  changes:
+    name: changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      integration: ${{ steps.decide.outputs.integration }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.TEST_SHA }}
+          fetch-depth: 0  # the diff below needs the base commit
+          persist-credentials: false
+
+      # Fail-safe: a release, a new branch, a rewritten history or a diff that cannot be computed
+      # always runs the integration suite.
+      - name: Does this change need the integration suite?
+        id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.sha }}
+        run: |
+          base=""
+          head=""
+          if [ "$EVENT" = "pull_request" ]; then
+            base="$(git merge-base "$PR_BASE" "$PR_HEAD" 2>/dev/null || true)"
+            head="$PR_HEAD"
+          elif [ "$EVENT" = "push" ] && [ -n "$PUSH_BEFORE" ] \
+              && git cat-file -e "${PUSH_BEFORE}^{commit}" 2>/dev/null; then
+            base="$PUSH_BEFORE"
+            head="$PUSH_AFTER"
+          fi
+          if [ -n "$base" ] && files="$(git diff --name-only "$base" "$head")"; then
+            echo "Changed paths:"
+            printf '%s\n' "$files"
+            decision="$(printf '%s\n' "$files" | python3 scripts/ci_gate.py needs-integration)"
+          else
+            echo "No usable diff for event ${EVENT}: running the integration suite."
+            decision="$(python3 scripts/ci_gate.py needs-integration --all)"
+          fi
+          echo "integration=${decision}" | tee -a "$GITHUB_OUTPUT"
+
   quality:
     name: lint · type · test
     runs-on: ubuntu-latest
@@ -109,27 +157,11 @@ jobs:
       - name: Scan the current tree
         run: '"$RUNNER_TEMP/gitleaks" dir . --redact --no-banner --verbose'
 
-      # The commits this PR or push adds (a release run scans the tagged commit). Not the full
-      # history: it still holds two old, already invalid tokens (review finding SUP-01) until the
-      # history scrub, and they must not fail every run.
-      - name: Scan the new commits
-        env:
-          EVENT: ${{ github.event_name }}
-          PR_BASE: ${{ github.event.pull_request.base.sha }}
-          PR_HEAD: ${{ github.event.pull_request.head.sha }}
-          PUSH_BEFORE: ${{ github.event.before }}
-          PUSH_AFTER: ${{ github.sha }}
-        run: |
-          if [ "$EVENT" = "pull_request" ]; then
-            range="${PR_BASE}..${PR_HEAD}"
-          elif [ -n "$PUSH_BEFORE" ] && git cat-file -e "${PUSH_BEFORE}^{commit}" 2>/dev/null; then
-            range="${PUSH_BEFORE}..${PUSH_AFTER}"
-          else
-            # New branch, rewritten history or a release: scan the commit itself only.
-            range="-1 ${PUSH_AFTER}"
-          fi
-          echo "Scanning commit range: ${range}"
-          "$RUNNER_TEMP/gitleaks" git . --redact --no-banner --verbose --log-opts="${range}"
+      # Every commit reachable from the tested one. Since the history scrub (review session S16)
+      # the whole history is clean, so a full scan is cheap (a few seconds) and also catches a
+      # secret that was added and removed again inside one PR.
+      - name: Scan the history
+        run: '"$RUNNER_TEMP/gitleaks" git . --redact --no-banner --verbose'
 
   image:
     name: image build · smoke test
@@ -156,6 +188,8 @@ jobs:
 
   integration:
     name: integration (live Synapse · MAS · Authentik)
+    needs: changes
+    if: needs.changes.outputs.integration == 'true'
     runs-on: ubuntu-latest
     # Slow (boots a 6-container stack) and needs Docker, so it is kept apart from the fast quality job.
     steps:

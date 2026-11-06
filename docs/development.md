@@ -111,7 +111,9 @@ or `onbot/__init__.py`.
 
 Steps:
 
-1. Make sure CI on `main` is green and `pdm.lock` is current (see "Dependency updates").
+1. Make sure CI on `main` is green and `pdm.lock` is current (see "Dependency updates"). CI skips the
+   integration suite (about 20 minutes) for pushes and PRs that change documentation only; any other
+   path runs it, and so does `CHANGELOG.md` (`scripts/ci_gate.py`, review decision D17).
 2. Move the "Unreleased" entries in [CHANGELOG.md](../CHANGELOG.md) under `## [X.Y.Z] - DATE` and
    merge that to `main`.
 3. Create a GitHub Release with a new tag on `main`. Tick **"Set as a pre-release"** exactly when the
@@ -138,12 +140,18 @@ What the workflow does, in order. Nothing is published unless every earlier step
 1. **version:** derives the one version both artifacts get (`scripts/release_version.py`). Fails on
    an unpublishable tag, on a pre-release checkbox that does not match the version, and on a tag
    whose commit is not on `main`.
-2. **ci:** runs the whole [CI workflow](../.github/workflows/ci.yml) on the tagged commit: lint, types,
-   unit and contract tests, secret scan, image smoke test and the integration suite.
-3. **build-dist:** builds sdist and wheel with the locked `pdm-backend` and checks that the file names
+2. **ci-reuse:** looks for a green CI run of exactly the tagged commit: a push to `main` in which all
+   four CI jobs passed, the integration suite included (`scripts/ci_gate.py`). If there is one, its
+   result vouches for the commit and step 3 is skipped. The changelog commit of step 2 above always
+   runs the full CI, so tagging it once that CI is green is the fast path: the release then takes a
+   few minutes instead of about 25. No such run (an intermediate commit, a docs-only push whose run skipped the integration job, a
+   cancelled run) or an API error means the full CI runs.
+3. **ci:** otherwise runs the whole [CI workflow](../.github/workflows/ci.yml) on the tagged commit:
+   lint, types, unit and contract tests, secret scan, image smoke test and the integration suite.
+4. **build-dist:** builds sdist and wheel with the locked `pdm-backend` and checks that the file names
    carry the derived version and that the sdist contains no tests (the integration fixtures hold
    public test keys).
-4. **publish-pypi** and **publish-image:** run in the GitHub environment `release`, the only jobs that
+5. **publish-pypi** and **publish-image:** run in the GitHub environment `release`, the only jobs that
    read the publish credentials. The image is built from a git context of the tagged commit, without
    build cache, and the build fails if the installed package does not report the derived version.
 
