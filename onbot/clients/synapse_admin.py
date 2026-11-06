@@ -65,6 +65,8 @@ class ApiClientSynapseAdmin(BaseApiClient):
             params={"limit": _DEFAULT_PAGE_SIZE, "guests": "false"},
             extract_items=lambda page: page["users"],
             next_params=_next_token_params("next_token"),
+            total=lambda page: page.get("total"),
+            item_key=lambda user: user["name"],
         )
 
     async def list_rooms(self, *, search_term: str | None = None) -> list[dict[str, Any]]:
@@ -76,6 +78,8 @@ class ApiClientSynapseAdmin(BaseApiClient):
             next_params=lambda page, cur: (
                 {**cur, "from": page["next_batch"]} if page.get("next_batch") is not None else None
             ),
+            total=lambda page: page.get("total_rooms"),
+            item_key=lambda room: room["room_id"],
         )
 
     async def list_non_space_rooms(self, *, search_term: str | None = None) -> list[dict[str, Any]]:
@@ -102,6 +106,8 @@ class ApiClientSynapseAdmin(BaseApiClient):
             params={"limit": _DEFAULT_PAGE_SIZE},
             extract_items=lambda page: page["media"],
             next_params=_next_token_params("next_token"),
+            total=lambda page: page.get("total"),
+            item_key=lambda media: media["media_id"],
         )
 
     # --- room membership / state --------------------------------------------

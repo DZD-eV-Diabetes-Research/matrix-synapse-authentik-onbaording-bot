@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import email.utils
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Hashable, Mapping
 from types import TracebackType
 from typing import Any
 
@@ -99,6 +99,24 @@ class ApiError(Exception):
             if isinstance(code, str) and code:
                 return code
         return None
+
+
+class ListingChangedError(Exception):
+    """A paginated listing changed while it was read, so the result may be missing entries (RUN-14).
+
+    Raised after a re-read did not give a consistent result either. Acting on such a list (for
+    example removing everybody who is not in it) is unsafe; the caller should fail this round.
+    """
+
+    def __init__(self, path: str, *, reported: set[int], collected: int) -> None:
+        self.path = path
+        self.reported = reported
+        self.collected = collected
+        totals = ", ".join(str(n) for n in sorted(reported))
+        super().__init__(
+            f"listing {path} changed while it was read (server reported {totals} entries, "
+            f"{collected} distinct ones were collected)"
+        )
 
 
 def request_was_not_processed(exc: BaseException) -> bool:
@@ -391,11 +409,21 @@ class BaseApiClient:
         ``extract_items`` pulls the item list out of a page; ``next_params`` returns the query params
         for the next page given the current page and current params, or ``None`` when exhausted.
         """
+        async for page in self._pages(path, params=params, next_params=next_params):
+            for item in extract_items(page):
+                yield item
+
+    async def _pages(
+        self,
+        path: str,
+        *,
+        params: Mapping[str, Any] | None,
+        next_params: Callable[[Any, dict[str, Any]], dict[str, Any] | None],
+    ) -> AsyncIterator[Any]:
         current: dict[str, Any] = dict(params or {})
         while True:
             page = await self.get_json(path, params=current)
-            for item in extract_items(page):
-                yield item
+            yield page
             follow = next_params(page, current)
             if follow is None:
                 return
@@ -408,13 +436,59 @@ class BaseApiClient:
         params: Mapping[str, Any] | None = None,
         extract_items: Callable[[Any], list[Any]],
         next_params: Callable[[Any, dict[str, Any]], dict[str, Any] | None],
+        total: Callable[[Any], int | None] | None = None,
+        item_key: Callable[[Any], Hashable] | None = None,
     ) -> list[Any]:
-        items: list[Any] = []
-        async for item in self.paginate(
-            path, params=params, extract_items=extract_items, next_params=next_params
-        ):
-            items.append(item)
-        return items
+        """Collect every item of a listing, checked for consistency when the API reports a total.
+
+        The APIs page by offset, so an entry that disappears before the current offset while the
+        listing is read shifts every later entry up by one and the first entry of the next page is
+        never seen (RUN-14); an entry that appears shifts them down and one is read twice. With
+        ``total`` (the entry count a page reports) and ``item_key`` (an item's identity), a listing
+        that spans several pages is accepted only when every page reported the same total and that
+        many distinct items were collected. Otherwise it is read once more, and if that is still
+        inconsistent, :class:`ListingChangedError` is raised rather than returning a list with holes.
+        Duplicates are dropped.
+        """
+        reported: set[int] = set()
+        collected = 0
+        for read in range(2):
+            items: list[Any] = []
+            reported = set()
+            pages = 0
+            async for page in self._pages(path, params=params, next_params=next_params):
+                pages += 1
+                items.extend(extract_items(page))
+                if total is not None:
+                    count = total(page)
+                    if count is not None:
+                        reported.add(count)
+            if item_key is None or pages <= 1 or not reported:
+                return items  # nothing to check against (one page, or the API reports no total)
+            unique = _dedupe(items, item_key)
+            collected = len(unique)
+            if reported == {collected}:
+                return unique
+            if read == 0:
+                log.warning(
+                    "listing %s changed while it was read (reported %s, collected %d); reading it again",
+                    path,
+                    sorted(reported),
+                    collected,
+                )
+        raise ListingChangedError(path, reported=reported, collected=collected)
+
+
+def _dedupe(items: list[Any], key: Callable[[Any], Hashable]) -> list[Any]:
+    seen: set[Hashable] = set()
+    unique: list[Any] = []
+    for item in items:
+        k = key(item)
+        if k in seen:
+            continue
+        seen.add(k)
+        unique.append(item)
+    return unique
 
 
 def _safe_payload(response: httpx.Response) -> Any:
