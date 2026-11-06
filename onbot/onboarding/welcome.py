@@ -9,8 +9,10 @@ reconciler signal *and* a join event):
 
 * **One DM per user** — the bot's ``m.direct`` account data maps each user to their DM room; an
   existing room is reused rather than re-created.
-* **Each message once** — the DM's onbot ``direct_room`` state event records a content hash per sent
-  message (G4.3). Already-sent messages are skipped; only new/changed ones go out.
+* **Each message once:** the DM's onbot ``direct_room`` state event records a key per sent message,
+  the hash of its normalised text or its configured ``id`` (G4.3, ONB-18). Already-sent messages are
+  skipped; only new or changed ones go out. Each send carries a transaction id derived from the room
+  and that key, so a send repeated after a lost answer or a crash is deduplicated by Synapse (ONB-09).
 * **One force-join ever** — recorded as ``force_joined_at`` in that same state event, so a user who
   leaves the notice board is not re-joined on the next reconcile tick.
 * **Setup finishes eventually:** the notice board is created with its marker in ``initial_state``
@@ -28,8 +30,8 @@ the bot's ``m.direct``, is re-read and written under a lock of its own (RUN-01).
 
 The messages themselves are templates: placeholders (``{space_link}`` and friends) are filled in per
 recipient and the result is rendered from markdown to HTML, both in :mod:`onbot.formatting`. Neither
-step touches the idempotency key, which is hashed over the configured text — a message is identified
-by what the operator wrote, not by what one user saw.
+step touches the idempotency key, which comes from the configured text (or id): a message is
+identified by what the operator wrote, not by what one user saw.
 
 No database: all bookkeeping lives in Matrix account data + room state (AD-1).
 """
@@ -44,7 +46,7 @@ from urllib.parse import quote
 from onbot.clients.base import ApiError
 from onbot.clients.matrix import ApiClientMatrix
 from onbot.clients.synapse_admin import ApiClientSynapseAdmin
-from onbot.config import OnbotConfig
+from onbot.config import OnbotConfig, WelcomeMessage
 from onbot.formatting import placeholders_in, render_markdown, substitute
 from onbot.logging import get_logger
 from onbot.media import MediaUploader
@@ -72,13 +74,51 @@ _SPACE_PLACEHOLDERS = frozenset({"space_link", "space_alias", "space_name"})
 _FORCE_JOIN_SOFT_FAILURES = (403, 404)
 
 
-def _message_key(message: str) -> str:
-    """Stable per-message idempotency key (content hash). Changing the text re-sends only that one.
+def _digest(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
-    Hashed over the *configured* text, before placeholders are filled in — what identifies a message
-    is what the operator wrote, not what one particular user ended up seeing.
+
+def normalize_message(text: str) -> str:
+    """``text`` without whitespace at line ends and without blank lines around it (ONB-18).
+
+    Switching a YAML block from ``|`` to ``|-``, or a stray trailing space, changes the configured
+    string but not the message anybody reads, so it must not count as a new message.
     """
-    return hashlib.sha256(message.encode("utf-8")).hexdigest()[:16]
+    return "\n".join(line.rstrip() for line in text.splitlines()).strip("\n")
+
+
+def message_text(message: str | WelcomeMessage) -> str:
+    return message.text if isinstance(message, WelcomeMessage) else message
+
+
+def message_keys(message: str | WelcomeMessage) -> tuple[str, ...]:
+    """The keys under which ``message`` may be recorded as sent; the first is the one recorded now.
+
+    A plain message is keyed by a hash of its normalised text. Hashes are taken over the
+    *configured* text, before placeholders are filled in: what identifies a message is what the
+    operator wrote, not what one particular user ended up seeing. A message with an ``id`` is keyed
+    by the id, so its text can be corrected without re-sending it (ONB-18).
+
+    The other keys are what older records may hold: the hash of the raw text (before normalisation
+    existed) and, for a message that got an id later, the hashes of its text. A match on any of them
+    counts as sent, so neither change re-sends anything.
+    """
+    text = message_text(message)
+    keys = [_digest(normalize_message(text)), _digest(text)]
+    if isinstance(message, WelcomeMessage):
+        keys.insert(0, f"id:{message.id}")
+    return tuple(dict.fromkeys(keys))
+
+
+def welcome_txn_id(room_id: str, key: str) -> str:
+    """The transaction id of one welcome message in one room, the same on every attempt (ONB-09).
+
+    Synapse remembers a transaction id per sender and device (for a day in its database, besides a
+    30 minute cache) and answers a repeated send with the event it already created. So a send whose
+    answer was lost, or one repeated after a crash before the message was recorded, does not post it
+    twice. The bot's device is fixed by its access token, which keeps the ids in one scope.
+    """
+    return "onbot-welcome-" + hashlib.sha256(f"{room_id}\n{key}".encode()).hexdigest()[:32]
 
 
 def matrix_to_link(alias: str) -> str:
@@ -146,7 +186,7 @@ class WelcomeService:
         async with self._locks.setdefault(mxid, asyncio.Lock()):
             await self._welcome_user(mxid, messages)
 
-    async def _welcome_user(self, mxid: str, messages: list[str]) -> None:
+    async def _welcome_user(self, mxid: str, messages: list[str | WelcomeMessage]) -> None:
         room_id, created = await self._ensure_direct_room(mxid)
         if created:
             state = DirectRoomState(user_id=mxid, setup_complete=False)
@@ -157,19 +197,33 @@ class WelcomeService:
             await self._finish_setup(room_id, mxid, state)
 
         sent = 0
+        recorded = state.welcome_messages_sent
+        rekeyed = False
         for message in messages:
-            key = _message_key(message)
-            if key in state.welcome_messages_sent:
+            key, *older_keys = message_keys(message)
+            if key in recorded:
                 continue
-            body = self._fill_placeholders(message, mxid)
+            earlier = next((recorded[k] for k in older_keys if k in recorded), None)
+            if earlier is not None:
+                # Sent under a key of an older form (raw text hash, or before it got an id): record it
+                # under its current key too, so the next edit of an id message still sends nothing.
+                recorded[key] = earlier
+                rekeyed = True
+                continue
+            body = self._fill_placeholders(message_text(message), mxid)
             if body is None:
                 continue
-            await self.client.send_text_message(room_id, body, formatted_body=render_markdown(body))
-            state.welcome_messages_sent[key] = datetime.now(UTC).isoformat()
+            await self.client.send_text_message(
+                room_id, body, formatted_body=render_markdown(body), txn_id=welcome_txn_id(room_id, key)
+            )
+            recorded[key] = datetime.now(UTC).isoformat()
             # Record each message the moment it lands: a crash (or a restart) between two sends must
             # not replay the ones already delivered.
             await self._persist(room_id, state)
+            rekeyed = False
             sent += 1
+        if rekeyed:
+            await self._persist(room_id, state)
 
         if sent:
             log.info(

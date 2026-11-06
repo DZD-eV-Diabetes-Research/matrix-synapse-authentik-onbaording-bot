@@ -4,6 +4,7 @@ force-join ever) and for the read-only notice board the DM has become."""
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from collections.abc import Callable
 from typing import Any
 
@@ -16,9 +17,10 @@ from onbot.config import (
     CreateMatrixRoomsInAMatrixSpace,
     OnbotConfig,
     SynapseServer,
+    WelcomeMessage,
 )
 from onbot.onboarding.notice_board import notice_board_power_levels
-from onbot.onboarding.welcome import WelcomeService
+from onbot.onboarding.welcome import WelcomeService, welcome_txn_id
 from onbot.reconciler.state import OnbotRoomType
 from onbot.rooms.identity import RoomIdentity, RoomKey
 
@@ -59,6 +61,7 @@ class FakeMatrixClient:
         self.power_level_writes: list[str] = []
         self.avatars: dict[str, str] = {}
         self.create_calls: list[dict[str, Any]] = []
+        self.txn_ids: list[str | None] = []
 
     async def get_room_power_levels(self, room_id: str) -> dict[str, Any]:
         return dict(self.power_levels.get(room_id, {}))
@@ -106,17 +109,20 @@ class FakeMatrixClient:
     ) -> None:
         self.room_state[(room_id, event_type)] = dict(content)
 
-    async def send_text_message(self, room_id: str, body: str, *, formatted_body: str | None = None) -> str:
+    async def send_text_message(
+        self, room_id: str, body: str, *, formatted_body: str | None = None, txn_id: str | None = None
+    ) -> str:
         # Yield to the loop, as a real HTTP round-trip does: any concurrent welcome for the same user
         # gets to run here, which is exactly where a duplicate would slip in.
         await asyncio.sleep(0)
         self.sent.append((room_id, body))
         self.formatted.append(formatted_body)
+        self.txn_ids.append(txn_id)
         return f"$e{len(self.sent)}"
 
 
 def _config(
-    messages: list[str] | None,
+    messages: list[str | WelcomeMessage] | None,
     *,
     place_in_space: bool = False,
     force_join: bool = True,
@@ -191,12 +197,14 @@ async def test_a_message_is_recorded_before_the_next_one_is_sent() -> None:
     sent_when_second_message_goes_out: list[int] = []
     original = client.send_text_message
 
-    async def _spy(room_id: str, body: str, *, formatted_body: str | None = None) -> str:
+    async def _spy(
+        room_id: str, body: str, *, formatted_body: str | None = None, txn_id: str | None = None
+    ) -> str:
         if body == "rules":
             sent_when_second_message_goes_out.append(
                 len(_direct_state(client, room_id)["welcome_messages_sent"])
             )
-        return await original(room_id, body, formatted_body=formatted_body)
+        return await original(room_id, body, formatted_body=formatted_body, txn_id=txn_id)
 
     client.send_text_message = _spy  # type: ignore[method-assign]
     await svc.welcome_user(ALICE)
@@ -536,3 +544,93 @@ async def test_concurrent_first_welcomes_of_different_users_keep_every_m_direct_
     await asyncio.gather(*(svc.welcome_user(mxid) for mxid in users))
     assert client.created_dms == 20
     assert len(client.sent) == 20
+
+
+# --- ONB-09: a repeated send is deduplicated by its transaction id ---
+
+
+async def test_each_welcome_message_has_a_transaction_id_stable_across_attempts() -> None:
+    """A crash between the send and the record repeats the send; the same txn id lets Synapse drop it."""
+    client = FakeMatrixClient()
+    await WelcomeService(client, _config(["hi", "rules"])).welcome_user(ALICE)  # type: ignore[arg-type]
+    first = list(client.txn_ids)
+
+    # The record of both sends is lost (the process died before persisting): the retry repeats them.
+    _direct_state(client, "!dm-1:matrix.test")["welcome_messages_sent"] = {}
+    await WelcomeService(client, _config(["hi", "rules"])).welcome_user(ALICE)  # type: ignore[arg-type]
+
+    assert client.txn_ids[2:] == first
+    assert all(t and t.startswith("onbot-welcome-") for t in first)
+    assert len(set(first)) == 2
+
+
+def test_transaction_ids_differ_per_room_and_message() -> None:
+    assert welcome_txn_id("!a:x", "k1") != welcome_txn_id("!b:x", "k1")
+    assert welcome_txn_id("!a:x", "k1") != welcome_txn_id("!a:x", "k2")
+    assert welcome_txn_id("!a:x", "k1") == welcome_txn_id("!a:x", "k1")
+
+
+# --- ONB-18: message identity ---
+
+
+async def test_whitespace_at_line_ends_and_around_the_text_does_not_resend() -> None:
+    """Switching a YAML block from `|` to `|-`, or a stray trailing space, changes nothing visible."""
+    client = FakeMatrixClient()
+    config = _config(["hello\nworld\n"])
+    await WelcomeService(client, config).welcome_user(ALICE)  # type: ignore[arg-type]
+
+    config.welcome_new_users_messages = ["hello  \nworld"]
+    await WelcomeService(client, config).welcome_user(ALICE)  # type: ignore[arg-type]
+
+    assert len(client.sent) == 1
+
+
+async def test_a_message_recorded_by_its_raw_text_hash_is_not_resent() -> None:
+    """Records written before normalisation hold the hash of the raw text; they still count."""
+    client = FakeMatrixClient()
+    raw = "hello  \n"
+    client.account_data[(BOT, "m.direct")] = {ALICE: ["!old:matrix.test"]}
+    client.room_state[("!old:matrix.test", "test.matrix.onbot.direct_room")] = {
+        "user_id": ALICE,
+        "welcome_messages_sent": {hashlib.sha256(raw.encode()).hexdigest()[:16]: "2026-01-01T00:00:00+00:00"},
+    }
+    await WelcomeService(client, _config([raw])).welcome_user(ALICE)  # type: ignore[arg-type]
+
+    assert client.sent == []
+
+
+async def test_a_message_with_an_id_can_be_corrected_without_resending() -> None:
+    client = FakeMatrixClient()
+    config = _config([WelcomeMessage(id="intro", text="Welcome aboadr")])
+    await WelcomeService(client, config).welcome_user(ALICE)  # type: ignore[arg-type]
+
+    config.welcome_new_users_messages = [WelcomeMessage(id="intro", text="Welcome aboard")]
+    await WelcomeService(client, config).welcome_user(ALICE)  # type: ignore[arg-type]
+
+    assert [body for _, body in client.sent] == ["Welcome aboadr"]
+    assert "id:intro" in _direct_state(client, "!dm-1:matrix.test")["welcome_messages_sent"]
+
+
+async def test_giving_a_sent_message_an_id_sends_nothing_now_or_after_the_next_edit() -> None:
+    client = FakeMatrixClient()
+    config = _config(["Welcome aboadr"])
+    await WelcomeService(client, config).welcome_user(ALICE)  # type: ignore[arg-type]
+
+    config.welcome_new_users_messages = [WelcomeMessage(id="intro", text="Welcome aboadr")]
+    await WelcomeService(client, config).welcome_user(ALICE)  # type: ignore[arg-type]
+    # The id is recorded now, so the text can change afterwards.
+    config.welcome_new_users_messages = [WelcomeMessage(id="intro", text="Welcome aboard")]
+    await WelcomeService(client, config).welcome_user(ALICE)  # type: ignore[arg-type]
+
+    assert [body for _, body in client.sent] == ["Welcome aboadr"]
+
+
+async def test_a_new_id_sends_the_message_again() -> None:
+    client = FakeMatrixClient()
+    config = _config([WelcomeMessage(id="intro", text="hi")])
+    await WelcomeService(client, config).welcome_user(ALICE)  # type: ignore[arg-type]
+
+    config.welcome_new_users_messages = [WelcomeMessage(id="intro-2", text="hi, again")]
+    await WelcomeService(client, config).welcome_user(ALICE)  # type: ignore[arg-type]
+
+    assert [body for _, body in client.sent] == ["hi", "hi, again"]

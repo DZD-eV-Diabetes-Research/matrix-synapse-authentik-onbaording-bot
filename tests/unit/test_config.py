@@ -192,3 +192,24 @@ def test_generate_example_config_ignores_ambient_config(
     assert data["log_level"] == "INFO"
     assert data["server_tick_rate_sec"] == 300
     assert data["synapse_server"]["server_name"] is None
+
+
+def test_welcome_messages_take_plain_text_and_entries_with_an_id() -> None:
+    from onbot.config import WelcomeMessage
+
+    cfg = OnbotConfig.model_validate(
+        {**_MINIMAL, "welcome_new_users_messages": ["plain", {"id": "intro", "text": "with id"}]}
+    )
+    assert cfg.welcome_new_users_messages == ["plain", WelcomeMessage(id="intro", text="with id")]
+
+
+def test_welcome_message_ids_must_be_unique() -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="repeated: intro"):
+        OnbotConfig.model_validate(
+            {
+                **_MINIMAL,
+                "welcome_new_users_messages": [{"id": "intro", "text": "a"}, {"id": "intro", "text": "b"}],
+            }
+        )

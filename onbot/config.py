@@ -1325,6 +1325,32 @@ class DestructiveActionGuard(_StrictModel):
     ] = 3
 
 
+class WelcomeMessage(_StrictModel):
+    """A welcome message with a stable id, so its text can be corrected without re-sending it (ONB-18)."""
+
+    id: Annotated[
+        str,
+        Field(
+            title="Message id",
+            description=inspect.cleandoc(
+                """Identifies the message in the per-user bookkeeping instead of its text. As long as
+                the id stays the same, editing the text sends nothing again; a new id sends the
+                message to every onboarded user once more. Ids must be unique in the list."""
+            ),
+            examples=["intro"],
+            min_length=1,
+        ),
+    ]
+    text: Annotated[
+        str,
+        Field(
+            title="Message text",
+            description="The Markdown text, with the same placeholders as a plain list entry.",
+            examples=["Welcome aboard, {user_id}!"],
+        ),
+    ]
+
+
 class OnbotConfig(BaseSettings):
     # Unknown top-level keys fail as well (pydantic-settings' default, spelled out here). The env
     # source only looks up ONBOT_* names that belong to a field, so harness or runtime variables
@@ -1369,6 +1395,17 @@ class OnbotConfig(BaseSettings):
     @classmethod
     def _v_matrix_user_ignore_list(cls, value: list[str]) -> list[str]:
         return [_check_mxid(v) for v in value]
+
+    @field_validator("welcome_new_users_messages")
+    @classmethod
+    def _v_welcome_message_ids(
+        cls, value: list[str | WelcomeMessage] | None
+    ) -> list[str | WelcomeMessage] | None:
+        ids = [m.id for m in value or [] if isinstance(m, WelcomeMessage)]
+        duplicates = sorted({i for i in ids if ids.count(i) > 1})
+        if duplicates:
+            raise ValueError(f"welcome message ids must be unique; repeated: {', '.join(duplicates)}")
+        return value
 
     @field_validator("log_level", mode="before")
     @classmethod
@@ -1453,14 +1490,18 @@ class OnbotConfig(BaseSettings):
     ] = None
 
     welcome_new_users_messages: Annotated[
-        list[str] | None,
+        list[str | WelcomeMessage] | None,
         Field(
             title="Welcome messages",
             description=inspect.cleandoc(
                 """Messages the bot sends, in order, in the 1:1 welcome direct room it opens with each
-                newly onboarded user. Each message is sent at most once per user — they are matched by
-                content, so editing a message here re-sends that one message to everyone. `null` or an
-                empty list disables the welcome direct room entirely.
+                user the reconciler maps (so it needs `sync_authentik_users_with_matrix_rooms`).
+                Each message is sent at most once per user. A plain entry is matched by its text:
+                **editing it re-sends that one message to every onboarded user** (whitespace at line
+                ends and blank lines around the text do not count). To correct a message without
+                re-sending it, give it an id: `{id: intro, text: "..."}` is matched by the id, so its
+                text can change freely. Turning a plain entry into one with an id sends nothing
+                again. `null` or an empty list disables the welcome direct room entirely.
 
                 Each message is **Markdown** (CommonMark): `[text](url)`, `**bold**`, `*italic*`,
                 `` `code` ``, lists, headings and quotes all render in the client, and a bare URL
@@ -1482,20 +1523,28 @@ class OnbotConfig(BaseSettings):
                 [
                     "Welcome aboard! I will invite you to the rooms for your groups.",
                     "Everything else lives in **[{space_name}]({space_link})** — have a look around.",
-                ]
+                ],
+                [
+                    {
+                        "id": "intro",
+                        "text": "Welcome aboard! I will invite you to the rooms for your groups.",
+                    },
+                ],
             ],
         ),
     ] = Field(
-        default_factory=lambda: [
-            "Welcome to the company chat. I am the company bot. I will invite you to the groups you "
-            "are assigned to. If you have any technical questions write a message to "
-            "@admin-person:matrix.company.org.",
-            "If you need guidance on how to use this chat have a look at the official documentation: "
-            "https://matrix.org/docs/chat_basics/matrix-for-im/ and https://element.io/user-guide",
-            "🛑 🔐 The chat software will ask you to set up a 'Security Key Backup'. This is very "
-            "important. Save the file in a secure location, otherwise you could lose access to older "
-            "encrypted messages later. Please follow the request.",
-        ]
+        default_factory=lambda: list[str | WelcomeMessage](
+            [
+                "Welcome to the company chat. I am the company bot. I will invite you to the groups you "
+                "are assigned to. If you have any technical questions write a message to "
+                "@admin-person:matrix.company.org.",
+                "If you need guidance on how to use this chat have a look at the official documentation: "
+                "https://matrix.org/docs/chat_basics/matrix-for-im/ and https://element.io/user-guide",
+                "🛑 🔐 The chat software will ask you to set up a 'Security Key Backup'. This is very "
+                "important. Save the file in a secure location, otherwise you could lose access to older "
+                "encrypted messages later. Please follow the request.",
+            ]
+        )
     )
 
     onboarding_room_name: Annotated[

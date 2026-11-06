@@ -364,7 +364,9 @@ hand.
 
 - **The messages are yours to write.** `welcome_new_users_messages` is the list, sent in order;
   `null` or an empty list disables the welcome room entirely. Each message is sent at most once per
-  user and matched by its text, so editing one message re-sends *that* message to everyone.
+  user. A plain entry is matched by its text, so editing it re-sends *that* message to everyone
+  (whitespace at line ends and blank lines around the text do not count). To fix a typo without
+  re-sending, give the message an id, see [message ids](#message-ids) below.
 - **Messages are Markdown, and can link to your space.** See
   [writing welcome messages](#writing-welcome-messages) below.
 - **The room's name and topic** come from `onboarding_room_name` and `onboarding_room_topic`, read
@@ -421,6 +423,28 @@ you enable the space. Any other `{...}` in a message is left exactly as you wrot
 
 Placeholders do not affect the once-per-user bookkeeping: a message is identified by the text in your
 config, not by what an individual user saw, so renaming the space does not re-send anything.
+
+#### Message ids
+
+A plain entry is identified by its text, so correcting it sends the corrected message to every user
+who already got it. An entry with an `id` is identified by the id instead:
+
+```yaml
+welcome_new_users_messages:
+  - id: intro
+    text: |
+      Welcome aboard, {user_id}. I will invite you to the rooms of your groups.
+  - Everything open to everyone lives in **[{space_name}]({space_link})**.
+```
+
+- Editing the `text` of an entry with an id sends nothing again. Changing the `id` sends the message
+  once more to every onboarded user, which is the way to push a substantially new version.
+- Giving an existing plain entry an id (with its text unchanged) sends nothing again either.
+- Ids must be unique within the list.
+
+Each send also carries a transaction id derived from the room and the message, so a send the bot
+repeats because its answer was lost, or because the process died before it recorded the message, is
+dropped by Synapse instead of posted twice (within the day Synapse remembers transaction ids).
 
 **Settings:** `welcome_new_users_messages`, `onboarding_room_name`, `onboarding_room_topic` and
 `force_join_onboarding_room` in the [configuration reference](CONFIG_REFERENCE.md). The design is in
