@@ -24,7 +24,9 @@ leak) and which every member of the parent space may find and join of their own 
   where the space id is resolved from the space alias at reconcile time — which is why the rule cannot
   be static config. It is set as `initial_state` at creation (never briefly invite-only nor briefly
   open) and re-converged by a join-rule reconcile pass (`onbot/reconciler/join_rules.py`) over
-  existing lobbies too, so an operator can close a lobby again by editing it. No room version is
+  existing lobbies too. A lobby a human closed (join rule `invite`, `knock` or `private` sent by
+  somebody other than the bot) stays closed and is reported once; `!lobby reopen` in the admin control
+  room hands it back to the bot (D16 of the 2026-11 review). No room version is
   pinned: `restricted` needs room version 8+ and `knock_restricted` 10+, but the bot asserts a floor
   and lets the room inherit the server default (now v12, ADR-0011); pinning a number would freeze the
   bot behind the ecosystem.
@@ -79,6 +81,10 @@ could have caused it (todo §6).
   config-validation time (a lobby that silently stayed invite-only would be worse than a startup
   error). A lobby enabled at runtime via an Authentik attribute while no space is configured is
   skipped with a warning rather than created invite-only.
+- **Switching a lobby off closes it.** When a group no longer wants a lobby, the bot sets its join
+  rule to `invite` and removes it from the space (REC-10 of the 2026-11 review). Nobody is kicked,
+  and closing goes through the destructive-action guard like a teardown. Switching it on again
+  reopens it, because the closed rule was the bot's own.
 - **The lobby is torn down with its group room.** When the mapped Authentik group disappears,
   `disable_rooms_when_mapped_authentik_group_disappears` blocks the lobby alongside the group room —
   a blocked group room beside a live, joinable lobby is the worst of both.

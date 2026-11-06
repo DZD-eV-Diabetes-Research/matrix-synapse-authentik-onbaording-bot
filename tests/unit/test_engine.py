@@ -6,14 +6,19 @@ from typing import Any, ClassVar
 import pytest
 
 from onbot.clients.base import ApiError
+from onbot.clients.synapse_admin import RoomBlock
 from onbot.config import OnbotConfig
 from onbot.events import EventBus, Signal
 from onbot.lifecycle.accounts import DirectorySnapshot, DirectoryUser
 from onbot.reconciler.effectors import DryRunEffectors
 from onbot.reconciler.engine import ReconcilerEngine
 from onbot.reconciler.state import OnbotRoomType
-from onbot.rooms.provision import ManagedRoomSpec
+from onbot.rooms.provision import ManagedRoomSpec, marker_event_types
 from tests.unit.room_fakes import IdentityScanMixin, room_state
+
+BOT = "@bot:company.org"
+# The power levels of a room the bot created: its onbot markers are locked (D20).
+LOCKED_EVENTS = dict.fromkeys(marker_event_types("company.org"), 1000)
 
 _BASE = {
     "synapse_server": {
@@ -57,6 +62,8 @@ class FakeAdmin(IdentityScanMixin):
         self.added: list[tuple[str, str]] = []
         self.blocked_changes: list[tuple[str, bool]] = []
         self.deleted: list[str] = []
+        # room id -> the account that blocked it (Synapse's block status, REC-11)
+        self.blocks: dict[str, str | None] = {}
 
     async def list_users(self) -> list[dict[str, Any]]:
         return [{"name": f"@{u}:company.org"} for u in ("alice", "bob", "carol")]
@@ -75,8 +82,17 @@ class FakeAdmin(IdentityScanMixin):
     async def room_is_blocked(self, room_id: str) -> bool:
         return False
 
+    async def get_room_block(self, room_id: str) -> RoomBlock:
+        if room_id not in self.blocks:
+            return RoomBlock(blocked=False)
+        return RoomBlock(blocked=True, by=self.blocks[room_id])
+
     async def room_set_blocked(self, room_id: str, *, blocked: bool) -> None:
         self.blocked_changes.append((room_id, blocked))
+        if blocked:
+            self.blocks[room_id] = BOT
+        else:
+            self.blocks.pop(room_id, None)
 
     async def add_user_to_room(self, room_id: str, user_id: str) -> None:
         self.added.append((room_id, user_id))
@@ -96,7 +112,11 @@ class RecordingEffectors(DryRunEffectors):
         self.power_levels: list[tuple[str, dict[str, Any]]] = []
         self.uploads: list[str] = []
         self.avatars: list[tuple[str, str]] = []
-        self.state_store: dict[tuple[str, str], dict[str, Any]] = {}
+        # (room, type) for an empty state key, (room, type, state key) otherwise
+        self.state_store: dict[tuple[str, ...], dict[str, Any]] = {}
+        self.senders: dict[tuple[str, ...], str] = {}
+        self.aliases: dict[str, str] = {}
+        self.alias_writes: list[tuple[str, str]] = []
         self.lobbies_created: list[tuple[str, str, dict[str, Any]]] = []
         self.state_writes: list[tuple[str, str, dict[str, Any]]] = []
         self.names: list[tuple[str, str]] = []
@@ -126,6 +146,9 @@ class RecordingEffectors(DryRunEffectors):
         return f"!new-{spec.room_type.value}:company.org"
 
     async def set_room_power_levels(self, room_id: str, power_levels: dict[str, Any]) -> None:
+        # The usual locked marker levels are left out, so the tests read the users that changed.
+        if power_levels.get("events") == LOCKED_EVENTS:
+            power_levels = {k: v for k, v in power_levels.items() if k != "events"}
         self.power_levels.append((room_id, power_levels))
 
     async def upload_avatar(self, url: str) -> str:
@@ -135,14 +158,42 @@ class RecordingEffectors(DryRunEffectors):
     async def set_room_avatar(self, room_id: str, mxc_uri: str) -> None:
         self.avatars.append((room_id, mxc_uri))
 
+    @staticmethod
+    def _key(room_id: str, event_type: str, state_key: str) -> tuple[str, ...]:
+        return (room_id, event_type, state_key) if state_key else (room_id, event_type)
+
     async def get_room_state(
         self, room_id: str, event_type: str, state_key: str = ""
     ) -> dict[str, Any] | None:
-        return self.state_store.get((room_id, event_type))
+        return self.state_store.get(self._key(room_id, event_type, state_key))
 
-    async def put_room_state(self, room_id: str, event_type: str, content: dict[str, Any]) -> None:
-        self.state_store[(room_id, event_type)] = content
-        self.state_writes.append((room_id, event_type, content))
+    async def get_room_state_event(
+        self, room_id: str, event_type: str, state_key: str = ""
+    ) -> dict[str, Any] | None:
+        key = self._key(room_id, event_type, state_key)
+        content = await self.get_room_state(room_id, event_type, state_key)
+        if content is None:
+            return None
+        return {"sender": self.senders.get(key, BOT), "content": content, "event_id": f"ev-{key}"}
+
+    async def put_room_state(
+        self, room_id: str, event_type: str, content: dict[str, Any], state_key: str = ""
+    ) -> None:
+        key = self._key(room_id, event_type, state_key)
+        self.state_store[key] = content
+        self.senders[key] = BOT
+        written = f"{event_type}/{state_key}" if state_key else event_type
+        self.state_writes.append((room_id, written, content))
+
+    async def resolve_room_alias(self, alias: str) -> str | None:
+        return self.aliases.get(alias)
+
+    async def set_room_alias(self, alias: str, room_id: str) -> None:
+        self.aliases[alias] = room_id
+        self.alias_writes.append((alias, room_id))
+
+    async def get_room_power_levels(self, room_id: str) -> dict[str, Any]:
+        return {"events": dict(LOCKED_EVENTS)}
 
     async def get_room_account_data(
         self, user_id: str, room_id: str, data_type: str
@@ -942,7 +993,10 @@ async def test_global_admin_level_is_withdrawn_after_the_name_leaves_the_config(
     # was ever granted 100 — without it the entry would outlive her membership forever.
     class CarolAtAdmin(RecordingEffectors):
         async def get_room_power_levels(self, room_id: str) -> dict[str, Any]:
-            return {"users": {"@alice:company.org": 50, "@carol:company.org": 100}}
+            return {
+                "users": {"@alice:company.org": 50, "@carol:company.org": 100},
+                "events": dict(LOCKED_EVENTS),
+            }
 
     second = CarolAtAdmin()
     second.state_store = effectors.state_store

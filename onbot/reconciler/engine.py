@@ -68,6 +68,19 @@ from onbot.reconciler.power_levels import (
     plan_power_levels,
     room_authority,
 )
+from onbot.reconciler.repair import (
+    CANONICAL_ALIAS_EVENT_TYPE,
+    SPACE_CHILD_EVENT_TYPE,
+    SPACE_PARENT_EVENT_TYPE,
+    closed_join_rules,
+    is_closed,
+    marker_repair,
+    space_child_attached,
+    space_child_content,
+    space_child_ok,
+    space_parent_content,
+    space_parent_ok,
+)
 from onbot.reconciler.report import PassReport, describe_error
 from onbot.reconciler.rooms import build_group_room_maps, colliding_aliases, resolve_room_settings
 from onbot.reconciler.state import (
@@ -90,7 +103,7 @@ from onbot.rooms.identity import (
     describe_stray,
     stray_claims,
 )
-from onbot.rooms.provision import ManagedRoomSpec
+from onbot.rooms.provision import ManagedRoomSpec, lock_markers, markers_locked
 
 log = get_logger(__name__)
 
@@ -230,6 +243,15 @@ class ReconcilerEngine:
         self.last_pass_report = PassReport()
         # room id -> (room version, creators). The create event never changes, so one read per room.
         self._create_info_cache: dict[str, tuple[str | None, frozenset[str]]] = {}
+        # Findings about rooms already reported to the admins (`room_attention`), once per process.
+        self._reported_rooms: set[str] = set()
+        # This pass: rooms created by it (nothing to repair yet), and managed rooms a server admin
+        # blocked, which the bot leaves alone (REC-11).
+        self._created_this_pass: set[str] = set()
+        self._blocked_by_others: set[str] = set()
+        # The visitor lobbies the last pass managed with their feature on (room id -> group), for the
+        # admin room's `!lobby reopen` (D16).
+        self.active_lobbies: dict[str, str] = {}
         self._stop = asyncio.Event()
         self._trigger = asyncio.Event()
 
@@ -382,6 +404,8 @@ class ReconcilerEngine:
         rooms_cfg = self.config.sync_matrix_rooms_based_on_authentik_groups
         if not rooms_cfg.enabled and not self.config.create_matrix_rooms_in_a_matrix_space.enabled:
             return 0
+        self._created_this_pass = set()
+        self._blocked_by_others = set()
         index = await self.rooms.scan()
         space = await self._resolve_space(index)
         group_maps = await self._gather_group_room_maps()
@@ -391,6 +415,7 @@ class ReconcilerEngine:
         await self._converge_rooms(group_maps, space, index, report)
         self._report_stray_rooms(index, group_maps, report)
         await self._converge_obsolete_rooms(index, group_maps, report, plan)
+        await self._converge_switched_off_lobbies(index, group_maps, space, report, plan)
         if space is not None:
             await self._guarded(
                 report,
@@ -398,7 +423,7 @@ class ReconcilerEngine:
                 room_id=space.room_id,
                 group_pk=None,
                 step="space",
-                work=self._converge_space(space, users),
+                work=self._converge_space(space, users, index),
             )
         await self._converge_room_membership_and_levels(group_maps, users, space, report, plan)
         return len(group_maps)
@@ -564,11 +589,18 @@ class ReconcilerEngine:
             )
             space = MatrixRoom(room_id=room_id, canonical_alias=target_alias, is_space=True)
             self.rooms.register(space, key)
+            self._created_this_pass.add(room_id)
         self.rooms.space_id = space.room_id
         return space
 
     async def _converge_avatar(
-        self, room_id: str, room_type: OnbotRoomType, desired: str | None, fresh_state: AnyRoomState
+        self,
+        room_id: str,
+        room_type: OnbotRoomType,
+        desired: str | None,
+        fresh_state: AnyRoomState,
+        *,
+        marker: dict[str, Any] | None = None,
     ) -> None:
         """Set/update a room or space icon (``m.room.avatar``) from a source URL (G6.8).
 
@@ -577,10 +609,11 @@ class ReconcilerEngine:
         upload. Applies to already-existing rooms too, not just freshly created ones. Best-effort:
         a fetch/upload failure is logged and retried next tick. Clearing the source URL stops future
         updates but leaves the current icon in place (removing avatars is out of scope). ``fresh_state``
-        seeds the state event (its ``group_id``) when the room has none yet.
+        seeds the state event (its ``group_id``) when the room has none yet. ``marker`` is the
+        marker's content when the caller has just read it (the upkeep step), saving a read.
         """
         event_type = event_type_name(self.server_name, room_type)
-        raw = await self.effectors.get_room_state(room_id, event_type)
+        raw = marker if marker is not None else await self.effectors.get_room_state(room_id, event_type)
         state = parse_room_state(room_type, raw) if raw else fresh_state
         if desired == state.avatar_source_url:
             return
@@ -594,15 +627,6 @@ class ReconcilerEngine:
             log.info("set avatar of %s from %s", room_id, desired)
         state.avatar_source_url = desired
         await self.effectors.put_room_state(room_id, event_type, dump_room_state(state))
-
-    async def _converge_space_avatar(self, space: MatrixRoom) -> None:
-        space_cfg = self.config.create_matrix_rooms_in_a_matrix_space.create_matrix_space_if_not_exists
-        await self._converge_avatar(
-            space.room_id,
-            OnbotRoomType.space,
-            space_cfg.avatar_url,
-            SpaceRoomState(configured_alias=self.config.create_matrix_rooms_in_a_matrix_space.alias),
-        )
 
     async def _converge_rooms(
         self,
@@ -630,6 +654,24 @@ class ReconcilerEngine:
                 step="room setup",
                 work=self._converge_group_room_existence(gm, parent_space_id, index, collisions),
             )
+            if gm.room is not None and gm.room.room_id not in self._blocked_by_others:
+                await self._guarded(
+                    report,
+                    room_kind=OnbotRoomType.group_room,
+                    room_id=gm.room.room_id,
+                    group_pk=gm.group_pk,
+                    step="room upkeep",
+                    work=self._converge_room_upkeep(
+                        gm.room,
+                        GroupRoomState(group_id=gm.group_pk),
+                        alias=gm.desired.canonical_alias,
+                        alias_usable=gm.desired.canonical_alias not in collisions,
+                        avatar_source_url=gm.desired.avatar_source_url,
+                        index=index,
+                        space_id=parent_space_id,
+                        suggested=False,
+                    ),
+                )
             if gm.room is None or gm.lobby_desired is None:
                 continue
             await self._guarded(
@@ -640,6 +682,32 @@ class ReconcilerEngine:
                 step="lobby setup",
                 work=self._converge_lobby_existence(gm, parent_space_id, index, collisions),
             )
+            if gm.lobby is not None and gm.lobby.room_id not in self._blocked_by_others:
+                await self._guarded(
+                    report,
+                    room_kind=OnbotRoomType.visitor_lobby,
+                    room_id=gm.lobby.room_id,
+                    group_pk=gm.group_pk,
+                    step="lobby upkeep",
+                    # Same source URL as the group room, so the uploader's per-URL cache makes the
+                    # avatar a state read and a set, not a second fetch+upload.
+                    work=self._converge_room_upkeep(
+                        gm.lobby,
+                        VisitorLobbyRoomState(group_id=gm.group_pk),
+                        alias=gm.lobby_desired.canonical_alias,
+                        alias_usable=gm.lobby_desired.canonical_alias not in collisions,
+                        avatar_source_url=gm.lobby_desired.avatar_source_url,
+                        index=index,
+                        space_id=parent_space_id,
+                        # A lobby is a room a wandering space member should find.
+                        suggested=True,
+                    ),
+                )
+        self.active_lobbies = {
+            gm.lobby.room_id: gm.group_pk
+            for gm in group_maps
+            if gm.lobby is not None and gm.lobby.room_id not in self._blocked_by_others
+        }
 
     async def _resolve_room(
         self, index: RoomIndex, key: RoomKey, alias: str, collisions: dict[str, list[str]]
@@ -673,18 +741,32 @@ class ReconcilerEngine:
             )
             gm.room = MatrixRoom(room_id=room_id, canonical_alias=gm.desired.canonical_alias)
             self.rooms.register(gm.room, key)
+            self._created_this_pass.add(room_id)
         else:
             gm.room = resolution.room
-            if await self.admin.room_is_blocked(gm.room.room_id):
-                # G2.3: a previously blocked room whose group reappeared gets unblocked.
-                log.info("unblocking room %s (group reappeared)", gm.room.room_id)
-                await self.admin.room_set_blocked(gm.room.room_id, blocked=False)
+            await self._converge_block(gm.room, key)
 
-        await self._converge_avatar(
-            gm.room.room_id,
-            OnbotRoomType.group_room,
-            gm.desired.avatar_source_url,
-            GroupRoomState(group_id=gm.group_pk),
+    async def _converge_block(self, room: MatrixRoom, key: RoomKey) -> None:
+        """Unblock a managed room the bot blocked itself; leave one a server admin blocked (REC-11).
+
+        The bot blocks a room when it tears it down (its group disappeared), so a blocked room whose
+        group is back gets unblocked (G2.3). Synapse records who set a block; a block somebody else
+        set (moderation, a legal hold) is theirs: the room stays blocked, the bot does not manage it
+        while it is, and the admins hear of it once.
+        """
+        block = await self.admin.get_room_block(room.room_id)
+        if not block.blocked:
+            return
+        if block.by == self.config.synapse_server.bot_user_id:
+            log.info("unblocking room %s, the %s (group reappeared)", room.room_id, key.describe())
+            await self.admin.room_set_blocked(room.room_id, blocked=False)
+            return
+        self._blocked_by_others.add(room.room_id)
+        await self._report_once(
+            f"blocked|{room.room_id}|{block.by}",
+            f"room {room.room_id}, the {key.describe()}, was blocked by {block.by or 'an unknown account'}, "
+            "not by the bot. The bot leaves it blocked and does not manage it (members, power levels, "
+            "name) until a server admin unblocks it.",
         )
 
     async def _converge_lobby_existence(
@@ -696,15 +778,8 @@ class ReconcilerEngine:
     ) -> None:
         assert gm.lobby_desired is not None
         await self._converge_lobby_creation(gm, parent_space_id, index, collisions)
-        if gm.lobby is not None:
-            # Same source URL as the group room, so the uploader's per-URL cache makes this a state
-            # read and a set, not a second fetch+upload.
-            await self._converge_avatar(
-                gm.lobby.room_id,
-                OnbotRoomType.visitor_lobby,
-                gm.lobby_desired.avatar_source_url,
-                VisitorLobbyRoomState(group_id=gm.group_pk),
-            )
+        if gm.lobby is not None and gm.lobby.room_id not in self._created_this_pass:
+            await self._converge_block(gm.lobby, RoomKey(OnbotRoomType.visitor_lobby, gm.group_pk))
 
     async def _converge_lobby_creation(
         self,
@@ -754,6 +829,218 @@ class ReconcilerEngine:
         )
         gm.lobby = MatrixRoom(room_id=room_id, canonical_alias=gm.lobby_desired.canonical_alias)
         self.rooms.register(gm.lobby, key)
+        self._created_this_pass.add(room_id)
+
+    # --- upkeep: rooms keep their shape after creation (REC-09) ----------------------------------
+
+    async def _converge_room_upkeep(
+        self,
+        room: MatrixRoom,
+        marker: AnyRoomState,
+        *,
+        alias: str | None,
+        alias_usable: bool,
+        avatar_source_url: str | None,
+        index: RoomIndex,
+        space_id: str | None = None,
+        suggested: bool = False,
+    ) -> None:
+        """Repair what a managed room lost since it was created, then converge its avatar.
+
+        Every check reads first and writes only on a difference: the onbot marker (present, complete,
+        written by the bot) and its lock, the alias, and the link to the space. A room created in this
+        pass got all of that with ``createRoom``. ``marker`` is the marker the room's role calls for;
+        the role comes from how the room was resolved (its locked, bot-written marker, D20), never
+        from what a marker says now.
+        """
+        room_type = OnbotRoomType(marker.room_type)
+        content: dict[str, Any] | None = None
+        if room.room_id not in self._created_this_pass:
+            content = await self._repair_marker(room, marker)
+            await self._repair_lock(room, marker)
+            if alias is not None and alias_usable:
+                await self._repair_alias(room, marker, alias, index)
+            if space_id is not None:
+                await self._repair_space_link(room, space_id, suggested=suggested)
+        await self._converge_avatar(room.room_id, room_type, avatar_source_url, marker, marker=content)
+
+    def _describe(self, marker: AnyRoomState) -> str:
+        group_id = getattr(marker, "group_id", None)
+        return RoomKey(OnbotRoomType(marker.room_type), group_id).describe()
+
+    async def _repair_marker(self, room: MatrixRoom, expected: AnyRoomState) -> dict[str, Any]:
+        """Restore the room's marker where needed; returns its content as it is now."""
+        event_type = event_type_name(self.server_name, OnbotRoomType(expected.room_type))
+        event = await self.effectors.get_room_state_event(room.room_id, event_type)
+        bot_id = self.config.synapse_server.bot_user_id
+        repair = marker_repair(event, bot_id=bot_id, expected=expected)
+        if repair is None:
+            return dict((event or {}).get("content") or {})
+        await self.effectors.put_room_state(room.room_id, event_type, repair.content)
+        message = f"room {room.room_id}, the {self._describe(expected)}: {repair.reason}; the bot restored it"
+        if repair.tampered:
+            event_id = (event or {}).get("event_id") or "missing"
+            await self._report_once(f"marker|{room.room_id}|{event_id}", message + ".")
+        else:
+            log.info("%s", message)
+        return repair.content
+
+    async def _repair_lock(self, room: MatrixRoom, marker: AnyRoomState) -> None:
+        """Raise the marker types' required power level again where somebody lowered it."""
+        room_version, _creators = await self._create_info(room)
+        bot_id = self.config.synapse_server.bot_user_id
+        power = await self.effectors.get_room_power_levels(room.room_id)
+        if markers_locked(power, self.server_name, bot_id, room_version=room_version):
+            return
+        await lock_markers(
+            self.effectors, room.room_id, self.server_name, bot_id=bot_id, room_version=room_version
+        )
+        await self._report_once(
+            f"lock|{room.room_id}|{sorted((power.get('events') or {}).items())}",
+            f"room {room.room_id}, the {self._describe(marker)}: the power level required to change its "
+            "onbot marker had been lowered; the bot raised it again.",
+        )
+
+    async def _repair_alias(
+        self, room: MatrixRoom, marker: AnyRoomState, alias: str, index: RoomIndex
+    ) -> None:
+        """Recreate a removed alias when it is free, and the main address when the room has none.
+
+        The alias is presentation only (D20): it never decides which room is which. An alias another
+        room holds is reported once and left where it is.
+        """
+        if room.canonical_alias == alias:
+            return  # the cheap check: the room listing names it as the main address
+        target = await self.effectors.resolve_room_alias(alias)
+        if target is None:
+            await self.effectors.set_room_alias(alias, room.room_id)
+            log.info("restored the alias %s of room %s, the %s", alias, room.room_id, self._describe(marker))
+        elif target != room.room_id:
+            other = index.rooms.get(target)
+            bot_id = self.config.synapse_server.bot_user_id
+            foreign = other is not None and other.creator is not None and other.creator != bot_id
+            await self._report_once(
+                f"alias|{room.room_id}|{alias}|{target}",
+                f"the alias {alias} of room {room.room_id}, the {self._describe(marker)}, belongs to room "
+                f"{target}{', which the bot did not create' if foreign else ''}. The bot leaves it there; "
+                "the room keeps working without it.",
+            )
+            return
+        if room.canonical_alias is None:
+            current = await self.effectors.get_room_state(room.room_id, CANONICAL_ALIAS_EVENT_TYPE) or {}
+            if not current.get("alias"):
+                await self.effectors.put_room_state(
+                    room.room_id, CANONICAL_ALIAS_EVENT_TYPE, {**current, "alias": alias}
+                )
+                log.info("restored the main address %s of room %s", alias, room.room_id)
+
+    async def _repair_space_link(self, room: MatrixRoom, space_id: str, *, suggested: bool) -> None:
+        """Link the room into the space (``m.space.child`` there, ``m.space.parent`` here).
+
+        Covers a creation cut off between ``createRoom`` and the child link, rooms from before the
+        space existed, a recreated space, and a lobby whose feature was switched on again.
+        """
+        child = await self.effectors.get_room_state(space_id, SPACE_CHILD_EVENT_TYPE, room.room_id)
+        if not space_child_ok(child, suggested=suggested):
+            await self.effectors.put_room_state(
+                space_id,
+                SPACE_CHILD_EVENT_TYPE,
+                space_child_content(self.server_name, suggested=suggested),
+                state_key=room.room_id,
+            )
+            log.info("linked room %s into the space %s", room.room_id, space_id)
+        parent = await self.effectors.get_room_state(room.room_id, SPACE_PARENT_EVENT_TYPE, space_id)
+        if not space_parent_ok(parent):
+            await self.effectors.put_room_state(
+                room.room_id,
+                SPACE_PARENT_EVENT_TYPE,
+                space_parent_content(self.server_name),
+                state_key=space_id,
+            )
+            log.info("set the parent space of room %s to %s", room.room_id, space_id)
+
+    async def _report_once(self, key: str, text: str) -> None:
+        """Log ``text`` at WARNING and tell the admin room, once per process for ``key``."""
+        if key in self._reported_rooms:
+            return
+        self._reported_rooms.add(key)
+        log.warning("rooms: %s", text)
+        await self.events.emit(Signal.room_attention, text=text)
+
+    # --- visitor lobbies that were switched off (REC-10) -----------------------------------------
+
+    async def _converge_switched_off_lobbies(
+        self,
+        index: RoomIndex,
+        group_maps: list[GroupRoomMap],
+        space: MatrixRoom | None,
+        report: PassReport,
+        plan: PassPlan,
+    ) -> None:
+        """Close and detach the lobby of a live group that no longer wants one.
+
+        ``chatroom_visitor_lobby: false`` on the group, or ``visitor_lobby_enabled`` switched off,
+        used to drop the lobby out of management while it stayed open and suggested in the space.
+        Now its join rule becomes ``invite`` and it leaves the space. Members stay (nobody is
+        kicked); closing counts as a reversible destructive action and goes through the guard (D19).
+        A lobby that is closed and detached already costs two reads. A lobby of a group that is gone
+        is torn down instead (:meth:`_converge_obsolete_rooms`).
+        """
+        switched_off = {gm.group_pk for gm in group_maps if gm.lobby_desired is None}
+        if not switched_off:
+            return
+        for identity in index.trusted((OnbotRoomType.visitor_lobby,)):
+            assert identity.key is not None and identity.key.group_id is not None
+            if identity.key.group_id not in switched_off or index.superseded(identity):
+                continue
+            await self._guarded(
+                report,
+                room_kind=OnbotRoomType.visitor_lobby,
+                room_id=identity.room_id,
+                group_pk=identity.key.group_id,
+                step="close",
+                work=self._plan_lobby_close(identity.room_id, identity.key.group_id, space, report, plan),
+            )
+
+    async def _plan_lobby_close(
+        self, room_id: str, group_pk: str, space: MatrixRoom | None, report: PassReport, plan: PassPlan
+    ) -> None:
+        join_rules = await self.effectors.get_room_state(room_id, JOIN_RULES_EVENT_TYPE) or {}
+        still_open = not is_closed(join_rules)
+        attached = False
+        if space is not None:
+            child = await self.effectors.get_room_state(space.room_id, SPACE_CHILD_EVENT_TYPE, room_id)
+            attached = space_child_attached(child)
+        if not still_open and not attached:
+            return
+        action = DestructiveAction(
+            kind=ActionKind.room_close, target=room_id, room_id=room_id, group_pk=group_pk
+        )
+
+        async def close() -> None:
+            if still_open:
+                await self.effectors.put_room_state(room_id, JOIN_RULES_EVENT_TYPE, closed_join_rules())
+            if attached and space is not None:
+                # An empty content removes a state event (the spec's way to delete one).
+                await self.effectors.put_room_state(
+                    space.room_id, SPACE_CHILD_EVENT_TYPE, {}, state_key=room_id
+                )
+                await self.effectors.put_room_state(
+                    room_id, SPACE_PARENT_EVENT_TYPE, {}, state_key=space.room_id
+                )
+            log.info("closed the visitor lobby %s of group %s (switched off)", room_id, group_pk)
+
+        async def run(allowed: frozenset[str]) -> None:
+            await self._guarded(
+                report,
+                room_kind=OnbotRoomType.visitor_lobby,
+                room_id=room_id,
+                group_pk=group_pk,
+                step="close",
+                work=close(),
+            )
+
+        plan.defer([action], run)
 
     def _report_stray_rooms(
         self, index: RoomIndex, group_maps: list[GroupRoomMap], report: PassReport
@@ -874,9 +1161,15 @@ class ReconcilerEngine:
         """
         reason = self._teardown_reason()
         log.info("disabling room %s: authentik group %s disappeared", room.room_id, group_id)
-        await self.admin.room_set_blocked(room.room_id, blocked=True)
-
+        block = await self.admin.get_room_block(room.room_id)
         bot_id = self.config.synapse_server.bot_user_id
+        if not block.blocked:
+            await self.admin.room_set_blocked(room.room_id, blocked=True)
+        elif block.by != bot_id:
+            # Blocking again would record the bot as the blocker, and a group that comes back would
+            # then unblock a room a server admin blocked (REC-11).
+            log.info("room %s is blocked by %s already; leaving that block as it is", room.room_id, block.by)
+
         problems: list[str] = []
         members = [m for m in await self.admin.list_room_members(room.room_id) if m != bot_id]
         await self._kick_members(
@@ -889,8 +1182,16 @@ class ReconcilerEngine:
         log.warning("deleting room %s (delete_disabled_rooms is enabled)", room.room_id)
         await self.admin.delete_room(room.room_id, block=True, purge=True, message=self._teardown_reason())
 
-    async def _converge_space(self, space: MatrixRoom, users: list[MappedUser]) -> None:
-        await self._converge_space_avatar(space)
+    async def _converge_space(self, space: MatrixRoom, users: list[MappedUser], index: RoomIndex) -> None:
+        cfg = self.config.create_matrix_rooms_in_a_matrix_space
+        await self._converge_room_upkeep(
+            space,
+            SpaceRoomState(configured_alias=cfg.alias),
+            alias=build_canonical(cfg.alias, self.server_name, "#"),
+            alias_usable=True,
+            avatar_source_url=cfg.create_matrix_space_if_not_exists.avatar_url,
+            index=index,
+        )
         if not self.config.sync_authentik_users_with_matrix_rooms.enabled:
             return  # user sync off: membership is not managed anywhere (REC-02)
         problems: list[str] = []
@@ -949,7 +1250,9 @@ class ReconcilerEngine:
                 continue
             room = gm.room
             steps: list[tuple[str, Awaitable[None]]] = []
-            if manage_members:
+            if room.room_id in self._blocked_by_others:
+                pass  # a server admin blocked it: left alone (REC-11, reported once)
+            elif manage_members:
                 steps.append(
                     (
                         "membership",
@@ -964,10 +1267,13 @@ class ReconcilerEngine:
                         ),
                     )
                 )
-            steps.append(("name and topic", self._converge_room_attributes(room, gm.desired, gm.group_pk)))
+            if room.room_id not in self._blocked_by_others:
+                steps.append(
+                    ("name and topic", self._converge_room_attributes(room, gm.desired, gm.group_pk))
+                )
             await self._run_room_steps(report, OnbotRoomType.group_room, room.room_id, gm.group_pk, steps)
 
-            if gm.lobby is not None:
+            if gm.lobby is not None and gm.lobby.room_id not in self._blocked_by_others:
                 lobby = gm.lobby
                 assert gm.lobby_desired is not None  # a lobby only exists where one was computed
                 lobby_steps: list[tuple[str, Awaitable[None]]] = []
@@ -976,7 +1282,7 @@ class ReconcilerEngine:
                     lobby_steps.append(
                         ("power levels", self._converge_lobby_power_levels(gm, lobby, report, plan))
                     )
-                lobby_steps.append(("join rule", self._converge_lobby_join_rules(lobby, space)))
+                lobby_steps.append(("join rule", self._converge_lobby_join_rules(lobby, space, gm.group_pk)))
                 lobby_steps.append(
                     ("name and topic", self._converge_room_attributes(lobby, gm.lobby_desired, gm.group_pk))
                 )
@@ -1105,13 +1411,21 @@ class ReconcilerEngine:
             plan,
         )
 
-    async def _converge_lobby_join_rules(self, lobby: MatrixRoom, space: MatrixRoom | None) -> None:
-        """Converge a lobby's ``restricted`` join rule (ADR-0012).
+    async def _converge_lobby_join_rules(
+        self, lobby: MatrixRoom, space: MatrixRoom | None, group_pk: str
+    ) -> None:
+        """Converge a lobby's ``restricted`` join rule (ADR-0012), except where a human closed it (D16).
 
         The join-rule pass runs over existing lobbies as well as new ones and rewrites the rule only
         on a difference (a no-op tick sends nothing). The bot is PL 100 with ``state_default`` 100 so
         it may write the rule, but a hand-edited room can still 403: that is reported for the lobby
         and the pass carries on.
+
+        A lobby somebody other than the bot closed (``invite``, ``knock``, ``private``) stays closed:
+        the rule's sender tells whose change it was, so this needs no record of its own and survives
+        restarts. It is logged at WARNING and reported once; ``!lobby reopen`` hands the lobby back to
+        the bot (:meth:`reopen_lobby`). A closed rule the bot wrote (a lobby it closed while its
+        feature was off) is reopened, and so is any rule that leaves the lobby open in another way.
         """
         if space is None:  # cannot express `restricted` without a space to restrict to
             return
@@ -1120,7 +1434,58 @@ class ReconcilerEngine:
         change = join_rules_change(current, desired)
         if change is None:
             return
+        if is_closed(current):
+            event = await self.effectors.get_room_state_event(lobby.room_id, JOIN_RULES_EVENT_TYPE) or {}
+            sender = event.get("sender")
+            if sender != self.config.synapse_server.bot_user_id:
+                await self._report_once(
+                    f"closed|{lobby.room_id}|{event.get('event_id')}",
+                    f"the visitor lobby {lobby.room_id} of group {group_pk} was closed by "
+                    f"{sender or 'an unknown account'} (join rule {current.get('join_rule')!r}). It stays "
+                    f"closed; an admin reopens it with `!lobby reopen {group_pk}` in the admin control room.",
+                )
+                return
         await self.effectors.put_room_state(lobby.room_id, JOIN_RULES_EVENT_TYPE, change)
+
+    async def reopen_lobby(self, target: str) -> str:
+        """``!lobby reopen <group, room id or alias>``: withdraw a manual close (D16); returns the reply.
+
+        Sets the lobby's join rule back to ``restricted`` as the bot, so from then on the bot manages
+        it from the configuration again. Only a lobby the last pass managed with its feature on can be
+        reopened; one switched off in the configuration stays closed.
+        """
+        target = target.strip()
+        if not target:
+            return "Usage: !lobby reopen <group pk, lobby room id or lobby alias>"
+        room_id: str | None = None
+        if target.startswith("!"):
+            room_id = target
+        elif target.startswith("#"):
+            room_id = await self.effectors.resolve_room_alias(target)
+        else:
+            room_id = next((r for r, g in self.active_lobbies.items() if g == target), None)
+        space_id = self.rooms.space_id
+        if room_id is None or room_id not in self.active_lobbies or space_id is None:
+            return (
+                f"{target} is not a visitor lobby the bot manages right now (unknown, switched off in "
+                "the configuration, or no reconcile pass has finished yet). Nothing was changed."
+            )
+        group_pk = self.active_lobbies[room_id]
+        desired = desired_join_rules(OnbotRoomType.visitor_lobby, space_id)
+        event = await self.effectors.get_room_state_event(room_id, JOIN_RULES_EVENT_TYPE) or {}
+        current = event.get("content") or {}
+        if not is_closed(current) or event.get("sender") == self.config.synapse_server.bot_user_id:
+            return (
+                f"The visitor lobby {room_id} of group {group_pk} is not closed by hand "
+                f"(join rule {current.get('join_rule')!r}); the bot manages it already."
+            )
+        await self.effectors.put_room_state(room_id, JOIN_RULES_EVENT_TYPE, dict(desired or {}))
+        log.warning("reopened the visitor lobby %s of group %s on an admin's request", room_id, group_pk)
+        self.trigger()
+        return (
+            f"Reopened the visitor lobby {room_id} of group {group_pk}: members of the space can join it "
+            "again, and the bot manages it from the configuration."
+        )
 
     async def _converge_power_levels(
         self,

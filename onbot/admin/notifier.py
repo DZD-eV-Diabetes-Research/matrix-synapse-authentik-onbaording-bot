@@ -13,6 +13,8 @@ into the control room as ``m.notice`` messages, which the command router ignores
 * ``identity_attention``: a user maps to another Matrix ID than the account they own (a rename), MAS
   disagrees with a recorded binding, several Authentik users resolve to one account, or the identity
   sources cannot be read (D8). The resolver emits each finding once per process.
+* ``room_attention``: a room a server admin blocked, a lobby closed by hand (D16), an alias taken by
+  another room, a marker restored after somebody removed or rewrote it. Emitted once per process.
 
 The room must stay readable, so nothing is repeated on every pass: a room is posted again only when
 its problems change (or after it converged in between), and an identical lifecycle report only once
@@ -83,6 +85,7 @@ class AdminRoomNotifier:
         events.subscribe(Signal.lifecycle_attention, self._on_lifecycle_attention)
         events.subscribe(Signal.room_not_converged, self._on_room_not_converged)
         events.subscribe(Signal.identity_attention, self._on_identity_attention)
+        events.subscribe(Signal.room_attention, self._on_room_attention)
         events.subscribe(Signal.reconcile_completed, self._on_reconcile_completed)
 
     async def bind(self, room_id: str) -> None:
@@ -125,6 +128,9 @@ class AdminRoomNotifier:
 
     async def _on_identity_attention(self, event: Event) -> None:
         await self.post(f"User identity: {event.payload.get('text')}")
+
+    async def _on_room_attention(self, event: Event) -> None:
+        await self.post(f"Rooms: {event.payload.get('text')}")
 
     async def _on_room_not_converged(self, event: Event) -> None:
         payload = event.payload

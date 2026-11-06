@@ -21,6 +21,7 @@ from tests.unit.room_fakes import room_state
 from tests.unit.test_engine import (
     _BASE,
     _GROUP_G1,
+    LOCKED_EVENTS,
     FakeAdmin,
     FakeAuthentik,
     FakeLifecycle,
@@ -538,7 +539,9 @@ async def test_a_legacy_room_never_gets_a_grant_at_the_bots_level() -> None:
 
 async def test_a_legacy_room_with_users_at_the_bots_level_is_reported_and_not_fought() -> None:
     """08 check 5: an old grant of 100 cannot be demoted or kicked by the bot any more."""
-    effectors = StatefulPowerLevels({_ROOM1: {"users": {_BOT: 100, _ALICE: 100, _GOUT: 100}}})
+    effectors = StatefulPowerLevels(
+        {_ROOM1: {"users": {_BOT: 100, _ALICE: 100, _GOUT: 100}, "events": dict(LOCKED_EVENTS)}}
+    )
     # An older bot version seated both as global admins and recorded them in the room state.
     effectors.state_store[(_ROOM1, _GROUP_EVENT)] = {
         "room_type": "group_room",

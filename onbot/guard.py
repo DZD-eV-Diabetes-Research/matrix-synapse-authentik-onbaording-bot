@@ -89,6 +89,9 @@ class ActionKind(StrEnum):
     withdraw_power_level = "withdraw_power_level"
     # Block an obsolete room and kick its members; reversible. Deleting it is ``room_delete``.
     room_teardown = "room_teardown"
+    # Close a visitor lobby whose feature was switched off and detach it from the space; reversible
+    # (D19, REC-10). Nobody is kicked.
+    room_close = "room_close"
     lock = "lock"
     # Deactivate the account (and GDPR-erase it, delete its media, as configured); irreversible.
     erase = "erase"
@@ -100,7 +103,13 @@ class ActionKind(StrEnum):
 
 # D13 layer 2: the reversible destructive actions.
 REVERSIBLE_KINDS = frozenset(
-    {ActionKind.kick, ActionKind.withdraw_power_level, ActionKind.room_teardown, ActionKind.lock}
+    {
+        ActionKind.kick,
+        ActionKind.withdraw_power_level,
+        ActionKind.room_teardown,
+        ActionKind.room_close,
+        ActionKind.lock,
+    }
 )
 # D13 layer 3: the irreversible decisions. ``delete_media`` is neither: it finishes an erasure that
 # already ran (confirmed, or below the limit), so it never asks again; layer 1 still holds it.
@@ -110,6 +119,7 @@ _KIND_PLURAL = {
     ActionKind.kick: "kick {n} room member(s)",
     ActionKind.withdraw_power_level: "lower or withdraw {n} power level(s)",
     ActionKind.room_teardown: "tear down {n} room(s)",
+    ActionKind.room_close: "close {n} switched-off visitor lobby room(s)",
     ActionKind.lock: "lock {n} account(s)",
     ActionKind.erase: "erase {n} account(s) (irreversible)",
     ActionKind.room_delete: "delete {n} room(s) (irreversible)",
@@ -160,6 +170,8 @@ class DestructiveAction(BaseModel):
             return f"lower or withdraw the power level of {self.target} in {self.room_id}{group}"
         if self.kind is ActionKind.room_teardown:
             return f"tear down room {self.target}{group}"
+        if self.kind is ActionKind.room_close:
+            return f"close the visitor lobby {self.target}{group} (switched off) and detach it from the space"
         if self.kind is ActionKind.room_delete:
             return f"delete room {self.target}{group} (irreversible)"
         if self.kind is ActionKind.lock:
