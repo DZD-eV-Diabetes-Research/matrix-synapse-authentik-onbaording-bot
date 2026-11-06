@@ -48,10 +48,13 @@ also skips quarantined entries), `onbot/app.py` and `onbot/events.py`. After the
 1036 unit and contract tests green, all hooks green, config docs regenerated. The release blocker
 note in CHANGELOG is gone (S3 closes it).
 
-**Running when this was written:** full integration run on main (instance 0, log
-`scratchpad/orch-itest-main-wave2.log`), session W2F on `review/w2f-fixups` (instance 1: D19 items:
+**Full integration run on main after the wave 2 merges (990eaef): 1082 passed, 0 failed.**
+
+**Running when this was written:** session W2F on `review/w2f-fixups` (instance 1: D19 items:
 test stack to current MAS and Synapse, offboarding refused under MAS without `mas_admin`, admin room
-on by default with at least one admin), and a cold wave 2 review of `6b6be50..990eaef`.
+on by default with at least one admin), and session W2R on `review/w2r-fixups` (instance 2) with the findings of the cold wave 2 review
+(unreadable guard state failed open, rejected batches held forever, unreadable ledger no longer
+reported after the S3/S4 merge, guard gaps for demotions and retention, `delete_room` retry).
 
 **Next:** merge W2F (CHANGELOG, regenerate config docs), act on the wave 2 review, full integration
 run, then wave 3 (S5, S6, S12). S5 brief has the S3 handover and D19 (room deletion is layer 3).
