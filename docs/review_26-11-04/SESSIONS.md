@@ -70,8 +70,8 @@ every merge and the integration suite once per wave. Nothing is pushed; the main
 | 1c | W1F | Fixups from the wave 1 review, merged before wave 2. |
 | between 1 and 2 | S16 | History scrub, only when no review branch is open. |
 | 2 | S3, S4, S11 | |
-| 3 | S5, S6, S12 | S6 is the largest session. |
-| 4 | S7, S8, S9 | |
+| 3 | S5, S6, S9 | S6 is the largest session. S12 moved to wave 4 (overlaps with S8, depends on it). |
+| 4 | S7, S8, S12 | |
 | 5 | S14 | |
 
 After each wave a fresh reviewer agent reads the merged diff of that wave cold (without the

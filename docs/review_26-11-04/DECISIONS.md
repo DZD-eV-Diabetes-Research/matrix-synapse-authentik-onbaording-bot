@@ -57,7 +57,9 @@ Renames in Authentik (marriage, name change) must be supported: the person keeps
 Matrix account, because MAS fixes the localpart at first login. Consequence: identity is anchored on
 the immutable Authentik user (`pk`/`uid`), not on the mutable username attribute.
 
-Proposed design, to confirm at the start of that session:
+Design confirmed by the maintainer on 2026-11-06 (S9 first checks live against MAS 1.28 that the
+admin API resolves upstream OAuth links by subject; if not, it uses the persisted binding and says
+so):
 
 - With `mas_admin` configured, resolve each Authentik user to the real MXID through MAS (upstream
   OAuth link by subject, then the MAS user's localpart). This is authoritative.
