@@ -101,10 +101,10 @@ async def test_oauth2_failed_refresh_falls_back_to_client_credentials() -> None:
     provider = _provider()
     try:
         assert await provider.get_token() == "at1"
-        with pytest.raises(OAuth2TokenError):
-            await provider.get_token()  # refresh fails, drops refresh token
-        assert await provider.get_token() == "at3"  # falls back to client_credentials
+        # The refresh token is rejected; the same call falls back to client_credentials at once.
+        assert await provider.get_token() == "at3"
     finally:
         await provider.aclose()
 
+    assert route.call_count == 3
     assert b"grant_type=client_credentials" in route.calls[2].request.content
