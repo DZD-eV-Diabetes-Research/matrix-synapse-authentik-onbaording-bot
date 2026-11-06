@@ -273,3 +273,24 @@ async def test_up_to_the_limit_runs_without_a_confirmation() -> None:
     await engine.reconcile_once()
     assert len(effectors.kicks) == 10
     assert seen == []
+
+
+async def test_a_level_the_bot_may_not_change_does_not_hold_up_other_withdrawals() -> None:
+    """A room creator in the group (blocked change) must not keep bob's withdrawal paused forever."""
+    engine, directory, _rooms, effectors, seen = world(["alice", "bob"], ["carol", "mallory"])
+    await engine.reconcile_once()
+    assert levels(effectors, ROOM1) == {mx("alice"): 50, mx("bob"): 50}
+
+    effectors.state_store[(ROOM1, "m.room.create")] = {"additional_creators": [mx("mallory")]}
+    engine._create_info_cache.clear()
+    directory.users["mallory"]["groups_obj"] = [{"pk": "g1"}]  # wanted at 50, but untouchable
+    directory.users["bob"]["groups_obj"] = [{"pk": "g2"}]  # loses the level the bot gave him
+    await engine.reconcile_once()
+
+    assert levels(effectors, ROOM1) == {mx("alice"): 50}
+    assert seen == []
+    problems = engine.last_pass_report.rooms[0].problems
+    assert problems == [
+        f"cannot change power level of {mx('mallory')}: wanted at 50, "
+        "but is a room creator (infinite power level)"
+    ]

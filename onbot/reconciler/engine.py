@@ -150,9 +150,11 @@ class _PassInputs:
 class _RoomStepProblems(Exception):
     """A room step finished, but some per-user actions in it were refused (see ``_guarded``)."""
 
-    def __init__(self, problems: list[str]) -> None:
+    def __init__(self, problems: list[str], *, held: Sequence[str] = ()) -> None:
         super().__init__("; ".join(problems))
         self.problems = problems
+        # Withdrawals the step held for the guard although it ended with problems (power levels).
+        self.held = list(held)
 
 
 class ReconcilerEngine:
@@ -1036,8 +1038,16 @@ class ReconcilerEngine:
         report: PassReport,
         plan: PassPlan,
     ) -> None:
-        """Grant now; record the withdrawals (D10) for the guard and carry out the permitted ones later."""
-        held = await self._write_power_levels(room, room_type, fresh_state, desired=desired)
+        """Grant now; record the withdrawals (D10) for the guard and carry out the permitted ones later.
+
+        A user whose level the bot may not change does not hold up the others: their problem is
+        reported, and the other withdrawals still go to the guard.
+        """
+        problems: _RoomStepProblems | None = None
+        try:
+            held = await self._write_power_levels(room, room_type, fresh_state, desired=desired)
+        except _RoomStepProblems as exc:
+            problems, held = exc, exc.held
         actions = [
             DestructiveAction(
                 kind=ActionKind.withdraw_power_level, target=mxid, room_id=room.room_id, group_pk=group_pk
@@ -1063,6 +1073,8 @@ class ReconcilerEngine:
             )
 
         plan.defer(actions, run)
+        if problems is not None:
+            raise problems
 
     async def _write_power_levels(
         self,
@@ -1147,7 +1159,8 @@ class ReconcilerEngine:
 
         if plan.blocked:
             raise _RoomStepProblems(
-                [f"cannot change power level of {mxid}: {why}" for mxid, why in sorted(plan.blocked.items())]
+                [f"cannot change power level of {mxid}: {why}" for mxid, why in sorted(plan.blocked.items())],
+                held=plan.held,
             )
         return list(plan.held)
 
