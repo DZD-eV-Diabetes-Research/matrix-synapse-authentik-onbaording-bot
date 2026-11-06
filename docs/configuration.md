@@ -130,9 +130,11 @@ localpart-contract test guarding this.
 Onbot runs a quarantined offboarding lifecycle. Two things to know:
 
 - **`mas_admin` is required to actually offboard.** When Authentik disables a user, MAS blocks new
-  logins but existing Matrix sessions keep working. The Synapse admin API cannot revoke a MAS-issued
+  logins but existing Matrix sessions keep working. The Synapse admin API cannot end a MAS-issued
   session, only MAS can. Configure the `mas_admin` block so Onbot can. Omit it only on non-MAS
-  deployments, where offboarding against live sessions is a no-op.
+  deployments; on a MAS-backed homeserver without it Onbot logs an error at startup. Ending sessions
+  on lock and erasing without GDPR erasure need a MAS whose admin API offers them; the startup log
+  lists what the configured MAS can do (see [features.md](features.md#offboarding)).
 - **The lifecycle defaults to `dry_run: true`.** Nothing destructive happens until you opt in. Until
   then it only logs intended actions to the `onbot.lifecycle.audit` channel.
 

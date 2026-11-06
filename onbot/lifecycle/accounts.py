@@ -23,9 +23,11 @@ is built around these safety principles:
   backs off, and the ledger is saved after every user, so a crash never repeats a completed
   irreversible step.
 
-**Two stages.** Stage one (``deactivate_after_n_sec``) locks the user out: under MAS (AD-6) a MAS lock,
-which suspends every session and blocks new logins, reversibly (ADR-0005 §7 Q1). Stage two
-(``delete_after_n_sec``) erases the account (G9.4) and optionally its uploaded media (G9.5).
+**Two stages.** Stage one (``deactivate_after_n_sec``, despite the name) locks the user out: under
+MAS (AD-6) a MAS lock, which blocks new logins reversibly, plus finishing every session so an unlock
+cannot revive them (LIF-07, ADR-0005). Stage two (``delete_after_n_sec``, counted from the lock)
+erases the account (G9.4), GDPR-erasing it when ``gdpr_erase_on_delete`` says so (D7), and optionally
+its uploaded media (G9.5).
 
 **Who is tracked.** Disabled Authentik users in the sync scope whose Matrix account exists, plus
 *known users*: every in-scope, active, mapped user is recorded once as ``authentik pk -> MXID``
