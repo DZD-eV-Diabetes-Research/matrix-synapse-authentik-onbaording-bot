@@ -120,7 +120,7 @@ class ApiClientSynapseAdmin(BaseApiClient):
 
         https://element-hq.github.io/synapse/latest/admin_api/rooms.html#room-state-api
         """
-        result = await self.get_json(f"v1/rooms/{room_id}/state")
+        result = await self.get_json(f"v1/rooms/{path_segment(room_id)}/state")
         events: list[dict[str, Any]] = list((result or {}).get("state") or [])
         return events
 

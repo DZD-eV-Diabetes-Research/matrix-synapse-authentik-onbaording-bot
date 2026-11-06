@@ -94,6 +94,11 @@ CASES: list[tuple[Callable[[], BaseApiClient], Call, str]] = [
         "/_synapse/admin/v1/rooms/%21a%2F..%2Fb%3Fc%23d%3Amatrix.test/block",
     ),
     (
+        _synapse,
+        lambda c: c.get_room_state_events(HOSTILE_ROOM),
+        "/_synapse/admin/v1/rooms/%21a%2F..%2Fb%3Fc%23d%3Amatrix.test/state",
+    ),
+    (
         _matrix,
         lambda c: c.invite_user(HOSTILE_ROOM, HOSTILE_USER),
         "/_matrix/client/v3/rooms/%21a%2F..%2Fb%3Fc%23d%3Amatrix.test/invite",
