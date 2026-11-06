@@ -15,6 +15,7 @@ from typing import Any
 
 import pytest
 
+from onbot.clients.mas_admin import SESSION_KINDS, MasCapabilities
 from onbot.config import OnbotConfig
 from onbot.events import Event, EventBus, Signal
 from onbot.lifecycle.accounts import (
@@ -181,12 +182,29 @@ class FakeMas:
             raise RuntimeError(f"MAS 500 for {lp}")
         u["locked"] = False
 
-    async def deactivate_user(self, user_id: str) -> None:
+    async def deactivate_user(self, user_id: str, *, skip_erase: bool | None = None) -> None:
         lp, u = self._by_id(user_id)
         self.calls.append(("deactivate", lp))
         if lp in self.fail_for:
             raise RuntimeError(f"MAS 500 for {lp}")
         u["deactivated"] = True
+        u["erased"] = skip_erase is not True
+
+    async def capabilities(self) -> MasCapabilities:
+        return MasCapabilities(finishable_sessions=frozenset(SESSION_KINDS), deactivate_skip_erase=True)
+
+    async def list_active_session_ids(self, kind: str, user_id: str) -> list[str]:
+        lp, u = self._by_id(user_id)
+        return [f"{kind}-{lp}"] if kind == "oauth2-sessions" and u.get("session", True) else []
+
+    async def finish_session(self, kind: str, session_id: str) -> bool:
+        lp = session_id.removeprefix(f"{kind}-")
+        self.calls.append(("finish", lp))
+        self.users[lp]["session"] = False
+        return True
+
+    async def count_locked_users(self) -> int:
+        return sum(1 for u in self.users.values() if u["locked"])
 
     def ops(self, op: str) -> list[str]:
         return [lp for o, lp in self.calls if o == op]
@@ -197,11 +215,14 @@ class FakeMediaAdmin:
         self.media_deleted: list[str] = []
         self.fail = False
 
-    async def delete_user_media(self, user_id: str) -> dict[str, Any]:
+    async def delete_user_media(self, user_id: str, *, limit: int = 100) -> dict[str, Any]:
         if self.fail:
             raise RuntimeError("media API 500")
         self.media_deleted.append(user_id)
         return {"total": 0}
+
+    async def count_user_media(self, user_id: str) -> int:
+        return 0
 
 
 class Clock:
@@ -439,7 +460,7 @@ async def test_empty_authentik_answer_aborts_the_lifecycle_step(caplog: pytest.L
     w.directory.blind = True
     with caplog.at_level(logging.WARNING):
         await w.tick(DAY)
-    assert w.mas.calls == [("lock", "alice")]  # no unlock, no lock of carol
+    assert w.mas.calls == [("lock", "alice"), ("finish", "alice")]  # no unlock, no lock of carol
     assert w.store.saves == saves
     assert "lifecycle step aborted" in caplog.text
 

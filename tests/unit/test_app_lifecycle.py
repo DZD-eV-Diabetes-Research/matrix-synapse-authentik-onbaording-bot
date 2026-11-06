@@ -30,6 +30,7 @@ from onbot import runtime
 from onbot.admin.control_room import ControlRoomHandler
 from onbot.app import build_app, run_broadcast, run_reconcile_once, run_service
 from onbot.clients.base import ApiError, BaseApiClient
+from onbot.clients.matrix import ApiClientMatrix
 from onbot.config import AuthentikServer, MasAdmin, OnbotConfig, SynapseServer
 from onbot.events import Signal
 from onbot.rooms.admin import AdminRoomProvisioner
@@ -43,6 +44,16 @@ from onbot.runtime import (
 from onbot.safe_fetch import SafeImageFetcher
 
 HS = "https://matrix.test"
+
+
+@pytest.fixture(autouse=True)
+def _homeserver_without_mas(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The offboarding check asks the homeserver for its auth issuer; these tests are not about it."""
+
+    async def no_issuer(_self: object) -> None:
+        return None
+
+    monkeypatch.setattr(ApiClientMatrix, "get_auth_issuer", no_issuer)
 
 
 def _config(server_url: str = HS, **overrides: Any) -> OnbotConfig:
@@ -500,7 +511,13 @@ async def test_reconcile_once_runs_every_startup_step_before_its_pass(
 async def test_reconcile_once_without_avatar_and_admin_room_skips_both() -> None:
     async with build_app(_config()) as app:
         names = [step.name for step in app.reconcile_once_steps()]
-    assert names == ["version negotiation", "device registration", "onboarding", "rate-limit override"]
+    assert names == [
+        "version negotiation",
+        "device registration",
+        "onboarding",
+        "rate-limit override",
+        "offboarding check",
+    ]
 
 
 # --- RUN-09: bounded shutdown ------------------------------------------------------------------

@@ -8,12 +8,15 @@ both effector implementations. End-to-end offboarding scenarios through the reco
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import pytest
 
+from onbot.clients.mas_admin import SESSION_KINDS, MasCapabilities
 from onbot.config import OnbotConfig
 from onbot.lifecycle.accounts import (
+    LEDGER_RETENTION_SEC,
     AccountLifecycleManager,
     AccountStatus,
     AdminApiLifecycleEffectors,
@@ -24,11 +27,13 @@ from onbot.lifecycle.accounts import (
     LifecycleAction,
     LifecycleEntry,
     LifecycleLedger,
+    LifecycleStepIncomplete,
     LifecycleTargetNotFound,
     MasLifecycleEffectors,
     MatrixAccountDataLedgerStore,
     classify_accounts,
     decide_account_action,
+    delete_all_user_media,
     known_users_account_data_type,
     lifecycle_account_data_type,
     update_known_users,
@@ -606,8 +611,11 @@ class TestManagerLive:
         assert eff.logouts == [X]
         assert store.ledger.entries[X].disabled_user_timestamp == clock.now
 
-    @pytest.mark.parametrize("media", [True, False])
-    async def test_live_erase_deactivates_then_deletes_media_and_clears_entry(self, media: bool) -> None:
+    @pytest.mark.parametrize(("media", "gdpr"), [(True, False), (False, True), (False, False), (True, True)])
+    async def test_live_erase_deactivates_then_deletes_media_and_clears_entry(
+        self, media: bool, gdpr: bool
+    ) -> None:
+        """D7: GDPR erasure follows ``gdpr_erase_on_delete``, independent of the media switch."""
         store = InMemoryLedgerStore(
             LifecycleLedger(
                 entries={
@@ -618,10 +626,16 @@ class TestManagerLive:
         )
         eff, clock = RecordingEffectors(), Clock(1000.0 + DAY)
         mgr = _manager(
-            store, eff, clock, dry_run=False, delete_after_n_sec=DAY, include_user_media_on_delete=media
+            store,
+            eff,
+            clock,
+            dry_run=False,
+            delete_after_n_sec=DAY,
+            include_user_media_on_delete=media,
+            gdpr_erase_on_delete=gdpr,
         )
         await mgr.reconcile_accounts(ORPHAN_X)
-        assert eff.erases == [(X, media)]
+        assert eff.erases == [(X, gdpr)]
         assert eff.media == ([X] if media else [])
         assert X not in store.ledger.entries  # terminal
         assert store.known.users == {}  # the binding goes with it
@@ -837,27 +851,50 @@ class TestLedgerStore:
 
 
 class FakeAdmin:
-    def __init__(self) -> None:
+    """Synapse admin API: devices, deactivation and a user's media, deleted one page per request."""
+
+    def __init__(self, media: int = 0, undeletable: int = 0) -> None:
         self.logged_out: list[str] = []
         self.deactivated: list[tuple[str, bool]] = []
-        self.media_deleted: list[str] = []
+        self.media_requests: list[tuple[str, int]] = []
+        self.media = media  # deletable files
+        self.undeletable = undeletable  # files Synapse keeps whatever happens
 
-    async def logout_account(self, user_id: str) -> None:
+    async def logout_account(self, user_id: str) -> int:
         self.logged_out.append(user_id)
+        return 2
 
     async def deactivate_account(self, user_id: str, *, erase: bool) -> None:
         self.deactivated.append((user_id, erase))
 
-    async def delete_user_media(self, user_id: str) -> dict[str, Any]:
-        self.media_deleted.append(user_id)
-        return {}
+    async def delete_user_media(self, user_id: str, *, limit: int = 100) -> dict[str, Any]:
+        self.media_requests.append((user_id, limit))
+        gone = min(limit, self.media)
+        self.media -= gone
+        return {"deleted_media": ["m"] * gone, "total": gone}
+
+    async def count_user_media(self, user_id: str) -> int:
+        return self.media + self.undeletable
+
+    @property
+    def media_deleted(self) -> list[str]:
+        return sorted({user_id for user_id, _ in self.media_requests})
+
+
+class FakeMatrix:
+    def __init__(self, issuer: str | None) -> None:
+        self.issuer = issuer
+
+    async def get_auth_issuer(self) -> str | None:
+        return self.issuer
 
 
 class TestAdminApiEffectors:
-    async def test_logout_delegates(self) -> None:
+    async def test_logout_deletes_devices_and_says_so(self) -> None:
         admin = FakeAdmin()
-        await AdminApiLifecycleEffectors(admin).logout(X)
+        detail = await AdminApiLifecycleEffectors(admin).logout(X)
         assert admin.logged_out == [X]
+        assert detail == "deleted 2 Synapse device(s)"
 
     async def test_reenable_is_a_noop(self) -> None:
         admin = FakeAdmin()
@@ -869,22 +906,98 @@ class TestAdminApiEffectors:
         admin = FakeAdmin()
         await AdminApiLifecycleEffectors(admin).erase(X, gdpr_erase=gdpr)
         assert admin.deactivated == [(X, gdpr)]
-        assert admin.media_deleted == []
+        assert admin.media_requests == []
 
     async def test_delete_media_delegates(self) -> None:
-        admin = FakeAdmin()
-        await AdminApiLifecycleEffectors(admin).delete_media(X)
+        admin = FakeAdmin(media=3)
+        result = await AdminApiLifecycleEffectors(admin).delete_media(X)
         assert admin.media_deleted == [X]
+        assert result.complete and result.deleted == 3
+
+    async def test_preflight_without_mas_is_quiet(self) -> None:
+        effectors = AdminApiLifecycleEffectors(FakeAdmin(), matrix=FakeMatrix(None))
+        assert await effectors.preflight() == []
+        assert "MAS" not in await effectors.logout(X)
+
+    async def test_preflight_detects_a_mas_backed_homeserver(self) -> None:
+        """LIF-09: the fallback under MAS is reported, and every audit text says what it means."""
+        effectors = AdminApiLifecycleEffectors(FakeAdmin(), matrix=FakeMatrix("https://auth.company.org/"))
+        warnings = await effectors.preflight()
+        assert len(warnings) == 1 and "mas_admin" in warnings[0]
+        assert "MAS sessions stay valid" in await effectors.logout(X)
+        assert "MAS sessions stay valid" in await effectors.erase(X, gdpr_erase=False)
 
 
-# --- MAS effectors (LIF-16, MNT-05) ------------------------------------------------------------
+# --- media deletion in pages (LIF-12) ----------------------------------------------------------
+
+
+class TestMediaDeletion:
+    async def test_more_than_one_page_is_deleted_completely(self) -> None:
+        admin = FakeAdmin(media=250)
+        result = await delete_all_user_media(admin, X)
+        assert (result.deleted, result.remaining) == (250, 0)
+        assert len(admin.media_requests) == 3
+
+    async def test_a_huge_upload_history_resumes_on_the_next_pass(self) -> None:
+        admin = FakeAdmin(media=100 * 60)
+        first = await delete_all_user_media(admin, X)
+        assert not first.complete and first.remaining == 100 * 10
+        second = await delete_all_user_media(admin, X)
+        assert second.complete
+
+    async def test_media_synapse_will_not_delete_is_a_failure(self) -> None:
+        admin = FakeAdmin(media=0, undeletable=4)
+        with pytest.raises(LifecycleStepIncomplete, match="4 media"):
+            await delete_all_user_media(admin, X)
+
+    async def test_manager_keeps_the_entry_until_all_media_is_gone(self) -> None:
+        admin = FakeAdmin(media=100 * 60)
+        store = InMemoryLedgerStore(
+            LifecycleLedger(
+                entries={X: LifecycleEntry(marked_for_disabling_timestamp=1.0, disabled_user_timestamp=1.0)}
+            )
+        )
+        mgr = AccountLifecycleManager(
+            _config(dry_run=False, delete_after_n_sec=0, include_user_media_on_delete=True),
+            store,
+            AdminApiLifecycleEffectors(admin),
+            clock=Clock(DAY),
+        )
+        await mgr.reconcile_accounts(ORPHAN_X)
+        entry = store.ledger.entries[X]
+        assert entry.deactivated_timestamp is not None and entry.media_deleted_timestamp is None
+        await mgr.reconcile_accounts(ORPHAN_X)  # the next pass finishes the job
+        assert admin.media == 0
+        assert X not in store.ledger.entries
+        assert len(admin.deactivated) == 1  # the irreversible half ran once
+
+
+# --- MAS effectors (LIF-16, MNT-05, LIF-07, D7) ------------------------------------------------
+
+
+ALL_FINISHABLE = MasCapabilities(finishable_sessions=frozenset(SESSION_KINDS), deactivate_skip_erase=True)
+MAS_0_14 = MasCapabilities()  # no finish endpoints, deactivation always erases
 
 
 class FakeMasAdmin:
-    def __init__(self, known: dict[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        known: dict[str, str] | None = None,
+        *,
+        caps: MasCapabilities = ALL_FINISHABLE,
+        sessions: dict[str, list[str]] | None = None,
+    ) -> None:
         self.known = known if known is not None else {"x": "01ULIDX"}
+        self.caps = caps
+        self.sessions = (
+            sessions if sessions is not None else {"compat-sessions": ["c1"], "oauth2-sessions": ["o1", "o2"]}
+        )
         self.lookups: list[str] = []
-        self.calls: list[tuple[str, str]] = []
+        self.calls: list[tuple[str, ...]] = []
+        self.fail_finish = False
+
+    async def capabilities(self) -> MasCapabilities:
+        return self.caps
 
     async def get_user_id_by_username(self, username: str) -> str | None:
         self.lookups.append(username)
@@ -896,30 +1009,88 @@ class FakeMasAdmin:
     async def unlock_user(self, user_id: str) -> None:
         self.calls.append(("unlock", user_id))
 
-    async def deactivate_user(self, user_id: str) -> None:
-        self.calls.append(("deactivate", user_id))
+    async def list_active_session_ids(self, kind: str, user_id: str) -> list[str]:
+        return list(self.sessions.get(kind, []))
+
+    async def finish_session(self, kind: str, session_id: str) -> bool:
+        if self.fail_finish:
+            raise RuntimeError("MAS 500")
+        self.calls.append(("finish", kind, session_id))
+        self.sessions[kind].remove(session_id)
+        return True
+
+    async def deactivate_user(self, user_id: str, *, skip_erase: bool | None = None) -> None:
+        self.calls.append(("deactivate", user_id, str(skip_erase)))
+
+    async def count_locked_users(self) -> int:
+        return 3
+
+
+def _ops(mas: FakeMasAdmin) -> list[str]:
+    return [call[0] for call in mas.calls]
 
 
 class TestMasEffectors:
-    @pytest.mark.parametrize(
-        ("method", "expected"),
-        [("logout", "lock"), ("reenable", "unlock")],
-    )
-    async def test_lock_and_unlock_resolve_the_localpart(self, method: str, expected: str) -> None:
+    async def test_lock_resolves_the_localpart_then_ends_every_session(self) -> None:
+        """LIF-07: after the lock nothing is left that an unlock could bring back."""
         mas = FakeMasAdmin()
-        await getattr(MasLifecycleEffectors(mas), method)(X)
+        detail = await MasLifecycleEffectors(mas).logout(X)
         assert mas.lookups == ["x"]
-        assert mas.calls == [(expected, "01ULIDX")]
+        assert _ops(mas) == ["lock", "finish", "finish", "finish"]
+        assert mas.sessions == {"compat-sessions": [], "oauth2-sessions": []}
+        assert "1 compat, 2 oauth2, 0 user" in detail
+
+    async def test_unlock_ends_sessions_left_from_an_old_lock_first(self) -> None:
+        mas = FakeMasAdmin()
+        await MasLifecycleEffectors(mas).reenable(X)
+        assert _ops(mas) == ["finish", "finish", "finish", "unlock"]
+
+    async def test_unlock_is_not_done_when_sessions_cannot_be_ended(self) -> None:
+        mas = FakeMasAdmin()
+        mas.fail_finish = True
+        with pytest.raises(RuntimeError):
+            await MasLifecycleEffectors(mas).reenable(X)
+        assert "unlock" not in _ops(mas)
+
+    async def test_lock_stands_when_ending_sessions_fails(self) -> None:
+        mas = FakeMasAdmin()
+        mas.fail_finish = True
+        detail = await MasLifecycleEffectors(mas).logout(X)
+        assert _ops(mas) == ["lock"]
+        assert "retried on unlock" in detail
+
+    async def test_a_mas_without_finish_endpoints_only_locks_and_says_so(self) -> None:
+        mas = FakeMasAdmin(caps=MAS_0_14)
+        detail = await MasLifecycleEffectors(mas).logout(X)
+        assert _ops(mas) == ["lock"]
+        assert "only suspended" in detail
+        detail = await MasLifecycleEffectors(mas).reenable(X)
+        assert _ops(mas) == ["lock", "unlock"]
+        assert "come back on unlock" in detail
 
     @pytest.mark.parametrize("gdpr", [True, False])
-    async def test_erase_deactivates_and_leaves_media_alone(self, gdpr: bool) -> None:
+    async def test_erase_sends_skip_erase_as_configured(self, gdpr: bool) -> None:
+        """D7: MAS gets ``skip_erase = not gdpr_erase_on_delete``."""
         mas, admin = FakeMasAdmin(), FakeAdmin()
         await MasLifecycleEffectors(mas, synapse_admin=admin).erase(X, gdpr_erase=gdpr)
-        assert mas.calls == [("deactivate", "01ULIDX")]
-        assert admin.media_deleted == []
+        assert mas.calls == [("deactivate", "01ULIDX", str(not gdpr))]
+        assert admin.media_requests == []
+
+    async def test_an_old_mas_erases_when_gdpr_erasure_is_wanted(self) -> None:
+        mas = FakeMasAdmin(caps=MAS_0_14)
+        await MasLifecycleEffectors(mas).erase(X, gdpr_erase=True)
+        assert mas.calls == [("deactivate", "01ULIDX", "None")]
+
+    @pytest.mark.parametrize("caps", [MAS_0_14, MasCapabilities(known=False)])
+    async def test_an_old_mas_refuses_an_erase_without_gdpr_erasure(self, caps: MasCapabilities) -> None:
+        """D7 on a MAS that always erases: refuse rather than erase more than configured."""
+        mas = FakeMasAdmin(caps=caps)
+        with pytest.raises(LifecycleStepIncomplete, match="gdpr_erase_on_delete"):
+            await MasLifecycleEffectors(mas).erase(X, gdpr_erase=False)
+        assert mas.calls == []
 
     async def test_delete_media_goes_through_synapse(self) -> None:
-        mas, admin = FakeMasAdmin(), FakeAdmin()
+        mas, admin = FakeMasAdmin(), FakeAdmin(media=1)
         await MasLifecycleEffectors(mas, synapse_admin=admin).delete_media(X)
         assert admin.media_deleted == [X]
         assert mas.calls == []
@@ -938,6 +1109,12 @@ class TestMasEffectors:
             await getattr(effectors, method)(X, **kwargs)
         assert mas.calls == []
 
+    async def test_preflight_reports_what_an_old_mas_cannot_do(self) -> None:
+        assert await MasLifecycleEffectors(FakeMasAdmin()).preflight() == []
+        warnings = await MasLifecycleEffectors(FakeMasAdmin(caps=MAS_0_14)).preflight()
+        assert len(warnings) == 2
+        assert "cannot finish sessions" in warnings[0] and "GDPR-erases" in warnings[1]
+
     async def test_manager_does_not_advance_on_unknown_mas_user(self) -> None:
         store = InMemoryLedgerStore(
             LifecycleLedger(entries={X: LifecycleEntry(marked_for_disabling_timestamp=1.0)})
@@ -949,3 +1126,173 @@ class TestMasEffectors:
         assert [(o.action, o.failed) for o in outcomes] == [(LifecycleAction.logout, True)]
         assert store.ledger.entries[X].disabled_user_timestamp is None
         assert "LifecycleTargetNotFound" in (store.ledger.entries[X].last_error or "")
+
+    async def test_manager_does_not_advance_when_an_old_mas_refuses_the_erase(self) -> None:
+        store = InMemoryLedgerStore(
+            LifecycleLedger(
+                entries={X: LifecycleEntry(marked_for_disabling_timestamp=1.0, disabled_user_timestamp=1.0)}
+            )
+        )
+        mas = FakeMasAdmin(caps=MAS_0_14)
+        mgr = AccountLifecycleManager(
+            _config(dry_run=False, delete_after_n_sec=0), store, MasLifecycleEffectors(mas), clock=Clock(DAY)
+        )
+        outcomes = await mgr.reconcile_accounts(ORPHAN_X)
+        assert [(o.action, o.failed) for o in outcomes] == [(LifecycleAction.erase, True)]
+        assert store.ledger.entries[X].deactivated_timestamp is None
+        assert mas.calls == []
+
+
+# --- startup check (LIF-09) --------------------------------------------------------------------
+
+
+class TestPreflight:
+    async def test_logs_the_setup_and_returns_the_effector_warnings(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        effectors = AdminApiLifecycleEffectors(FakeAdmin(), matrix=FakeMatrix("https://auth/"))
+        mgr = AccountLifecycleManager(_config(dry_run=False), InMemoryLedgerStore(), effectors)
+        with caplog.at_level(logging.INFO):
+            warnings = await mgr.preflight()
+        assert len(warnings) == 1
+        text = caplog.text
+        assert "effectors=AdminApiLifecycleEffectors" in text and "dry_run=False" in text
+        assert any(r.levelno == logging.ERROR and "mas_admin" in r.getMessage() for r in caplog.records)
+
+    async def test_disabled_offboarding_probes_nothing(self) -> None:
+        effectors = AdminApiLifecycleEffectors(FakeAdmin(), matrix=FakeMatrix("https://auth/"))
+        mgr = AccountLifecycleManager(_config(enabled=False), InMemoryLedgerStore(), effectors)
+        assert await mgr.preflight() == []
+        assert effectors.delegated_issuer is None
+
+
+# --- ledger robustness (LIF-14) ----------------------------------------------------------------
+
+BOT = "@bot:company.org"
+LEDGER_TYPE = "org.company.onbot.lifecycle"
+KNOWN_TYPE = "org.company.onbot.known_users"
+
+
+def _account_store(
+    lifecycle: Any = None, known: Any = None
+) -> tuple[FakeMatrixClient, MatrixAccountDataLedgerStore]:
+    client = FakeMatrixClient()
+    if lifecycle is not None:
+        client.account_data[(BOT, LEDGER_TYPE)] = lifecycle
+    if known is not None:
+        client.account_data[(BOT, KNOWN_TYPE)] = known
+    return client, MatrixAccountDataLedgerStore(client, BOT, SERVER)
+
+
+class TestLedgerRobustness:
+    async def test_a_corrupt_entry_is_quarantined_and_the_rest_goes_on(self) -> None:
+        y = mx("y")
+        client, store = _account_store(
+            {
+                "schema_version": 1,
+                "entries": {
+                    X: {"marked_for_disabling_timestamp": "yesterday"},  # hand-edited, broken
+                    y: {"marked_for_disabling_timestamp": 1.0},
+                },
+            }
+        )
+        eff = RecordingEffectors()
+        mgr = AccountLifecycleManager(_config(dry_run=False), store, eff, clock=Clock(DAY * 2))
+        both = snapshot(user("x", active=False), user("y", active=False))
+        outcomes = await mgr.reconcile_accounts(both)
+        assert eff.logouts == [y]
+        assert [(o.mxid, o.action) for o in outcomes if o.needs_attention] == [(X, LifecycleAction.alert)]
+        raw = client.account_data[(BOT, LEDGER_TYPE)]
+        assert raw["quarantined"] == {X: {"marked_for_disabling_timestamp": "yesterday"}}  # kept verbatim
+        assert X not in raw["entries"]
+        again = await mgr.reconcile_accounts(both)
+        assert not [o for o in again if o.needs_attention]  # reported once
+        assert eff.logouts == [y]
+
+    @pytest.mark.parametrize(
+        "blob",
+        [
+            {"schema_version": 99, "entries": {}},
+            {"schema_version": 1, "entries": ["not", "a", "map"]},
+            ["not", "an", "object"],
+        ],
+    )
+    async def test_an_unreadable_ledger_aborts_the_step_without_writing(self, blob: Any) -> None:
+        client, store = _account_store(blob)
+        eff = RecordingEffectors()
+        mgr = AccountLifecycleManager(_config(dry_run=False), store, eff, clock=Clock(DAY))
+        outcomes = await mgr.reconcile_accounts(ORPHAN_X)
+        assert [(o.mxid, o.action) for o in outcomes] == [(None, LifecycleAction.abort)]
+        assert eff.calls == 0
+        assert client.account_data[(BOT, LEDGER_TYPE)] == blob  # untouched
+        assert await mgr.reconcile_accounts(ORPHAN_X) == []  # reported once per process
+
+    async def test_an_unreadable_known_users_record_aborts_the_step(self) -> None:
+        _, store = _account_store({"schema_version": 1, "entries": {}}, known={"users": {"1": {"mxid": 5}}})
+        mgr = AccountLifecycleManager(_config(dry_run=False), store, RecordingEffectors(), clock=Clock(DAY))
+        outcomes = await mgr.reconcile_accounts(ORPHAN_X)
+        assert [o.action for o in outcomes] == [LifecycleAction.abort]
+
+    async def test_a_missing_ledger_with_locked_accounts_raises_an_alarm_once(self) -> None:
+        client, store = _account_store()
+        mgr = AccountLifecycleManager(
+            _config(dry_run=False), store, MasLifecycleEffectors(FakeMasAdmin()), clock=Clock(DAY)
+        )
+        outcomes = await mgr.reconcile_accounts(ACTIVE_X)
+        alerts = [o for o in outcomes if o.action is LifecycleAction.alert]
+        assert len(alerts) == 1 and "3 account(s) are locked" in (alerts[0].detail or "")
+        assert (BOT, LEDGER_TYPE) in client.account_data  # an empty ledger now exists
+        restarted = AccountLifecycleManager(
+            _config(dry_run=False), store, MasLifecycleEffectors(FakeMasAdmin()), clock=Clock(DAY)
+        )
+        later = await restarted.reconcile_accounts(ACTIVE_X)
+        assert not [o for o in later if o.action is LifecycleAction.alert]
+
+    async def test_a_missing_ledger_without_a_lock_counter_is_quiet(self) -> None:
+        _, store = _account_store()
+        mgr = AccountLifecycleManager(_config(dry_run=False), store, RecordingEffectors(), clock=Clock(DAY))
+        assert await mgr.reconcile_accounts(ACTIVE_X) == []
+
+    async def test_a_final_lock_record_is_forgotten_after_the_retention(self) -> None:
+        """Locked, deleted upstream, erase disabled: nothing can follow, so the record goes."""
+        locked_at = 1000.0
+        store = InMemoryLedgerStore(
+            LifecycleLedger(
+                entries={X: LifecycleEntry(disabled_user_timestamp=locked_at, authentik_pk="pk-x")}
+            ),
+            known=_known(x="pk-x"),
+        )
+        eff, clock = RecordingEffectors(), Clock(locked_at + LEDGER_RETENTION_SEC - 1)
+        mgr = _manager(store, eff, clock, dry_run=False, delete_after_n_sec=None)
+        deleted = snapshot(matrix={X})  # the Authentik user is gone, the Matrix account is not
+        assert await mgr.reconcile_accounts(deleted) == []
+        assert X in store.ledger.entries
+        clock.now = locked_at + LEDGER_RETENTION_SEC
+        outcomes = await mgr.reconcile_accounts(deleted)
+        assert [o.action for o in outcomes] == [LifecycleAction.forget]
+        assert store.ledger.entries == {} and store.known.users == {}
+        clock.now += DAY * 400
+        assert await mgr.reconcile_accounts(deleted) == []  # never touched again
+        assert eff.calls == 0
+
+    @pytest.mark.parametrize("variant", ["still_disabled", "erase_enabled", "frozen"])
+    async def test_other_lock_records_are_kept_however_old(self, variant: str) -> None:
+        entry = LifecycleEntry(disabled_user_timestamp=1.0, authentik_pk="pk-x")
+        snap = snapshot(matrix={X})
+        delete_after: int | None = None
+        if variant == "still_disabled":
+            snap = ORPHAN_X  # may still be re-enabled: the lock record is needed for the unlock
+        elif variant == "erase_enabled":
+            delete_after = DAY * 10_000
+        else:
+            entry.frozen_reason = "the Authentik user is on authentik_user_ignore_list"
+        store = InMemoryLedgerStore(LifecycleLedger(entries={X: entry}), known=_known(x="pk-x"))
+        mgr = _manager(
+            store,
+            RecordingEffectors(),
+            Clock(LEDGER_RETENTION_SEC * 5),
+            dry_run=False,
+            delete_after_n_sec=delete_after,
+        )
+        await mgr.reconcile_accounts(snap)
+        assert X in store.ledger.entries
