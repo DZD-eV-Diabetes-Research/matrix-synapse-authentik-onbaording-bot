@@ -24,6 +24,7 @@ import pytest
 
 from onbot.auth.token_provider import OAuth2ClientCredentialsTokenProvider
 from onbot.clients.authentik import ApiClientAuthentik, _next_page_params, _total
+from onbot.clients.base import ApiError
 from onbot.clients.mas_admin import ApiClientMasAdmin, mxid_localpart
 from onbot.clients.matrix import CREATION_NONCE_KEY, ApiClientMatrix
 from onbot.clients.synapse_admin import ApiClientSynapseAdmin, _next_token_params
@@ -157,6 +158,25 @@ async def test_force_join_whose_response_was_lost_counts_as_done(
     finally:
         await admin.aclose()
     assert lossy.lost
+
+
+async def test_room_deletion_whose_response_was_lost_is_awaited_not_failed(
+    onbot_config: OnbotConfig, matrix_client: ApiClientMatrix, admin_client: ApiClientSynapseAdmin
+) -> None:
+    """Wave 2 review: v1 purged inside the request, so a timeout plus retry reported a done delete as
+    failed. The v2 API answers at once; a lost answer is recovered from the room's delete status."""
+    room_id = await matrix_client.create_room(name="W2R delete")
+    lossy = _LoseResponse(lambda r: r.method == "DELETE" and "/v2/rooms/" in r.url.path)
+    admin = _admin(onbot_config, lossy)
+    try:
+        result = await admin.delete_room(room_id, block=True, purge=True, message="W2R test")
+    finally:
+        await admin.aclose()
+    assert lossy.lost
+    assert result["status"] == "complete"
+    with pytest.raises(ApiError) as gone:
+        await admin_client.get_room_details(room_id)
+    assert gone.value.status_code == 404
 
 
 # --- calls marked idempotent are safe to repeat ---------------------------------------------------
