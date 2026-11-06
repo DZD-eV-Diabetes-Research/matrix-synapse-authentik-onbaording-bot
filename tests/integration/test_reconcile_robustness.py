@@ -77,7 +77,9 @@ async def test_a_banned_group_member_does_not_stop_rooms_or_offboarding(
     assert member.mxid in await admin_client.list_room_members(room_a)
 
     # A moderator bans a user who then joins the group: every join attempt is refused from now on.
-    S.ban_user(config.synapse_server.bot_access_token, room_a, banned.mxid)
+    bot_token = config.synapse_server.bot_access_token
+    assert bot_token is not None
+    S.ban_user(bot_token.get_secret_value(), room_a, banned.mxid)
     authentik_admin.add_user_to_group(group_a["pk"], banned_user["pk"])
     # In the same pass: a brand new group with a member, and a user disabled in Authentik.
     group_b = authentik_admin.create_group(f"{prefix}-b", attributes={"is_chatroom": True})
