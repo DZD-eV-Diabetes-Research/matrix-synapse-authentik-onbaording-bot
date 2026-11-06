@@ -40,6 +40,7 @@ from onbot.config import (
     SynapseServer,
 )
 from onbot.guard import guard_account_data_type
+from onbot.lifecycle.accounts import known_users_account_data_type, lifecycle_account_data_type
 from tests.integration import stack_api as S
 from tests.integration.stack_instance import SKIP_VAR, StackUnavailable, skip_requested, start_stack
 
@@ -209,6 +210,27 @@ def fresh_guard_state(bot_token: str) -> None:
         f"/account_data/{guard_account_data_type(S.SERVER_NAME)}"
     )
     httpx.put(url, json={}, headers={"Authorization": f"Bearer {bot_token}"}, timeout=30.0).raise_for_status()
+
+
+@pytest_asyncio.fixture
+async def own_offboarding_records(matrix_client: ApiClientMatrix) -> AsyncIterator[None]:
+    """Start from an empty known-users record and ledger, and put the shared ones back afterwards.
+
+    Every test shares the one bot, so its known-users record and ledger hold every user earlier tests
+    mapped or locked. A narrowed token makes *all* of them look deleted, and an erase cooldown of zero
+    erases every one of them that is still locked, which puts other tests' users into this test's
+    passes (and, from three erasures on, behind the guard's layer 3). With fresh records only this
+    test's users are known.
+    """
+    types = [known_users_account_data_type(S.SERVER_NAME), lifecycle_account_data_type(S.SERVER_NAME)]
+    saved = {t: await matrix_client.get_account_data(S.BOT_USER_ID, t) for t in types}
+    for t in types:
+        await matrix_client.set_account_data(S.BOT_USER_ID, t, {})
+    try:
+        yield
+    finally:
+        for t, content in saved.items():
+            await matrix_client.set_account_data(S.BOT_USER_ID, t, content)
 
 
 @pytest.fixture(scope="session")

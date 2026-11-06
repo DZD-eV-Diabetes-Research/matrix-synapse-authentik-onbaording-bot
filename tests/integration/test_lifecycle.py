@@ -20,7 +20,7 @@ from onbot.auth.token_provider import OAuth2ClientCredentialsTokenProvider
 from onbot.clients.mas_admin import SESSION_KINDS, ApiClientMasAdmin, MasCapabilities
 from tests.integration import stack_api as S
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("own_offboarding_records")]
 
 
 def _lifecycle(config):

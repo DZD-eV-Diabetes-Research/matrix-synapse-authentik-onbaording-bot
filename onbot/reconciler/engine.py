@@ -93,7 +93,11 @@ class ConfigurationError(RuntimeError):
     """Raised when the configuration cannot be satisfied (e.g. required space missing)."""
 
 
-_LIFECYCLE_ACTION_KINDS = {LifecycleAction.logout: ActionKind.lock, LifecycleAction.erase: ActionKind.erase}
+_LIFECYCLE_ACTION_KINDS = {
+    LifecycleAction.logout: ActionKind.lock,
+    LifecycleAction.erase: ActionKind.erase,
+    LifecycleAction.delete_media: ActionKind.delete_media,
+}
 
 
 @dataclass(slots=True)
@@ -108,9 +112,9 @@ class _Deferred:
 class PassPlan:
     """Everything a pass would destroy, collected before anything is destroyed (D4, D13).
 
-    The room stage records its kicks, power-level withdrawals and room teardowns here instead of
-    carrying them out; the lifecycle adds its locks and erasures. The guard then decides on the whole
-    list, and :meth:`execute` carries out the permitted part.
+    The room stage records its kicks, power-level withdrawals, room teardowns and deletions here
+    instead of carrying them out; the lifecycle adds its locks and erasures. The guard then decides on
+    the whole list, and :meth:`execute` carries out the permitted part.
     """
 
     actions: list[DestructiveAction] = field(default_factory=list)
@@ -258,8 +262,8 @@ class ReconcilerEngine:
         # a stage-wide failure is held until the rest has run, then fails the pass as before.
         #
         # Nothing destructive happens inside the stages (D4, D13): they record their kicks,
-        # withdrawals, teardowns, locks and erasures in `plan`, the guard decides on all of them at
-        # once, and only then is the permitted part carried out.
+        # withdrawals, teardowns, deletions, locks and erasures in `plan`, the guard decides on all of
+        # them at once, and only then is the permitted part carried out.
         report = PassReport()
         plan = PassPlan()
         inputs = _PassInputs(users_in_scope=users_in_scope)
@@ -732,40 +736,63 @@ class ReconcilerEngine:
         room_type: OnbotRoomType,
         plan: PassPlan,
     ) -> None:
-        """Record the teardown of an obsolete room; it runs once the guard permits it."""
-        action = DestructiveAction(
+        """Record the teardown of an obsolete room, and its deletion when configured.
+
+        The teardown (block, kick) is reversible (guard layer 2), the deletion is not (layer 3, D19).
+        They run once the guard permits them, the teardown first; the guard never permits the
+        deletion in a pass whose teardown of the same room it holds, and a teardown that fails skips
+        the deletion as well, so a room is never deleted with its members still in it unguarded.
+        """
+        teardown = DestructiveAction(
             kind=ActionKind.room_teardown, target=room.room_id, room_id=room.room_id, group_pk=group_id
         )
+        deletion = DestructiveAction(
+            kind=ActionKind.room_delete, target=room.room_id, room_id=room.room_id, group_pk=group_id
+        )
+        actions = [teardown, deletion] if settings.delete_disabled_rooms else [teardown]
 
-        async def run(_allowed: frozenset[str]) -> None:
-            await self._guarded(
+        async def run(allowed: frozenset[str]) -> None:
+            if teardown.key not in allowed:
+                return  # (the guard holds the deletion as well)
+            torn_down = await self._guarded(
                 report,
                 room_kind=room_type,
                 room_id=room.room_id,
                 group_pk=group_id,
                 step="teardown",
-                work=self._disable_room(room, group_id, settings, report, room_type),
+                work=self._disable_room(room, group_id, report, room_type),
             )
+            if torn_down and deletion.key in allowed:
+                await self._guarded(
+                    report,
+                    room_kind=room_type,
+                    room_id=room.room_id,
+                    group_pk=group_id,
+                    step="deletion",
+                    work=self._delete_room(room),
+                )
 
-        plan.defer([action], run)
+        plan.defer(actions, run)
+
+    def _teardown_reason(self) -> str:
+        return (
+            f"The group mapped to this room is no longer synced from the central user directory "
+            f"({self.config.authentik_server.url})."
+        )
 
     async def _disable_room(
         self,
         room: MatrixRoom,
         group_id: str,
-        settings: SyncMatrixRoomsBasedOnAuthentikGroups,
         report: PassReport,
         room_type: OnbotRoomType,
     ) -> None:
-        """Block an obsolete room and clear it of users; optionally delete it (irreversible).
+        """Block an obsolete room and clear it of users (reversible; the deletion is separate).
 
         A member the server refuses to kick (a creator, or a user at the bot's level in a pre-v12
         room) is reported and skipped, so the rest of the room is still cleared.
         """
-        reason = (
-            f"The group mapped to this room is no longer synced from the central user directory "
-            f"({self.config.authentik_server.url})."
-        )
+        reason = self._teardown_reason()
         log.info("disabling room %s: authentik group %s disappeared", room.room_id, group_id)
         await self.admin.room_set_blocked(room.room_id, blocked=True)
 
@@ -777,9 +804,10 @@ class ReconcilerEngine:
         )
         report.extend(room_kind=room_type, room_id=room.room_id, group_pk=group_id, problems=problems)
 
-        if settings.delete_disabled_rooms:
-            log.warning("deleting room %s (delete_disabled_rooms is enabled)", room.room_id)
-            await self.admin.delete_room(room.room_id, block=True, purge=True, message=reason)
+    async def _delete_room(self, room: MatrixRoom) -> None:
+        """Delete an obsolete room for good (``delete_disabled_rooms``); irreversible."""
+        log.warning("deleting room %s (delete_disabled_rooms is enabled)", room.room_id)
+        await self.admin.delete_room(room.room_id, block=True, purge=True, message=self._teardown_reason())
 
     async def _converge_space(self, space: MatrixRoom, users: list[MappedUser]) -> None:
         await self._converge_space_avatar(space)

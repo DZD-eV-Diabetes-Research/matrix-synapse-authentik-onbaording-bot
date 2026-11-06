@@ -605,3 +605,212 @@ def test_the_baseline_moves_per_metric() -> None:
     decision = decide(state, counts(5, 0), [lock(1)], LIMITS, now=1)
     assert decision.permitted == frozenset()
     assert "from 51 to 5" in " ".join(decision.reasons)
+
+
+# --- layer 3: irreversible actions (S5, D13, D19) ------------------------------------------------------
+
+
+def teardown(n: int) -> DestructiveAction:
+    return DestructiveAction(
+        kind=ActionKind.room_teardown, target=f"!r{n}:x", room_id=f"!r{n}:x", group_pk="g"
+    )
+
+
+def room_delete(n: int) -> DestructiveAction:
+    return DestructiveAction(kind=ActionKind.room_delete, target=f"!r{n}:x", room_id=f"!r{n}:x", group_pk="g")
+
+
+def media(n: int) -> DestructiveAction:
+    return DestructiveAction(kind=ActionKind.delete_media, target=f"@u{n}:x")
+
+
+def _confirm(state: GuardState, batch_id: str, at: float = 0) -> None:
+    state.batches[batch_id].status = BatchStatus.confirmed
+    state.batches[batch_id].decided_by = "@admin:x"
+    state.batches[batch_id].decided_at = at
+
+
+def test_room_deletion_and_erasure_are_irreversible_teardown_and_media_cleanup_are_not() -> None:
+    assert erase(1).irreversible and room_delete(1).irreversible
+    assert not teardown(1).irreversible and teardown(1).reversible
+    assert not media(1).irreversible and not media(1).reversible
+    assert room_delete(1).prerequisite == teardown(1).key
+    assert room_delete(1).key != teardown(1).key
+
+
+def test_one_or_two_irreversible_actions_run_as_before() -> None:
+    planned = [erase(1), room_delete(2), teardown(2), lock(3)]
+    decision = decide(state_with_baseline(), counts(), planned, LIMITS, now=0)
+    assert decision.held == ()
+    assert decision.permitted == {a.key for a in planned}
+
+
+def test_three_irreversible_actions_are_held_as_a_batch_that_says_they_are_irreversible() -> None:
+    state = state_with_baseline()
+    planned = [erase(1), erase(2), room_delete(3), teardown(3), lock(4), kick(5)]
+    decision = decide(state, counts(), planned, LIMITS, now=0)
+    assert {a.key for a in decision.held} == {erase(1).key, erase(2).key, room_delete(3).key}
+    # The reversible part runs: the teardown goes first, its deletion waits for the admin.
+    assert decision.permitted == {teardown(3).key, lock(4).key, kick(5).key}
+    assert decision.irreversible_over_limit and not decision.over_limit and not decision.input_tripped
+    assert "3 irreversible actions in one pass" in decision.reasons[0]
+
+    notices = record(state, decision, planned, LIMITS, now=0, complete=True, id_factory=lambda: "abcdef")
+    batch = state.batches["abcdef"]
+    assert batch.irreversible_over_limit
+    [notice] = notices
+    summary = notice.payload["summary"]
+    assert "erase 2 account(s) (irreversible)" in summary
+    assert "delete 1 room(s) (irreversible)" in summary
+    assert "Irreversible: 3 of these action(s) cannot be undone" in summary
+    assert "- erase account @u1:x (irreversible)" in summary
+    assert "!confirm abcdef" in summary
+
+
+def test_the_layer_3_threshold_is_configurable() -> None:
+    strict = GuardLimits(max_reversible_actions_per_pass=10, confirm_irreversible_actions_from=1)
+    decision = decide(state_with_baseline(), counts(), [erase(1)], strict, now=0)
+    assert decision.permitted == frozenset()
+    relaxed = GuardLimits(max_reversible_actions_per_pass=10, confirm_irreversible_actions_from=5)
+    planned = [erase(n) for n in range(4)]
+    decision = decide(state_with_baseline(), counts(), planned, relaxed, now=0)
+    assert decision.permitted == {a.key for a in planned}
+
+
+def test_layer_1_still_holds_every_irreversible_action_and_the_media_cleanup() -> None:
+    planned = [erase(1), media(2)]
+    decision = decide(state_with_baseline(), counts(1, 10), planned, LIMITS, now=0)
+    assert decision.permitted == frozenset()
+    assert not decision.irreversible_over_limit
+
+
+def test_a_media_cleanup_continuation_never_asks_again() -> None:
+    """Wave 2 review: paged media deletion (LIF-12) must not need a new confirmation every pass."""
+    state = state_with_baseline()
+    planned = [media(n) for n in range(15)] + [erase(99)]
+    decision = decide(state, counts(), planned, LIMITS, now=0)
+    assert decision.held == ()
+    assert decision.permitted == {a.key for a in planned}
+    assert record(state, decision, planned, LIMITS, now=0, complete=True) == []
+
+
+def test_a_confirmed_layer_3_batch_runs_and_its_continuation_does_not_ask_again() -> None:
+    state = state_with_baseline()
+    planned = [erase(n) for n in range(3)]
+    batch_id = _proposed(state, planned, counts())
+    _confirm(state, batch_id, at=1)
+    decision = decide(state, counts(), planned, LIMITS, now=2)
+    assert decision.permitted == {a.key for a in planned}
+    notices = record(state, decision, planned, LIMITS, now=2, complete=True)
+    assert state.batches == {}
+    assert "ran 3 action(s)" in notices[0].payload["text"]
+    # The next passes only finish deleting their media.
+    continuation = [media(n) for n in range(3)]
+    decision = decide(state, counts(), continuation, LIMITS, now=3)
+    assert decision.permitted == {a.key for a in continuation}
+
+
+def test_a_layer_3_batch_expires_and_is_proposed_again_if_it_still_applies() -> None:
+    state = state_with_baseline()
+    planned = [erase(n) for n in range(3)]
+    first = _proposed(state, planned, counts())
+    decision = decide(state, counts(), planned, LIMITS, now=100)
+    assert decision.permitted == frozenset()
+    notices = record(state, decision, planned, LIMITS, now=100, complete=True, id_factory=lambda: "zzzzzz")
+    assert first not in state.batches and "zzzzzz" in state.batches
+    assert [n.payload.get("outcome") for n in notices if n.signal is Signal.guard_batch_closed] == ["expired"]
+    assert state.batches["zzzzzz"].irreversible_over_limit
+
+
+def test_a_rejected_layer_3_batch_holds_while_its_pass_still_has_three_then_ends() -> None:
+    state = state_with_baseline()
+    planned = [erase(n) for n in range(3)]
+    batch_id = _proposed(state, planned, counts())
+    _reject(state, batch_id)
+
+    decision = decide(state, counts(), planned, LIMITS, now=1)
+    assert decision.permitted == frozenset()
+    assert decision.ended_rejections == ()
+    # Two of its users plus a new one: still three irreversible actions with its keys in the pass.
+    decision = decide(state, counts(), [*planned[:2], erase(50)], LIMITS, now=1)
+    assert decision.permitted == frozenset({erase(50).key})  # one fresh one alone runs
+    assert decision.ended_rejections == ()
+
+    # One of them came back: two remain, below the limit, so the batch ends and they are judged afresh.
+    decision = decide(state, counts(), planned[:2], LIMITS, now=2)
+    assert decision.permitted == {a.key for a in planned[:2]}
+    assert [b for b, _ in decision.ended_rejections] == [batch_id]
+
+
+def test_a_room_deletion_never_runs_while_its_teardown_is_paused() -> None:
+    state = state_with_baseline()
+    teardowns = [teardown(n) for n in range(11)]  # over the layer-2 limit
+    planned = [*teardowns, room_delete(1), room_delete(2)]
+    decision = decide(state, counts(), planned, LIMITS, now=0)
+    assert decision.permitted == frozenset()
+    assert decision.after_prerequisite == {room_delete(1).key, room_delete(2).key}
+    assert "2 room deletion(s) wait until the teardown of the same room may run" in decision.reasons
+    record(state, decision, planned, LIMITS, now=0, complete=True, id_factory=lambda: "abcdef")
+    assert state.batches["abcdef"].keys == {a.key for a in planned}  # confirmed together
+
+
+def test_a_deletion_whose_teardown_is_in_an_open_batch_waits_too() -> None:
+    state = state_with_baseline()
+    batch_id = _proposed(state, [teardown(1), kick(2)], counts(1, 10))  # an older layer-1 batch
+    decision = decide(state, counts(), [teardown(1), room_delete(1)], LIMITS, now=1)
+    assert decision.permitted == frozenset()
+    assert batch_id in decision.reasons[0]
+
+
+def test_a_confirmed_deletion_waits_for_its_paused_teardown_and_keeps_its_confirmation() -> None:
+    state = state_with_baseline()
+    # Pass 1: three obsolete rooms; the teardowns run, the deletions wait for an admin.
+    first_pass = [x for n in range(3) for x in (teardown(n), room_delete(n))] + [erase(9)]
+    first = _proposed(state, first_pass, counts())
+    assert state.batches[first].keys == {room_delete(n).key for n in range(3)} | {erase(9).key}
+    _confirm(state, first, at=1)
+
+    # Pass 2: eight more rooms became obsolete, so the teardowns are over the layer-2 limit.
+    second_pass = [x for n in range(11) for x in (teardown(n), room_delete(n))] + [erase(9)]
+    decision = decide(state, counts(), second_pass, LIMITS, now=2)
+    assert erase(9).key in decision.permitted
+    assert not decision.permitted & {room_delete(n).key for n in range(11)}
+    assert {room_delete(n).key for n in range(3)} <= decision.after_prerequisite
+    notices = record(state, decision, second_pass, LIMITS, now=2, complete=True, id_factory=lambda: "bbbbbb")
+    kept = state.batches[first]
+    assert kept.status is BatchStatus.confirmed
+    assert kept.keys == {room_delete(n).key for n in range(3)}  # the erasure ran and is done
+    assert "confirmed by @admin:x; runs on the next pass that may carry it out" in describe_batch(kept)
+    partly = [n for n in notices if n.payload.get("outcome") == "partly_executed"]
+    assert "ran 1 action(s); 3 wait until the teardown of their room may run" in partly[0].payload["text"]
+    # The new batch covers what the admin has not seen: the eleven teardowns and eight deletions.
+    assert state.batches["bbbbbb"].keys == {teardown(n).key for n in range(11)} | {
+        room_delete(n).key for n in range(3, 11)
+    }
+
+    # Pass 3: the second batch is confirmed as well; everything runs and both batches close.
+    _confirm(state, "bbbbbb", at=3)
+    third_pass = [x for n in range(11) for x in (teardown(n), room_delete(n))]
+    decision = decide(state, counts(), third_pass, LIMITS, now=4)
+    assert decision.permitted == {a.key for a in third_pass}
+    notices = record(state, decision, third_pass, LIMITS, now=4, complete=True)
+    assert state.batches == {}
+    texts = [n.payload["text"] for n in notices]
+    assert any(f"Batch {first} confirmed by @admin:x: ran 3 action(s)." in t for t in texts)
+
+
+def test_a_deletion_without_a_planned_teardown_is_judged_on_its_own() -> None:
+    decision = decide(state_with_baseline(), counts(), [room_delete(1)], LIMITS, now=0)
+    assert decision.permitted == {room_delete(1).key}
+
+
+def test_the_layer_3_limit_comes_from_the_config() -> None:
+    config = OnbotConfig.model_validate(
+        {**_CONFIG, "destructive_action_guard": {"confirm_irreversible_actions_from": 1}}
+    )
+    assert GuardLimits.from_config(config).confirm_irreversible_actions_from == 1
+    assert GuardLimits.from_config(OnbotConfig.model_validate(_CONFIG)).confirm_irreversible_actions_from == 3
+    with pytest.raises(ValueError):
+        OnbotConfig.model_validate(
+            {**_CONFIG, "destructive_action_guard": {"confirm_irreversible_actions_from": 0}}
+        )
