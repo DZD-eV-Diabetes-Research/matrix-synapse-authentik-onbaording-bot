@@ -32,7 +32,7 @@ Start a session by pointing Claude at this file and the session ID, for example:
 | 2 | S1 | Offboarding fails open (critical hotfix) | M | S0 | done (merged in wave 1a) |
 | 3 | S2 | Reconciler pass robustness | M | S0 | done (merged in wave 1a) |
 | 3a | W1F | Wave 1 review fixups (D14, startup 4xx, reconcile-once, base image) | S | S1, S10 | done (merged in wave 1c) |
-| 3b | CI1 | CI duration: integration path filter, release reuses the CI result (D17) | S | S15, S16 | open |
+| 3b | CI1 | CI duration: integration path filter, release reuses the CI result (D17) | S | S15, S16 | done (merged before wave 2) |
 | 4 | S3 | Guard layers 1 and 2, reconciler dry-run | M | S2 | open |
 | 5 | S16 | Git history scrub | S | S0, no open branches | done (force-pushed 2026-11-06, new main 89afecf) |
 | 6 | S4 | Offboarding completeness | M | S1 | open |

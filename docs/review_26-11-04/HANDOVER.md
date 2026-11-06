@@ -36,7 +36,14 @@ are deleted. Still open for the maintainer: GitHub Support purge request (old co
 4a7488f, 6f7a00c and descendants) and protection of `main` and tags (A5 in `02-supply-chain.md`).
 The first real CI run on GitHub (old 771cdaa) was fully green, 23 minutes.
 
-**Next:** CI1 (D17) and wave 2 (S3, S4, S11).
+**CI1 done** (merge 4da9c49): `scripts/ci_gate.py`, path filter for the integration job, release
+reuse of a green CI run, full-history secret scan. Verified with actionlint and against real API
+data of a finished run; the reuse path itself runs for the first time at the next release.
+
+**Wave 2 running** (started 2026-11-06 from 6b6be50): S3 on `review/s3-guards` (instance 1), S4 on
+`review/s4-offboarding` (instance 2), S11 on `review/s11-http` (instance 3), each in its own
+worktree under `.claude/worktrees/`. Merge order suggestion: S3 first (release blocker), then S4
+(both touch `onbot/lifecycle/`), then S11.
 
 ## Where things stand (2026-11-04)
 

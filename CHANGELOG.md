@@ -48,6 +48,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   This `CHANGELOG.md`.
 
 ### Changed
+- **Shorter CI waits (review decision D17):** pushes and PRs that change documentation only skip the
+  integration suite (about 20 minutes); any other path, and `CHANGELOG.md`, still runs it. A release
+  reuses a green CI run of exactly the tagged commit on `main` (all four jobs passed) and runs the full
+  CI only when there is none. The secret scan now covers the whole git history.
 - **Release and build pipeline (review S15):** image and PyPI package share one PEP 440 version
   (`scripts/release_version.py`); pre-release image tags use the normalised form (`0.2.0b1`), and a
   non-release tag fails the build instead of shipping `0.0.0`. The image is built reproducibly from
