@@ -227,7 +227,7 @@ async def test_three_deletions_wait_for_a_confirmation_while_the_rooms_are_close
     handler = ControlRoomHandler(
         matrix_client,
         config,
-        BroadcastService(matrix_client, config),
+        BroadcastService(matrix_client, config, recipients=S.recipients()),
         AdminResolver(authentik_client, config, ttl_sec=0),
         guard=DestructiveActionGuard(
             GuardLimits.from_config(config),
