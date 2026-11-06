@@ -134,6 +134,75 @@ If the two disagree, Onbot's computed MXIDs will not correspond to real accounts
 changes take effect and nobody is added to rooms. The integration suite has a dedicated
 localpart-contract test guarding this.
 
+### Renamed users keep their account
+
+MAS fixes a user's localpart at the first login and links the account to the upstream subject
+(Authentik's `sub` claim). A later rename in Authentik (marriage, a name change) does not change the
+Matrix account, so Onbot does not follow the mapping attribute blindly. It resolves every Authentik
+user in this order:
+
+1. **MAS**, when `mas_admin` is configured: the upstream link of the user's subject and the MAS user
+   it belongs to. This is authoritative. `mas_admin.upstream_subject_attribute` says where Authentik's
+   `sub` is found on the user object; it must match the subject mode of the Authentik OAuth2 provider
+   MAS uses:
+
+   | Authentik provider "Subject mode" | `upstream_subject_attribute` | Survives a rename |
+   |---|---|---|
+   | Based on the User's hashed ID (default) | `uid` (default) | yes |
+   | Based on the User's ID | `pk` | yes |
+   | Based on the User's username | `username` | no |
+   | Based on the User's Email | `email` | no |
+
+   With several upstream providers in MAS, set `mas_admin.upstream_provider_id` to the Authentik one.
+2. **The recorded binding.** The first time Onbot sees a user active, in the sync scope and with an
+   existing account, it records `Authentik pk -> MXID` in its account data (the `known_users` record
+   the offboarding lifecycle also uses). After that the binding wins over the attribute.
+3. **The mapping attribute**, only for users never seen before.
+
+What this means in practice:
+
+- A renamed user keeps their account, rooms and power levels. Nothing is kicked, locked, re-invited
+  or welcomed again. The rename is reported once in the admin room.
+- Changing `authentik_username_mapping_attribute` on a running deployment moves nobody who was
+  already seen; it only affects users who appear later. The changed mappings are reported.
+- When several Authentik users resolve to the same Matrix account (for example a new user whose
+  `attributes.matrix_name` names somebody else's account):
+  - if MAS links the account to exactly one of them and the others only name it by the mapping
+    attribute (never seen, no MAS link), the MAS-linked owner is managed as usual and the others are
+    skipped;
+  - otherwise (two MAS links, two recorded bindings, a MAS link against another user's binding, or
+    a binding against an attribute guess) Onbot skips all of them: no join, no kick, no power-level
+    change, no lock and no erase of that account.
+
+  Either way the conflict is reported in the admin room. There is no bot command for it; resolve it
+  by hand (see below).
+- If MAS cannot be read, Onbot uses the bindings and the attribute for that pass and reports it.
+  If the binding record itself cannot be read, Onbot leaves memberships and power levels alone and
+  offboards nobody until it is repaired.
+
+#### Resolving a conflict or a wrong binding by hand
+
+Usually the fix belongs in Authentik: correct the mapping attribute of the user who names the wrong
+account (a duplicate `matrix_name`, a typo). The next pass picks it up.
+
+When a recorded binding itself is wrong, edit it in the bot's account data. The record is the
+account-data event `<reversed server name>.onbot.known_users` of the bot user (for example
+`org.company.onbot.known_users`), shaped `{"schema_version": ..., "users": {"<Authentik pk>":
+{"mxid": "@alice:company.org", "first_seen": <unix time>}}}`. Read it and write it back with the
+bot's access token:
+
+```bash
+curl -H "Authorization: Bearer $BOT_TOKEN" \
+  "https://matrix.company.org/_matrix/client/v3/user/@onbot:company.org/account_data/org.company.onbot.known_users"
+# edit the JSON, then
+curl -X PUT -H "Authorization: Bearer $BOT_TOKEN" -d @known_users.json \
+  "https://matrix.company.org/_matrix/client/v3/user/@onbot:company.org/account_data/org.company.onbot.known_users"
+```
+
+Remove or correct the entry of the wrong pk; keep the JSON valid, since an unreadable record pauses
+user sync and offboarding. With `mas_admin` configured, MAS overrides a binding that disagrees with
+its upstream link anyway.
+
 ## Offboarding and the lifecycle
 
 Onbot runs a quarantined offboarding lifecycle. Two things to know:

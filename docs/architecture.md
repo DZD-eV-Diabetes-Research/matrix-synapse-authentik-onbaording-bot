@@ -35,7 +35,9 @@ Three properties of this topology drive how you configure Onbot:
   MAS uses when it provisions accounts from the same Authentik claim. Set
   `sync_authentik_users_with_matrix_rooms.authentik_username_mapping_attribute` to agree with MAS.
   Get it wrong and Onbot's computed MXIDs will not match the real accounts, so nobody is added to
-  rooms.
+  rooms. The attribute is only the first guess: `onbot.identity.IdentityResolver` resolves users
+  through MAS's upstream links when `mas_admin` is set, and through the `authentik pk -> MXID`
+  binding recorded at first sight otherwise, so a rename never moves a user (D8).
 - **Lifecycle enforcement requires MAS.** When Authentik disables a user, MAS blocks new logins but
   existing Matrix sessions keep working, and the Synapse admin API cannot revoke a MAS-issued
   session, only MAS can ([ADR-0005](adr/0005-quarantine-lifecycle.md)). So to offboard a disabled

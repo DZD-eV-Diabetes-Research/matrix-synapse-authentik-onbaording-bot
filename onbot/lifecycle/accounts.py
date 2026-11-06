@@ -194,8 +194,9 @@ class KnownUsers(BaseModel):
 
     It makes deletion detectable (LIF-02) and keeps a tracked account tied to the person it belongs
     to across mapping changes. It is bounded: a binding is dropped once the Authentik user is gone and
-    nothing is left to offboard. Review session S9 (D8) extends this record into the authoritative
-    identity binding; keep the shape stable (``users[pk].mxid``) when changing it.
+    nothing is left to offboard. It is also the identity binding of D8: :class:`onbot.identity.
+    IdentityResolver` records first sights in it and resolves bound users through it, so a renamed
+    user keeps their account. Keep the shape stable (``users[pk].mxid``) when changing it.
     """
 
     schema_version: int = SCHEMA_VERSION
@@ -208,7 +209,7 @@ class DirectoryUser:
 
     pk: str
     username: str
-    mxid: str | None  # None when the mapping attribute is missing
+    mxid: str | None  # as resolved (D8); None when unmappable or in a conflict (see held_mxids)
     is_active: bool
     in_scope: bool  # matched by the sync scope (paths, attributes, groups)
     ignored: bool  # on authentik_user_ignore_list
@@ -223,9 +224,12 @@ class DirectorySnapshot:
     excluded_mxids: frozenset[str]  # the bot and matrix_user_ignore_list
     synced_mxids: frozenset[str] = frozenset()  # accounts the room sync treats as active members
     ignored_usernames: frozenset[str] = frozenset()  # authentik_user_ignore_list
+    # Accounts several Authentik users resolve to (D8): frozen, never locked or erased.
+    held_mxids: frozenset[str] = frozenset()
 
 
 IGNORED_REASON = "the Authentik user is on authentik_user_ignore_list"
+CONFLICT_REASON = "several Authentik users resolve to this Matrix account"
 DELETED_REASON = "deleted from Authentik"
 
 
@@ -308,6 +312,8 @@ def _classify_one(
 
     if mxid in snapshot.excluded_mxids:
         return frozen("the bot account or on matrix_user_ignore_list")
+    if mxid in snapshot.held_mxids:
+        return frozen(CONFLICT_REASON)
     ignored = [u for u in everyone if u.ignored]
     if ignored:
         return Classification(AccountStatus.frozen, IGNORED_REASON, pk, ignored_username=ignored[0].username)
@@ -353,8 +359,9 @@ def update_known_users(
     """Record new bindings and prune dead ones; return (changed, warnings).
 
     Only an active, in-scope, mapped user with an existing Matrix account is recorded. A binding is
-    never rewritten: a changed mapping (a rename, D8) or a second Authentik user claiming an already
-    bound MXID is reported and left alone (fail closed; S9 decides what to do with it).
+    never rewritten here: a changed mapping or a second Authentik user claiming an already bound MXID
+    is reported and left alone (fail closed). The reconciler's identity resolver (D8) records first
+    sights before the lifecycle runs and hands it resolved MXIDs, so in a pass this mostly prunes.
     """
     changed = False
     warnings: list[str] = []

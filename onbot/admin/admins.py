@@ -8,7 +8,9 @@ so this module is written to fail *closed* in every direction it can fail:
   which is not the same job as paging the company, and a set derived from that role would widen
   silently the next time somebody is granted it. Somebody must create a group and put people in it.
 * **A user the bot cannot map to an MXID is dropped**, not guessed at and not fatal. Likewise a user
-  on ``authentik_user_ignore_list``: a service account parked in the admin group is not an admin.
+  on ``authentik_user_ignore_list``: a service account parked in the admin group is not an admin,
+  and a user whose MXID another Authentik user resolves to as well (D8): the right goes to nobody
+  rather than to whichever account the mapping attribute happens to name.
   (``matrix_user_ignore_list`` is *not* applied — those are exactly the Matrix-only accounts that
   ``admin_user_ids`` exists to name.)
 * **Authentik being down never opens the gate, and never slams it either.** A failed refresh keeps
@@ -31,39 +33,38 @@ from typing import Any
 
 from onbot.clients.authentik import ApiClientAuthentik
 from onbot.config import OnbotConfig
-from onbot.identity import compute_mxid
+from onbot.identity import IdentityResolver, Resolution, attribute_mxid, is_ignored
 from onbot.logging import get_logger
 
 log = get_logger(__name__)
 
 
-def resolve_admin_mxids(config: OnbotConfig, group_members: Iterable[dict[str, Any]]) -> frozenset[str]:
-    """Union the configured MXIDs with the mappable, non-ignored members of the admin groups.
+def resolve_admin_mxids(
+    config: OnbotConfig, group_members: Iterable[dict[str, Any]], resolution: Resolution | None = None
+) -> frozenset[str]:
+    """Union the configured MXIDs with the resolvable, non-ignored members of the admin groups.
 
     Pure: ``group_members`` are the raw Authentik user dicts as
-    :meth:`~onbot.clients.authentik.ApiClientAuthentik.list_users` returns them.
+    :meth:`~onbot.clients.authentik.ApiClientAuthentik.list_users` returns them, ``resolution`` is
+    what the :class:`~onbot.identity.IdentityResolver` made of them (without one, the mapping
+    attribute names each MXID).
     """
     mxids = set(config.admin_room.admin_user_ids)
-    sync_cfg = config.sync_authentik_users_with_matrix_rooms
     for user in group_members:
-        if user.get("username") in config.authentik_user_ignore_list:
+        if is_ignored(user, config):
             log.debug("admin group member %r is on the ignore list; not an admin", user.get("username"))
             continue
-        try:
-            mxids.add(
-                compute_mxid(
-                    user,
-                    username_attribute=sync_cfg.authentik_username_mapping_attribute,
-                    server_name=config.synapse_server.server_name,
-                )
-            )
-        except KeyError:
+        mxid = resolution.mxid(user["pk"]) if resolution is not None else attribute_mxid(user, config)
+        if mxid is None:
             # Granting the bot's most dangerous capability to a user whose Matrix identity we had to
             # guess at is not an option; neither is taking the bot down over one malformed account.
             log.warning(
-                "cannot map an MXID for Authentik user %r in an admin group; not granting bot admin",
+                "cannot resolve an MXID for Authentik user %r in an admin group (unmappable, or another "
+                "user resolves to the same account); not granting bot admin",
                 user.get("pk"),
             )
+            continue
+        mxids.add(mxid)
     return frozenset(mxids)
 
 
@@ -82,9 +83,13 @@ class AdminResolver:
         *,
         ttl_sec: float | None = None,
         clock: Callable[[], float] = time.monotonic,
+        identity: IdentityResolver | None = None,
     ) -> None:
         self.authentik = authentik
         self.config = config
+        # The reconciler's resolver (D8): an admin renamed in Authentik keeps the rights on their
+        # account, and a member whose MXID is somebody else's gets none.
+        self.identity = identity
         self.cfg = config.admin_room
         # The Authentik poll interval, reused rather than given its own knob: it is already the
         # answer to "how stale may this bot's view of Authentik be?", and an operator who tightens
@@ -133,7 +138,18 @@ class AdminResolver:
                 exc_info=True,
             )
             return self._admins
-        self._admins = resolve_admin_mxids(self.config, members)
+        resolution: Resolution | None = None
+        if self.identity is not None:
+            try:
+                resolution = await self.identity.resolve(m for m in members if not is_ignored(m, self.config))
+            except Exception:
+                log.warning(
+                    "could not resolve the bot-admin group members; keeping the previous %d admins",
+                    len(self._admins),
+                    exc_info=True,
+                )
+                return self._admins
+        self._admins = resolve_admin_mxids(self.config, members, resolution)
         self._fetched_at = self._clock()
         log.debug("resolved %d bot admins", len(self._admins))
         return self._admins

@@ -9,7 +9,9 @@ must go through MAS itself. This client wraps the MAS admin API operations the l
   the same sessions back),
 * list and finish a user's sessions (compatibility, OAuth 2.0 and browser sessions), so an unlock
   does not revive them (LIF-07),
-* deactivate a user (irreversible, the erase stage), with or without GDPR erasure (D7).
+* deactivate a user (irreversible, the erase stage), with or without GDPR erasure (D7),
+* list the upstream OAuth links and the users they belong to, so an Authentik user is resolved to
+  the Matrix account MAS really linked it to, whatever its username is now (D8).
 
 Older MAS releases lack some of these operations: 0.14 has no session finish endpoints and ignores
 the deactivation body, so it always erases. :meth:`ApiClientMasAdmin.capabilities` reads the admin
@@ -25,7 +27,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from onbot.auth.token_provider import TokenProvider
-from onbot.clients.base import ApiError, BaseApiClient
+from onbot.clients.base import ApiError, BaseApiClient, path_segment
 from onbot.logging import get_logger
 
 log = get_logger(__name__)
@@ -33,7 +35,30 @@ log = get_logger(__name__)
 #: The session kinds a user can hold in MAS, as named in the admin API paths.
 SESSION_KINDS: tuple[str, ...] = ("compat-sessions", "oauth2-sessions", "user-sessions")
 _SESSION_PAGE_SIZE = 100
+_LIST_PAGE_SIZE = 100
 _DEACTIVATE_PATH = "/api/admin/v1/users/{id}/deactivate"
+
+
+@dataclass(frozen=True, slots=True)
+class UpstreamLink:
+    """One upstream OAuth link: the account ``subject`` at ``provider_id`` belongs to ``user_id``."""
+
+    provider_id: str
+    subject: str
+    user_id: str | None  # a link MAS has not attached to a user yet has none
+
+
+def _next_cursor_page(page: Any, current: dict[str, Any]) -> dict[str, Any] | None:
+    """MAS pages by cursor: the next page starts after the last id of a full page."""
+    data = (page or {}).get("data") or []
+    if len(data) < int(current.get("page[first]", _LIST_PAGE_SIZE)):
+        return None
+    return {**current, "page[after]": data[-1]["id"]}
+
+
+def _meta_count(page: Any) -> int | None:
+    count = ((page or {}).get("meta") or {}).get("count")
+    return int(count) if isinstance(count, int) else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,7 +174,7 @@ class ApiClientMasAdmin(BaseApiClient):
         (LIF-10).
         """
         try:
-            result = await self.get_json(f"users/by-username/{username}")
+            result = await self.get_json(f"users/by-username/{path_segment(username)}")
         except ApiError as exc:
             if exc.status_code == 404 and _is_mas_error_body(exc.payload):
                 return None
@@ -164,15 +189,54 @@ class ApiClientMasAdmin(BaseApiClient):
         unless they were finished (:meth:`finish_session`).
         """
         # Locking a locked user (and unlocking an unlocked one) answers 200, so retries are safe.
-        await self.post_json(f"users/{user_id}/lock", idempotent=True)
+        await self.post_json(f"users/{path_segment(user_id)}/lock", idempotent=True)
 
     async def unlock_user(self, user_id: str) -> None:
-        await self.post_json(f"users/{user_id}/unlock", idempotent=True)
+        await self.post_json(f"users/{path_segment(user_id)}/unlock", idempotent=True)
 
     async def count_locked_users(self) -> int:
         """How many MAS users are locked (``meta.count`` of the filtered user list)."""
         page = await self.get_json("users", params={"filter[status]": "locked", "page[first]": 1})
         return int(page["meta"]["count"])
+
+    async def list_upstream_links(self, *, provider_id: str | None = None) -> list[UpstreamLink]:
+        """Every upstream OAuth link (of ``provider_id`` only, when given), every page."""
+        params: dict[str, Any] = {"page[first]": _LIST_PAGE_SIZE, "filter[provider]": provider_id}
+        items = await self.paginate_collect(
+            "upstream-oauth-links",
+            params=params,
+            extract_items=lambda page: page.get("data") or [],
+            next_params=_next_cursor_page,
+            total=_meta_count,
+            item_key=lambda item: item["id"],
+        )
+        links: list[UpstreamLink] = []
+        for item in items:
+            attributes = item.get("attributes") or {}
+            user_id = attributes.get("user_id")
+            links.append(
+                UpstreamLink(
+                    provider_id=str(attributes.get("provider_id")),
+                    subject=str(attributes.get("subject")),
+                    user_id=str(user_id) if user_id else None,
+                )
+            )
+        return links
+
+    async def list_usernames(self) -> dict[str, str]:
+        """``user id -> username`` (the Matrix localpart) of every MAS user, every page.
+
+        Locked and deactivated users are included: they still own their account.
+        """
+        items = await self.paginate_collect(
+            "users",
+            params={"page[first]": _LIST_PAGE_SIZE},
+            extract_items=lambda page: page.get("data") or [],
+            next_params=_next_cursor_page,
+            total=_meta_count,
+            item_key=lambda item: item["id"],
+        )
+        return {str(item["id"]): str(item["attributes"]["username"]) for item in items}
 
     async def list_active_session_ids(self, kind: str, user_id: str) -> list[str]:
         """Ids of the user's active sessions of one kind (see :data:`SESSION_KINDS`), every page."""
@@ -193,7 +257,7 @@ class ApiClientMasAdmin(BaseApiClient):
     async def finish_session(self, kind: str, session_id: str) -> bool:
         """End one session for good; ``False`` when MAS says it was already finished (a race)."""
         try:
-            await self.post_json(f"{kind}/{session_id}/finish")
+            await self.post_json(f"{path_segment(kind)}/{path_segment(session_id)}/finish")
         except ApiError as exc:
             if exc.status_code == 400 and _is_mas_error_body(exc.payload):
                 return False
@@ -207,4 +271,4 @@ class ApiClientMasAdmin(BaseApiClient):
         anyway, so callers check :meth:`capabilities` first.
         """
         body = None if skip_erase is None else {"skip_erase": skip_erase}
-        await self.post_json(f"users/{user_id}/deactivate", json_body=body)
+        await self.post_json(f"users/{path_segment(user_id)}/deactivate", json_body=body)

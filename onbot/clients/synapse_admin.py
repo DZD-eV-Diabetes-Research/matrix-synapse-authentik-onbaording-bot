@@ -21,7 +21,13 @@ from typing import Any
 import httpx
 
 from onbot.auth.token_provider import TokenProvider
-from onbot.clients.base import ApiError, BaseApiClient, may_have_been_processed, resend_unless_done
+from onbot.clients.base import (
+    ApiError,
+    BaseApiClient,
+    may_have_been_processed,
+    path_segment,
+    resend_unless_done,
+)
 from onbot.logging import get_logger
 
 log = get_logger(__name__)
@@ -105,7 +111,7 @@ class ApiClientSynapseAdmin(BaseApiClient):
 
     async def list_room_members(self, room_id: str) -> list[str]:
         # https://element-hq.github.io/synapse/latest/admin_api/rooms.html#room-members-api
-        result = await self.get_json(f"v1/rooms/{room_id}/members")
+        result = await self.get_json(f"v1/rooms/{path_segment(room_id)}/members")
         members: list[str] = result["members"]
         return members
 
@@ -114,19 +120,19 @@ class ApiClientSynapseAdmin(BaseApiClient):
 
         https://element-hq.github.io/synapse/latest/admin_api/rooms.html#room-state-api
         """
-        result = await self.get_json(f"v1/rooms/{room_id}/state")
+        result = await self.get_json(f"v1/rooms/{path_segment(room_id)}/state")
         events: list[dict[str, Any]] = list((result or {}).get("state") or [])
         return events
 
     async def get_room_details(self, room_id: str) -> dict[str, Any]:
         # https://element-hq.github.io/synapse/latest/admin_api/rooms.html#room-details-api
-        details: dict[str, Any] = await self.get_json(f"v1/rooms/{room_id}")
+        details: dict[str, Any] = await self.get_json(f"v1/rooms/{path_segment(room_id)}")
         return details
 
     async def list_user_media(self, user_id: str) -> list[dict[str, Any]]:
         # https://element-hq.github.io/synapse/latest/admin_api/user_admin_api.html#list-media-uploaded-by-a-user
         return await self.paginate_collect(
-            f"v1/users/{user_id}/media",
+            f"v1/users/{path_segment(user_id)}/media",
             params={"limit": _DEFAULT_PAGE_SIZE},
             extract_items=lambda page: page["media"],
             next_params=_next_token_params("next_token"),
@@ -138,7 +144,7 @@ class ApiClientSynapseAdmin(BaseApiClient):
 
     async def add_user_to_room(self, room_id: str, user_id: str) -> None:
         # https://element-hq.github.io/synapse/latest/admin_api/room_membership.html
-        path = f"v1/join/{room_id}"
+        path = f"v1/join/{path_segment(room_id)}"
         body = {"user_id": user_id}
         try:
             await self.post_json(path, json_body=body)
@@ -157,11 +163,13 @@ class ApiClientSynapseAdmin(BaseApiClient):
 
     async def make_room_admin(self, room_id: str, user_id: str) -> None:
         # https://element-hq.github.io/synapse/latest/admin_api/rooms.html#make-room-admin-api
-        await self.post_json(f"v1/rooms/{room_id}/make_room_admin", json_body={"user_id": user_id})
+        await self.post_json(
+            f"v1/rooms/{path_segment(room_id)}/make_room_admin", json_body={"user_id": user_id}
+        )
 
     async def set_user_server_admin_state(self, user_id: str, *, admin: bool) -> None:
         # https://element-hq.github.io/synapse/latest/admin_api/user_admin_api.html#change-whether-a-user-is-a-server-administrator-or-not
-        await self.put_json(f"v1/users/{user_id}/admin", json_body={"admin": admin})
+        await self.put_json(f"v1/users/{path_segment(user_id)}/admin", json_body={"admin": admin})
 
     async def override_ratelimit(
         self, user_id: str, *, messages_per_second: int = 0, burst_count: int = 0
@@ -173,34 +181,36 @@ class ApiClientSynapseAdmin(BaseApiClient):
         https://element-hq.github.io/synapse/latest/admin_api/user_admin_api.html#override-ratelimiting-for-users
         """
         await self.post_json(
-            f"v1/users/{user_id}/override_ratelimit",
+            f"v1/users/{path_segment(user_id)}/override_ratelimit",
             json_body={"messages_per_second": messages_per_second, "burst_count": burst_count},
             idempotent=True,  # sets absolute values; repeating it changes nothing
         )
 
     async def room_is_blocked(self, room_id: str) -> bool:
         # https://element-hq.github.io/synapse/latest/admin_api/rooms.html#get-block-status
-        result = await self.get_json(f"v1/rooms/{room_id}/block")
+        result = await self.get_json(f"v1/rooms/{path_segment(room_id)}/block")
         return bool(result.get("block"))
 
     async def room_set_blocked(self, room_id: str, *, blocked: bool) -> None:
         # https://element-hq.github.io/synapse/latest/admin_api/rooms.html#block-or-unblock-a-room
-        await self.put_json(f"v1/rooms/{room_id}/block", json_body={"block": blocked})
+        await self.put_json(f"v1/rooms/{path_segment(room_id)}/block", json_body={"block": blocked})
 
     # --- lifecycle (used by Phase 5; correct now to avoid carrying broken stubs) ---
 
     async def deactivate_account(self, user_id: str, *, erase: bool) -> None:
         # https://element-hq.github.io/synapse/latest/admin_api/user_admin_api.html#deactivate-account
-        await self.post_json(f"v1/deactivate/{user_id}", json_body={"erase": erase})
+        await self.post_json(f"v1/deactivate/{path_segment(user_id)}", json_body={"erase": erase})
 
     async def logout_account(self, user_id: str) -> int:
         """Delete every device of the user, which ends their Synapse sessions; return the count.
 
         Under MAS this does not end the MAS session behind a token (§7 Q1).
         """
-        devices = (await self.get_json(f"v2/users/{user_id}/devices"))["devices"]
+        devices = (await self.get_json(f"v2/users/{path_segment(user_id)}/devices"))["devices"]
         for device in devices:
-            await self.delete_json(f"v2/users/{user_id}/devices/{device['device_id']}")
+            await self.delete_json(
+                f"v2/users/{path_segment(user_id)}/devices/{path_segment(device['device_id'])}"
+            )
         return len(devices)
 
     async def delete_user_media(self, user_id: str, *, limit: int = 100) -> dict[str, Any]:
@@ -211,14 +221,14 @@ class ApiClientSynapseAdmin(BaseApiClient):
         https://element-hq.github.io/synapse/latest/admin_api/user_admin_api.html#delete-media-uploaded-by-a-user
         """
         result: dict[str, Any] = await self.request_json(
-            "DELETE", f"v1/users/{user_id}/media", params={"limit": limit}
+            "DELETE", f"v1/users/{path_segment(user_id)}/media", params={"limit": limit}
         )
         return result
 
     async def count_user_media(self, user_id: str) -> int:
         """How many local media files the user uploaded (the ``total`` of the media list)."""
         # https://element-hq.github.io/synapse/latest/admin_api/user_admin_api.html#list-media-uploaded-by-a-user
-        result = await self.get_json(f"v1/users/{user_id}/media", params={"limit": 1})
+        result = await self.get_json(f"v1/users/{path_segment(user_id)}/media", params={"limit": 1})
         return int(result.get("total", 0))
 
     async def delete_room(
@@ -250,7 +260,7 @@ class ApiClientSynapseAdmin(BaseApiClient):
             body["message"] = message
         try:
             started = await self.request_json(
-                "DELETE", f"v2/rooms/{room_id}", json_body=body, idempotent=False
+                "DELETE", f"v2/rooms/{path_segment(room_id)}", json_body=body, idempotent=False
             )
             delete_id = str(started["delete_id"])
         except (ApiError, httpx.TransportError) as exc:
@@ -271,7 +281,7 @@ class ApiClientSynapseAdmin(BaseApiClient):
     async def _existing_room_deletion(self, room_id: str) -> str | None:
         """The delete id of a deletion of ``room_id`` that is running or done, if Synapse knows one."""
         try:
-            result = await self.get_json(f"v2/rooms/{room_id}/delete_status")
+            result = await self.get_json(f"v2/rooms/{path_segment(room_id)}/delete_status")
         except ApiError as exc:
             if exc.status_code == 404:
                 return None  # "No delete task for room_id ... found"
@@ -287,7 +297,7 @@ class ApiClientSynapseAdmin(BaseApiClient):
         sleep = self._sleep or asyncio.sleep
         deadline = time.monotonic() + wait_sec
         while True:
-            status: dict[str, Any] = await self.get_json(f"v2/rooms/delete_status/{delete_id}")
+            status: dict[str, Any] = await self.get_json(f"v2/rooms/delete_status/{path_segment(delete_id)}")
             state = status.get("status")
             if state == _DELETE_DONE:
                 return status

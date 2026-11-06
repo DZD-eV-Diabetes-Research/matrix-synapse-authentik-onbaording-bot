@@ -42,9 +42,9 @@ def _user_facts(user: dict[str, Any], username_attribute: str) -> tuple[Any, ...
     return (
         user.get("pk"),
         user.get("username"),
-        # The MXID is derived from this dotted path, exactly as `identity.compute_mxid` reads it;
-        # changing it moves the user to a different Matrix account. A user missing the attribute is
-        # one the reconciler skips with a warning, so a poll must not raise over it either.
+        # The mapping attribute, read like `identity.compute_mxid` reads it. A bound user keeps their
+        # account when it changes (D8), but the pass reports the change, so it is a change here too.
+        # A user missing the attribute must not make a poll raise either.
         get_nested_dict_val_by_path(user, username_attribute.split("."), fallback_val=None),
         user.get("is_active"),
         user.get("is_superuser"),  # drives room admin power levels

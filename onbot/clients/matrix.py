@@ -26,7 +26,6 @@ import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
-from urllib.parse import quote
 
 import httpx
 
@@ -34,7 +33,13 @@ if TYPE_CHECKING:
     from onbot.media import MediaUploader
 
 from onbot.auth.token_provider import TokenProvider
-from onbot.clients.base import ApiError, BaseApiClient, may_have_been_processed, resend_unless_done
+from onbot.clients.base import (
+    ApiError,
+    BaseApiClient,
+    may_have_been_processed,
+    path_segment,
+    resend_unless_done,
+)
 from onbot.clients.versions import CLIENT_VERSIONS_PATH, ServerVersions
 from onbot.logging import get_logger
 from onbot.rooms.provision import ManagedRoomSpec, create_managed_room
@@ -318,7 +323,7 @@ class ApiClientMatrix(BaseApiClient):
         # https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3directoryroomroomalias
         # The alias (e.g. "#room:server") must be percent-encoded — notably "#" and ":".
         try:
-            result = await self.get_json(f"v3/directory/room/{quote(alias, safe='')}")
+            result = await self.get_json(f"v3/directory/room/{path_segment(alias)}")
         except ApiError as exc:
             if exc.status_code == 404:
                 return None
@@ -349,7 +354,7 @@ class ApiClientMatrix(BaseApiClient):
         body: dict[str, Any] = {"user_id": user_id}
         if reason:
             body["reason"] = reason
-        path = f"v3/rooms/{room_id}/kick"
+        path = f"v3/rooms/{path_segment(room_id)}/kick"
         try:
             await self.post_json(path, json_body=body)
         except (ApiError, httpx.TransportError) as exc:
@@ -368,7 +373,9 @@ class ApiClientMatrix(BaseApiClient):
     async def invite_user(self, room_id: str, user_id: str) -> None:
         # https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3roomsroomidinvite
         # Re-inviting an invited user succeeds (checked against Synapse), so a retry is safe.
-        await self.post_json(f"v3/rooms/{room_id}/invite", json_body={"user_id": user_id}, idempotent=True)
+        await self.post_json(
+            f"v3/rooms/{path_segment(room_id)}/invite", json_body={"user_id": user_id}, idempotent=True
+        )
 
     async def get_membership(self, room_id: str, user_id: str) -> str | None:
         """A user's membership in a room (``join``/``invite``/``leave``/…), or ``None`` if never set."""
@@ -387,9 +394,9 @@ class ApiClientMatrix(BaseApiClient):
 
         Targets the event directly (no full-state linear scan — the legacy §3 inefficiency).
         """
-        path = f"v3/rooms/{room_id}/state/{event_type}"
+        path = f"v3/rooms/{path_segment(room_id)}/state/{path_segment(event_type)}"
         if state_key:
-            path = f"{path}/{state_key}"
+            path = f"{path}/{path_segment(state_key)}"
         try:
             content: dict[str, Any] = await self.get_json(path)
         except ApiError as exc:
@@ -401,9 +408,9 @@ class ApiClientMatrix(BaseApiClient):
     async def put_room_state_event(
         self, room_id: str, event_type: str, content: Mapping[str, Any], state_key: str = ""
     ) -> None:
-        path = f"v3/rooms/{room_id}/state/{event_type}"
+        path = f"v3/rooms/{path_segment(room_id)}/state/{path_segment(event_type)}"
         if state_key:
-            path = f"{path}/{state_key}"
+            path = f"{path}/{path_segment(state_key)}"
         await self.put_json(path, json_body=dict(content))
 
     async def get_room_power_levels(self, room_id: str) -> dict[str, Any]:
@@ -424,7 +431,9 @@ class ApiClientMatrix(BaseApiClient):
 
     async def set_user_avatar(self, user_id: str, mxc_uri: str) -> None:
         # https://spec.matrix.org/latest/client-server-api/#put_matrixclientv3profileuseridavatar_url
-        await self.put_json(f"v3/profile/{user_id}/avatar_url", json_body={"avatar_url": mxc_uri})
+        await self.put_json(
+            f"v3/profile/{path_segment(user_id)}/avatar_url", json_body={"avatar_url": mxc_uri}
+        )
 
     async def get_user_avatar(self, user_id: str) -> str | None:
         """The user's current profile avatar as an ``mxc://`` URI, or ``None`` if unset.
@@ -433,7 +442,7 @@ class ApiClientMatrix(BaseApiClient):
         https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3profileuseridavatar_url
         """
         try:
-            content: dict[str, Any] = await self.get_json(f"v3/profile/{user_id}/avatar_url")
+            content: dict[str, Any] = await self.get_json(f"v3/profile/{path_segment(user_id)}/avatar_url")
         except ApiError as exc:
             if exc.status_code == 404:
                 return None
@@ -471,7 +480,7 @@ class ApiClientMatrix(BaseApiClient):
         """
         server, media_id = _parse_mxc(mxc_uri)
         data: bytes = await self.request_raw(
-            "GET", f"v1/media/download/{server}/{media_id}", parse_json=False
+            "GET", f"v1/media/download/{path_segment(server)}/{path_segment(media_id)}", parse_json=False
         )
         return data
 
@@ -503,7 +512,7 @@ class ApiClientMatrix(BaseApiClient):
             content["format"] = "org.matrix.custom.html"
             content["formatted_body"] = formatted_body
         result = await self.put_json(
-            f"v3/rooms/{room_id}/send/m.room.message/{txn}",
+            f"v3/rooms/{path_segment(room_id)}/send/m.room.message/{path_segment(txn)}",
             json_body=content,
         )
         event_id: str = result["event_id"]
@@ -513,7 +522,9 @@ class ApiClientMatrix(BaseApiClient):
 
     async def get_account_data(self, user_id: str, data_type: str) -> dict[str, Any]:
         try:
-            data: dict[str, Any] = await self.get_json(f"v3/user/{user_id}/account_data/{data_type}")
+            data: dict[str, Any] = await self.get_json(
+                f"v3/user/{path_segment(user_id)}/account_data/{path_segment(data_type)}"
+            )
         except ApiError as exc:
             if exc.status_code == 404:
                 return {}
@@ -521,7 +532,9 @@ class ApiClientMatrix(BaseApiClient):
         return data
 
     async def set_account_data(self, user_id: str, data_type: str, content: Mapping[str, Any]) -> None:
-        await self.put_json(f"v3/user/{user_id}/account_data/{data_type}", json_body=dict(content))
+        await self.put_json(
+            f"v3/user/{path_segment(user_id)}/account_data/{path_segment(data_type)}", json_body=dict(content)
+        )
 
     async def get_room_account_data(self, user_id: str, room_id: str, data_type: str) -> dict[str, Any]:
         """The user's private per-room account data of ``data_type``, ``{}`` when unset.
@@ -532,7 +545,7 @@ class ApiClientMatrix(BaseApiClient):
         """
         try:
             data: dict[str, Any] = await self.get_json(
-                f"v3/user/{user_id}/rooms/{room_id}/account_data/{data_type}"
+                f"v3/user/{path_segment(user_id)}/rooms/{path_segment(room_id)}/account_data/{path_segment(data_type)}"
             )
         except ApiError as exc:
             if exc.status_code == 404:
@@ -544,7 +557,8 @@ class ApiClientMatrix(BaseApiClient):
         self, user_id: str, room_id: str, data_type: str, content: Mapping[str, Any]
     ) -> None:
         await self.put_json(
-            f"v3/user/{user_id}/rooms/{room_id}/account_data/{data_type}", json_body=dict(content)
+            f"v3/user/{path_segment(user_id)}/rooms/{path_segment(room_id)}/account_data/{path_segment(data_type)}",
+            json_body=dict(content),
         )
 
     # --- sync stream (Simplified Sliding Sync, MSC4186) ----------------------
