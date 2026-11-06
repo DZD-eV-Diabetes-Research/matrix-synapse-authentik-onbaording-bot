@@ -496,3 +496,43 @@ async def test_a_squatted_space_alias_does_not_get_the_dms() -> None:
     await svc.welcome_user(ALICE)
     assert client.space_links == []
     assert [body for _, body in client.sent] == ["hi"]  # the welcome itself still goes out
+
+
+# --- RUN-01 / ONB-01: concurrent welcomes of different users share one m.direct document ---
+
+
+class YieldingMatrixClient(FakeMatrixClient):
+    """Yields on every account-data and createRoom round trip, as the real HTTP client does."""
+
+    async def get_account_data(self, user_id: str, data_type: str) -> dict[str, Any]:
+        content = await super().get_account_data(user_id, data_type)
+        await asyncio.sleep(0)
+        return content
+
+    async def set_account_data(self, user_id: str, data_type: str, content: dict[str, Any]) -> None:
+        await asyncio.sleep(0)
+        await super().set_account_data(user_id, data_type, content)
+
+    async def create_room(self, **kwargs: Any) -> str:
+        await asyncio.sleep(0)
+        return await super().create_room(**kwargs)
+
+
+async def test_concurrent_first_welcomes_of_different_users_keep_every_m_direct_entry() -> None:
+    """Before the fix each welcome read m.direct, created its room and wrote the whole document back,
+    so the last writer dropped the others' entries (live check 12 lost 9 of 20)."""
+    client = YieldingMatrixClient()
+    svc = WelcomeService(client, _config(["hi"]))  # type: ignore[arg-type]
+    users = [f"@user{i}:matrix.test" for i in range(20)]
+
+    await asyncio.gather(*(svc.welcome_user(mxid) for mxid in users))
+
+    direct = client.account_data[(BOT, "m.direct")]
+    assert sorted(direct) == sorted(users)
+    assert all(len(rooms) == 1 for rooms in direct.values())
+    assert client.created_dms == 20
+
+    # A second round (a restart) creates nothing and sends nothing new.
+    await asyncio.gather(*(svc.welcome_user(mxid) for mxid in users))
+    assert client.created_dms == 20
+    assert len(client.sent) == 20

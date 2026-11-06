@@ -23,7 +23,8 @@ Force-joining the user lands a ``join`` membership event on the bot's own sync s
 this flow for the same user while the first call is still sending messages — so the state event is
 written as soon as the room exists and again after each message, never once at the end. The two calls
 are also serialised by :attr:`WelcomeService._locks`, since neither Matrix account data nor room state
-offers a compare-and-set.
+offers a compare-and-set. Welcomes of *different* users run concurrently; the one document they share,
+the bot's ``m.direct``, is re-read and written under a lock of its own (RUN-01).
 
 The messages themselves are templates: placeholders (``{space_link}`` and friends) are filled in per
 recipient and the result is rendered from markdown to HTML, both in :mod:`onbot.formatting`. Neither
@@ -132,6 +133,10 @@ class WelcomeService:
         # One lock per user, so the reconciler signal and the sync stream cannot welcome the same
         # person at once. Bounded by the number of users the bot has ever seen.
         self._locks: dict[str, asyncio.Lock] = {}
+        # One lock for the bot's `m.direct`, a single account-data document every welcome reads,
+        # extends and writes back whole. Without it two users welcomed at once both read the old
+        # document and the second write drops the first user's room (RUN-01, ONB-01).
+        self._direct_lock = asyncio.Lock()
 
     async def welcome_user(self, mxid: str) -> None:
         """Ensure ``mxid`` has a DM with all configured welcome messages delivered (idempotent)."""
@@ -237,9 +242,23 @@ class WelcomeService:
             ),
             bot_id=self.bot_id,
         )
-        direct.setdefault(mxid, []).append(room_id)
-        await self.client.set_account_data(self.bot_id, M_DIRECT, direct)
+        await self._record_direct_room(mxid, room_id)
         return room_id, True
+
+    async def _record_direct_room(self, mxid: str, room_id: str) -> None:
+        """Add ``room_id`` to ``mxid``'s entry in ``m.direct``, re-read under the lock (RUN-01).
+
+        Account data has no compare-and-set, so the document is read again right before it is written,
+        and every writer in this process goes through :attr:`_direct_lock`. Creating the room stays
+        outside the lock: it is the slow part, and the per-user lock already keeps one user from
+        getting two rooms.
+        """
+        async with self._direct_lock:
+            direct = await self.client.get_account_data(self.bot_id, M_DIRECT)
+            rooms = direct.setdefault(mxid, [])
+            if room_id not in rooms:
+                rooms.append(room_id)
+            await self.client.set_account_data(self.bot_id, M_DIRECT, direct)
 
     async def _force_join(self, room_id: str, mxid: str) -> bool:
         """Join ``mxid`` into their notice board via the admin API. ``False`` leaves the invite standing.
