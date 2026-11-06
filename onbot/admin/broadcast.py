@@ -19,10 +19,10 @@ actually buy:
 2. The concurrency bound below. An unbounded ``gather`` over 500 rooms opens 500 sockets and hits
    the limiter as hard as it possibly can; a small semaphore keeps the send rate civil even when
    step 1 did not happen.
-3. The shared retry in :class:`~onbot.clients.base.BaseApiClient`, which does list 429 in
-   ``RETRYABLE_STATUS_CODES``. Note this is a *blind* exponential backoff — 4 attempts, ~3.5s of
-   cumulative waiting, and it ignores the ``retry_after_ms`` Synapse hands back. It absorbs a brief
-   burst, not a sustained throttle, so it is the last line rather than the first.
+3. The shared retry in :class:`~onbot.clients.base.BaseApiClient`: a 429 is retried up to 4
+   attempts, each time waiting as long as Synapse's ``retry_after_ms`` asks (capped at 30 s per
+   wait). It rides out a throttle of a minute or so per message, not an hour, so it is the last
+   line rather than the first.
 
 A room that still fails after all of that is reported, not raised: one unreachable room must not
 silence the announcement for everybody else.

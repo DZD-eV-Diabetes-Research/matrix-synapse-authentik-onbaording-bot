@@ -36,9 +36,16 @@ Onbot authenticates to Synapse as a bot user. Under MAS you choose exactly one o
 | Option | Field | When to use |
 |---|---|---|
 | Compatibility token | `synapse_server.bot_access_token` | Near-term. Issue one with `mas-cli manage issue-compatibility-token` and provide the bare token. |
-| OAuth2 client-credentials | `synapse_server.oauth2` | Forward-looking. The bot is a confidential MAS client and refreshes its own tokens. |
+| OAuth2 client-credentials | `synapse_server.oauth2` | Does not work with MAS today, see below. |
 
 The same identity drives both the Synapse Admin API and the Client-Server API.
+
+`synapse_server.oauth2` was meant to let the bot mint its own short-lived tokens as a confidential MAS
+client. Tested against MAS 0.14 and Synapse with MSC3861: MAS refuses the Matrix API scope
+(`urn:matrix:org.matrix.msc2967.client:api:*`) and the Synapse admin scope for the
+`client_credentials` grant (`invalid_scope`), even for a client listed in `policy.data.admin_clients`,
+and Synapse rejects a client token without those scopes (`401 M_UNKNOWN_TOKEN`, "No scope in token
+granting user rights"). Use a compatibility token.
 
 ## Validation: what Onbot refuses at startup
 

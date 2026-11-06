@@ -4,15 +4,17 @@ The bot authenticates to the Synapse CS + admin APIs with a bearer token. Under 
 MAS topology two ways of obtaining that token coexist, and the rest of the code must
 not care which is in use:
 
-* :class:`StaticTokenProvider` — a fixed token. This is the near-term path: a
+* :class:`StaticTokenProvider`: a fixed token. This is the supported path: a
   *compatibility token* issued by ``mas-cli manage issue-compatibility-token`` (or a
   legacy Synapse access token when not running MAS). Nothing expires; the token is
   returned verbatim.
-* :class:`OAuth2ClientCredentialsTokenProvider` — the forward-looking path: the bot is
-  a confidential OAuth2 client of MAS and mints short-lived access tokens via the
-  ``client_credentials`` grant, transparently refreshing them before they expire
-  (using the ``refresh_token`` grant when MAS returns a refresh token, otherwise a
-  fresh ``client_credentials`` exchange).
+* :class:`OAuth2ClientCredentialsTokenProvider`: the bot is a confidential OAuth2 client
+  of MAS and mints short-lived access tokens via the ``client_credentials`` grant,
+  transparently refreshing them before they expire (using the ``refresh_token`` grant
+  when MAS returns a refresh token, otherwise a fresh ``client_credentials`` exchange).
+  Used for the MAS admin API (``mas_admin``). For the Synapse APIs
+  (``synapse_server.oauth2``) it does not work with MAS 0.14: MAS refuses the Matrix API
+  and Synapse admin scopes for this grant (``tests/integration/test_http_layer.py``).
 
 Both satisfy the :class:`TokenProvider` protocol (``get_token()``, plus ``invalidate()`` for a
 token the server rejected), which :class:`~onbot.clients.base.BaseApiClient` calls per request, so
