@@ -89,7 +89,10 @@ services:
       start_period: 120s
 
   mas:
-    image: ghcr.io/element-hq/matrix-authentication-service@sha256:5a24857b4cf429d21eb823cc80bf0bc78ffc055c303ef898a0f2e32cbf57c194
+    # MAS 1.28.0 (tag 1.28.0, the current stable release and what the deployment's `:latest` resolves
+    # to). Its admin API can finish sessions and deactivate without GDPR erasure, which the lifecycle
+    # tests rely on (tests/integration/test_lifecycle.py asserts both capabilities).
+    image: ghcr.io/element-hq/matrix-authentication-service@sha256:494c67f08ee8344368f4ed336611dea02b26c4e058bf37a212d090d50b612659
     # Distroless image; entrypoint is `mas-cli`. The server applies pending DB migrations and
     # synchronises config-defined clients/upstream providers on startup.
     command: ["server", "--config", "/config/config.yaml"]
@@ -101,10 +104,11 @@ services:
       postgres: {condition: service_healthy}
 
   synapse:
-    # Synapse 1.156.0 — new enough to support room version 12, which the stack forces as its default
-    # (see `default_room_version` in synapse/homeserver.yaml) so the integration suite exercises the
-    # v12 world the bot now runs in: creator absent from power_levels, domainless room IDs.
-    image: ghcr.io/element-hq/synapse@sha256:6882d26594b87171e0fe807ac6bd7f0000665cd70e73fb88c58ec9bff14c19ce
+    # Synapse 1.164.2 (tag v1.164.2, the current stable release; the deployment runs `:latest`).
+    # Supports room version 12, which the stack forces as its default (see `default_room_version` in
+    # synapse/homeserver.yaml) so the integration suite exercises the v12 world the bot now runs in:
+    # creator absent from power_levels, domainless room IDs.
+    image: ghcr.io/element-hq/synapse@sha256:f0df87cff259872637b4b5e5174b9977e5e3046dd421505407803b5e45c5f842
     # Wait for MAS (auth is delegated to it via MSC3861), generate the signing key, then run.
     entrypoint: ["/bin/bash", "-c"]
     command:
