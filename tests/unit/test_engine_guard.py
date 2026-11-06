@@ -7,12 +7,12 @@ and power levels, so "zero kicks" and "zero withdrawals" are observed, not infer
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, ClassVar
 
 from onbot.config import OnbotConfig
 from onbot.events import Event, EventBus, Signal
 from onbot.reconciler.engine import ReconcilerEngine
-from onbot.reconciler.state import granted_power_levels_type
+from onbot.reconciler.state import OnbotRoomType, granted_power_levels_type
 from tests.unit.test_engine import _BASE, FakeAdmin, RecordingEffectors
 
 ROOM1 = "!room1:company.org"
@@ -67,6 +67,12 @@ class Directory:
 
 class Rooms(FakeAdmin):
     """Synapse admin API over rooms that remember their members."""
+
+    room_markers: ClassVar[dict[str, tuple[OnbotRoomType, str | None]]] = {
+        ROOM1: (OnbotRoomType.group_room, "g1"),
+        ROOM2: (OnbotRoomType.group_room, "g2"),
+        SPACE: (OnbotRoomType.space, None),
+    }
 
     def __init__(self, directory: Directory) -> None:
         super().__init__()

@@ -8,13 +8,13 @@ import respx
 
 from onbot.clients.base import ApiError
 from onbot.clients.matrix import (
-    CREATION_NONCE_KEY,
     ApiClientMatrix,
     CSApiEffectors,
     SyncNotSupportedError,
     _parse_mxc,
 )
-from onbot.models import RoomCreateAttributes
+from onbot.reconciler.state import GroupRoomState
+from onbot.rooms.provision import ManagedRoomSpec
 
 
 def _client() -> ApiClientMatrix:
@@ -52,7 +52,9 @@ async def test_create_room_and_space_pin_the_configured_room_version() -> None:
     client = _client_pinned("12")
     try:
         await client.create_room(alias_localpart="team")
-        await client.create_space(alias_localpart="onbot", name="OnBot", topic="s", params={})
+        await client.create_room(
+            alias_localpart="onbot", room_params={"creation_content": {"type": "m.space"}}
+        )
     finally:
         await client.aclose()
     assert json.loads(room.calls[0].request.content)["room_version"] == "12"
@@ -135,26 +137,6 @@ async def test_create_room_preserves_caller_supplied_initial_state() -> None:
     assert "m.space.parent" in types
     assert join_rule in initial_state
     assert initial_state[-1] == join_rule
-
-
-@respx.mock
-async def test_create_space_marks_creation_content() -> None:
-    route = respx.post("https://matrix.test/_matrix/client/v3/createRoom").mock(
-        return_value=httpx.Response(200, json={"room_id": "!s:matrix.test"})
-    )
-    client = _client()
-    try:
-        space_id = await client.create_space(
-            alias_localpart="onbot", name="OnBot", topic="space", params={"visibility": "private"}
-        )
-    finally:
-        await client.aclose()
-    assert space_id == "!s:matrix.test"
-    body = json.loads(route.calls[0].request.content)
-    assert body["creation_content"]["type"] == "m.space"
-    # Every created room carries a creation nonce, so a failed call can find what it created (RUN-05).
-    assert len(body["creation_content"][CREATION_NONCE_KEY]) == 32
-    assert body["visibility"] == "private"
 
 
 @respx.mock
@@ -359,39 +341,6 @@ async def test_link_room_to_space_writes_child_and_parent() -> None:
 
 
 @respx.mock
-async def test_create_direct_message_room_is_direct_and_invites() -> None:
-    route = respx.post("https://matrix.test/_matrix/client/v3/createRoom").mock(
-        return_value=httpx.Response(200, json={"room_id": "!dm:matrix.test"})
-    )
-    respx.get("https://matrix.test/_matrix/client/v3/joined_rooms").mock(
-        return_value=httpx.Response(200, json={"joined_rooms": []})
-    )
-    client = _client()
-    try:
-        room_id = await client.create_direct_message_room(
-            "@u:matrix.test",
-            name="Announcements",
-            topic="read-only",
-            power_level_content_override={"users_default": 0},
-        )
-    finally:
-        await client.aclose()
-    assert room_id == "!dm:matrix.test"
-    body = json.loads(route.calls[0].request.content)
-    assert body["is_direct"] is True
-    # The invite stands even though the bot force-joins the user: it is the fallback when the
-    # force-join is disabled or refused.
-    assert body["invite"] == ["@u:matrix.test"]
-    # NOT trusted_private_chat, which would hand the user power level 100 and make the room's
-    # read-only power levels impossible to enforce, then and forever after.
-    assert body["preset"] == "private_chat"
-    assert body["power_level_content_override"] == {"users_default": 0}
-    assert body["name"] == "Announcements"
-    assert body["topic"] == "read-only"
-    assert "initial_state" not in body
-
-
-@respx.mock
 async def test_resolve_room_alias_returns_room_id() -> None:
     respx.get("https://matrix.test/_matrix/client/v3/directory/room/%23team%3Amatrix.test").mock(
         return_value=httpx.Response(200, json={"room_id": "!r:matrix.test"})
@@ -524,9 +473,17 @@ class _RecordingMatrixClient:
         self.calls.append(("create_room", (), kwargs))
         return "!room:matrix.test"
 
-    async def create_space(self, **kwargs: object) -> str:
-        self.calls.append(("create_space", (), kwargs))
-        return "!space:matrix.test"
+    server_name = "matrix.test"
+
+    async def get_room_state_event(
+        self, room_id: str, event_type: str, state_key: str = ""
+    ) -> dict[str, object]:
+        self.calls.append(("get_room_state_event", (room_id, event_type), {}))
+        return {"room_version": "12"}
+
+    async def resolve_room_alias(self, alias: str) -> str | None:
+        self.calls.append(("resolve_room_alias", (alias,), {}))
+        return "!r:matrix.test"
 
     async def kick_user(self, *args: object) -> None:
         self.calls.append(("kick_user", args, {}))
@@ -550,70 +507,40 @@ class _RecordingMatrixClient:
 
 async def test_cs_api_effectors_delegate_to_client() -> None:
     client = _RecordingMatrixClient()
-    effectors = CSApiEffectors(client)  # type: ignore[arg-type]
+    effectors = CSApiEffectors(client, bot_id="@bot:matrix.test")  # type: ignore[arg-type]
 
-    attrs = RoomCreateAttributes(
-        alias="team", canonical_alias="#team:matrix.test", name="Team", topic="t", encrypted=True
+    spec = ManagedRoomSpec(
+        marker=GroupRoomState(group_id="g1"), alias_localpart="team", name="Team", parent_space_id="!s:x"
     )
-    assert await effectors.create_group_room(attrs, "!space:matrix.test") == "!room:matrix.test"
-    assert (
-        await effectors.create_space(
-            alias="onbot", name="OnBot", topic="space", params={"visibility": "private"}
-        )
-        == "!space:matrix.test"
-    )
+    assert await effectors.create_managed_room(spec) == "!room:matrix.test"
+    assert await effectors.resolve_room_alias("#team:matrix.test") == "!r:matrix.test"
     await effectors.kick_user("!r:x", "@u:x", "gone")
-    assert await effectors.get_room_power_levels("!r:x") == {"users": {}}
-    await effectors.set_room_power_levels("!r:x", {"users": {"@a:x": 50}})
     await effectors.set_room_name("!r:x", "Team")
     await effectors.set_room_topic("!r:x", "topic")
     await effectors.put_room_state(["!r:x"][0], "org.onbot.state", {"v": 1})
 
     names = [c[0] for c in client.calls]
     assert names == [
+        # createRoom, then the marker lock: version, power levels, write.
         "create_room",
-        "create_space",
-        "kick_user",
+        "get_room_state_event",
         "get_room_power_levels",
         "set_room_power_levels",
+        "resolve_room_alias",
+        "kick_user",
         "set_room_name",
         "set_room_topic",
         "put_room_state_event",
     ]
-    # create_group_room forwards the alias and parent space verbatim.
     create_kwargs = client.calls[0][2]
     assert create_kwargs["alias_localpart"] == "team"
-    assert create_kwargs["parent_space_id"] == "!space:matrix.test"
+    assert create_kwargs["parent_space_id"] == "!s:x"
 
 
-async def test_cs_api_effectors_create_lobby_sets_join_rule_and_suggested() -> None:
-    client = _RecordingMatrixClient()
-    effectors = CSApiEffectors(client)  # type: ignore[arg-type]
-    attrs = RoomCreateAttributes(
-        alias="team-lobby",
-        canonical_alias="#team-lobby:matrix.test",
-        name="Team (Lobby)",
-        topic="open",
-        room_params={"preset": "private_chat", "power_level_content_override": {"state_default": 100}},
-        encrypted=False,
-    )
-    join_rules = {
-        "join_rule": "restricted",
-        "allow": [{"type": "m.room_membership", "room_id": "!space:matrix.test"}],
-    }
-    await effectors.create_lobby_room(attrs, "!space:matrix.test", join_rules)
-
-    kwargs = client.calls[0][2]
-    assert kwargs["alias_localpart"] == "team-lobby"
-    assert kwargs["parent_space_id"] == "!space:matrix.test"
-    # A lobby is filed as a suggested space child (a room space members should be nudged toward).
-    assert kwargs["suggested"] is True
-    # The join rule is set at creation as an initial_state event, so the lobby is never briefly
-    # invite-only nor briefly open.
-    initial_state = kwargs["room_params"]["initial_state"]
-    assert {"type": "m.room.join_rules", "state_key": "", "content": join_rules} in initial_state
-    # The lobby's own create params (power levels) are preserved.
-    assert kwargs["room_params"]["power_level_content_override"] == {"state_default": 100}
+async def test_cs_api_effectors_refuse_to_create_without_the_bot_id() -> None:
+    effectors = CSApiEffectors(_RecordingMatrixClient())  # type: ignore[arg-type]
+    with pytest.raises(RuntimeError, match="bot_id"):
+        await effectors.create_managed_room(ManagedRoomSpec(marker=GroupRoomState(group_id="g1")))
 
 
 # --- auth issuer (LIF-09) ------------------------------------------------------------------------

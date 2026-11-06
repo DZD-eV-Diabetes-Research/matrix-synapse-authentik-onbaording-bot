@@ -1,9 +1,9 @@
 """Unit tests for the group→room projection (pure mapping rules)."""
 
 from onbot.config import OnbotConfig
-from onbot.models import MatrixRoom
 from onbot.reconciler.rooms import (
     build_group_room_maps,
+    colliding_aliases,
     compute_lobby_attributes,
     compute_room_attributes,
     filter_synced_groups,
@@ -119,21 +119,42 @@ def test_filter_synced_groups_rules() -> None:
     assert [g["pk"] for g in result] == ["g2"]
 
 
-def test_build_maps_matches_existing_room_by_alias() -> None:
+def test_build_maps_never_pairs_a_room_by_alias() -> None:
+    """D20: which room belongs to a group is the identity scan's job, by creator and marker."""
     cfg = _config()
     groups = [{"pk": "g1", "name": "Team", "attributes": {}}]
-    rooms = [MatrixRoom(room_id="!r:company.org", canonical_alias="#g1:company.org", name="Team")]
-    maps = build_group_room_maps(groups, rooms, cfg, "company.org")
+    maps = build_group_room_maps(groups, cfg, "company.org")
     assert len(maps) == 1
-    assert maps[0].room is not None
-    assert maps[0].room.room_id == "!r:company.org"
-
-
-def test_build_maps_no_match_leaves_room_none() -> None:
-    cfg = _config()
-    groups = [{"pk": "g1", "name": "Team", "attributes": {}}]
-    maps = build_group_room_maps(groups, [], cfg, "company.org")
     assert maps[0].room is None
+    assert maps[0].desired.canonical_alias == "#g1:company.org"
+
+
+def test_colliding_aliases_are_detected_after_dash_stripping() -> None:
+    """REC-13: `team-a` and `teama` end up as one alias; neither may get a room through it."""
+    cfg = _config(matrix_room_default_settings={"matrix_alias_from_authentik_attribute": "attributes.alias"})
+    groups = [
+        {"pk": "g1", "name": "A", "attributes": {"alias": "team-a"}},
+        {"pk": "g2", "name": "B", "attributes": {"alias": "teama"}},
+        {"pk": "g3", "name": "C", "attributes": {"alias": "other"}},
+    ]
+    maps = build_group_room_maps(groups, cfg, "company.org")
+    assert colliding_aliases(maps) == {"#teama:company.org": ["group g1", "group g2"]}
+
+
+def test_a_group_alias_colliding_with_a_lobby_alias_is_detected() -> None:
+    cfg = _config(
+        matrix_room_default_settings={
+            "matrix_alias_from_authentik_attribute": "attributes.alias",
+            "visitor_lobby_enabled": True,
+            "visitor_lobby_alias_suffix": "lobby",
+        }
+    )
+    groups = [
+        {"pk": "g1", "name": "A", "attributes": {"alias": "team"}},
+        {"pk": "g2", "name": "B", "attributes": {"alias": "teamlobby"}},
+    ]
+    collisions = colliding_aliases(build_group_room_maps(groups, cfg, "company.org"))
+    assert collisions["#teamlobby:company.org"] == ["the lobby of group g1", "group g2"]
 
 
 def test_per_group_override_inherits_unset_defaults() -> None:
@@ -246,22 +267,18 @@ def test_lobby_invalid_attribute_falls_back_to_default() -> None:
     assert lobby_enabled_for_group(group, settings) is True
 
 
-def test_build_maps_pairs_lobby_by_alias() -> None:
+def test_build_maps_computes_the_lobby() -> None:
     cfg = _config(matrix_room_default_settings={"visitor_lobby_enabled": True})
     groups = [{"pk": "g1", "name": "Team", "attributes": {}}]
-    rooms = [
-        MatrixRoom(room_id="!r:company.org", canonical_alias="#g1:company.org", name="Team"),
-        MatrixRoom(room_id="!l:company.org", canonical_alias="#g1-lobby:company.org", name="Team (Lobby)"),
-    ]
-    maps = build_group_room_maps(groups, rooms, cfg, "company.org")
-    assert maps[0].room is not None and maps[0].room.room_id == "!r:company.org"
+    maps = build_group_room_maps(groups, cfg, "company.org")
     assert maps[0].lobby_desired is not None
-    assert maps[0].lobby is not None and maps[0].lobby.room_id == "!l:company.org"
+    assert maps[0].lobby_desired.canonical_alias == "#g1-lobby:company.org"
+    assert maps[0].lobby is None
 
 
 def test_build_maps_no_lobby_when_disabled() -> None:
     cfg = _config()  # lobby off by default
     groups = [{"pk": "g1", "name": "Team", "attributes": {}}]
-    maps = build_group_room_maps(groups, [], cfg, "company.org")
+    maps = build_group_room_maps(groups, cfg, "company.org")
     assert maps[0].lobby_desired is None
     assert maps[0].lobby is None

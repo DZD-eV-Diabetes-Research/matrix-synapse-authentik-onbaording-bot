@@ -22,23 +22,18 @@ import uuid
 from typing import Any, Protocol, runtime_checkable
 
 from onbot.logging import get_logger
-from onbot.models import RoomCreateAttributes
+from onbot.rooms.provision import ManagedRoomSpec
 
 log = get_logger(__name__)
 
 
 @runtime_checkable
 class MatrixEffectors(Protocol):
-    async def create_group_room(self, attrs: RoomCreateAttributes, parent_space_id: str | None) -> str: ...
-
-    async def create_lobby_room(
-        self, attrs: RoomCreateAttributes, parent_space_id: str, join_rules_content: dict[str, Any]
-    ) -> str:
-        """Create a visitor lobby: room + space child (``suggested``) with its join rule set at
-        creation, so it is never briefly invite-only nor briefly open (ADR-0012)."""
+    async def create_managed_room(self, spec: ManagedRoomSpec) -> str:
+        """Create a group room, lobby or space with its onbot marker (see :mod:`onbot.rooms.provision`)."""
         ...
 
-    async def create_space(self, *, alias: str, name: str, topic: str, params: dict[str, Any]) -> str: ...
+    async def resolve_room_alias(self, alias: str) -> str | None: ...
 
     async def kick_user(self, room_id: str, user_id: str, reason: str | None = None) -> None: ...
 
@@ -95,30 +90,18 @@ class DryRunEffectors:
     def _synthetic_room_id(self, server_name: str = "dry-run") -> str:
         return f"{SYNTHETIC_ROOM_PREFIX}{uuid.uuid4().hex[:12]}:{server_name}"
 
-    async def create_group_room(self, attrs: RoomCreateAttributes, parent_space_id: str | None) -> str:
+    async def create_managed_room(self, spec: ManagedRoomSpec) -> str:
         log.info(
-            "[dry-run] would create group room alias=%s name=%r in space=%s",
-            attrs.canonical_alias,
-            attrs.name,
-            parent_space_id,
+            "[dry-run] would create %s room alias=%s name=%r in space=%s",
+            spec.room_type.value,
+            spec.alias_localpart,
+            spec.name,
+            spec.parent_space_id,
         )
         return self._synthetic_room_id()
 
-    async def create_lobby_room(
-        self, attrs: RoomCreateAttributes, parent_space_id: str, join_rules_content: dict[str, Any]
-    ) -> str:
-        log.info(
-            "[dry-run] would create lobby alias=%s name=%r in space=%s join_rule=%s",
-            attrs.canonical_alias,
-            attrs.name,
-            parent_space_id,
-            join_rules_content.get("join_rule"),
-        )
-        return self._synthetic_room_id()
-
-    async def create_space(self, *, alias: str, name: str, topic: str, params: dict[str, Any]) -> str:
-        log.info("[dry-run] would create space alias=%s name=%r", alias, name)
-        return self._synthetic_room_id()
+    async def resolve_room_alias(self, alias: str) -> str | None:
+        return None if self._reads is None else await self._reads.resolve_room_alias(alias)
 
     async def kick_user(self, room_id: str, user_id: str, reason: str | None = None) -> None:
         log.info("[dry-run] would kick %s from %s (%s)", user_id, room_id, reason)

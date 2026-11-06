@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from onbot.models import RoomCreateAttributes
 from onbot.reconciler.effectors import DryRunEffectors, MatrixEffectors
+from onbot.reconciler.state import GroupRoomState, SpaceRoomState
+from onbot.rooms.provision import ManagedRoomSpec
 
 
 def test_dry_run_effectors_satisfy_protocol() -> None:
@@ -12,10 +13,10 @@ def test_dry_run_effectors_satisfy_protocol() -> None:
 
 async def test_dry_run_effectors_mutate_nothing_and_return_synthetic_ids() -> None:
     eff = DryRunEffectors()
-    attrs = RoomCreateAttributes(alias="team", canonical_alias="#team:matrix.test", name="Team", topic="t")
-
-    room_id = await eff.create_group_room(attrs, "!space:matrix.test")
-    space_id = await eff.create_space(alias="onbot", name="OnBot", topic="s", params={})
+    room_id = await eff.create_managed_room(
+        ManagedRoomSpec(marker=GroupRoomState(group_id="g1"), alias_localpart="team", name="Team")
+    )
+    space_id = await eff.create_managed_room(ManagedRoomSpec(marker=SpaceRoomState(), is_space=True))
 
     # Synthetic ids are well-formed Matrix room ids and unique per call.
     assert room_id.startswith("!dryrun-") and room_id.endswith(":dry-run")

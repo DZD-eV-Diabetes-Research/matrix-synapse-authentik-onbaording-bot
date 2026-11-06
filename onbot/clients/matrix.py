@@ -37,7 +37,7 @@ from onbot.auth.token_provider import TokenProvider
 from onbot.clients.base import ApiError, BaseApiClient, may_have_been_processed, resend_unless_done
 from onbot.clients.versions import CLIENT_VERSIONS_PATH, ServerVersions
 from onbot.logging import get_logger
-from onbot.models import RoomCreateAttributes
+from onbot.rooms.provision import ManagedRoomSpec, create_managed_room
 
 log = get_logger(__name__)
 
@@ -246,20 +246,6 @@ class ApiClientMatrix(BaseApiClient):
             )
         return room_id
 
-    async def create_space(
-        self, *, alias_localpart: str, name: str, topic: str, params: Mapping[str, Any]
-    ) -> str:
-        body: dict[str, Any] = {
-            "creation_content": {"type": "m.space"},
-            "room_alias_name": alias_localpart,
-            "name": name,
-            "topic": topic,
-            **params,
-        }
-        if self.room_version is not None and "room_version" not in body:
-            body["room_version"] = self.room_version
-        return await self._post_create_room(body)
-
     async def _post_create_room(self, body: dict[str, Any]) -> str:
         """``POST createRoom`` without ever creating the room twice (RUN-05).
 
@@ -326,34 +312,6 @@ class ApiClientMatrix(BaseApiClient):
         result = await self.get_json("v3/joined_rooms")
         rooms: list[str] = list((result or {}).get("joined_rooms") or [])
         return rooms
-
-    async def create_direct_message_room(
-        self,
-        user_id: str,
-        *,
-        name: str | None = None,
-        topic: str | None = None,
-        power_level_content_override: Mapping[str, Any] | None = None,
-    ) -> str:
-        """Create a 1:1 invite-only DM room with ``user_id`` (G4.1).
-
-        ``private_chat`` — not ``trusted_private_chat``, which hands the invitee power level 100 and
-        makes the room un-demotable forever. ``power_level_content_override`` shapes the room at
-        creation instead; see :mod:`onbot.onboarding.notice_board`.
-
-        The invite is kept even when the caller force-joins the user afterwards: it is the fallback
-        when force-join is disabled or fails.
-        """
-        room_params: dict[str, Any] = {"preset": "private_chat"}
-        if power_level_content_override:
-            room_params["power_level_content_override"] = dict(power_level_content_override)
-        return await self.create_room(
-            is_direct=True,
-            invite=[user_id],
-            name=name,
-            topic=topic,
-            room_params=room_params,
-        )
 
     async def resolve_room_alias(self, alias: str) -> str | None:
         """Resolve a room alias (``#name:server``) to its ``room_id``, or ``None`` if unknown."""
@@ -655,8 +613,12 @@ class CSApiEffectors:
     Replaces ``DryRunEffectors`` when the bot runs for real (Phase 3 deferral resolved).
     """
 
-    def __init__(self, client: ApiClientMatrix, *, media: MediaUploader | None = None) -> None:
+    def __init__(
+        self, client: ApiClientMatrix, *, media: MediaUploader | None = None, bot_id: str | None = None
+    ) -> None:
         self.client = client
+        # The bot's MXID, needed to lock the marker of the rooms it creates (onbot.rooms.provision).
+        self._bot_id = bot_id
         self._owns_media = media is None
         if media is None:
             # Local import avoids a module-level cycle (onbot.media imports ApiClientMatrix).
@@ -669,41 +631,13 @@ class CSApiEffectors:
         if self._owns_media:
             await self._media.aclose()
 
-    async def create_group_room(self, attrs: RoomCreateAttributes, parent_space_id: str | None) -> str:
-        return await self.client.create_room(
-            alias_localpart=attrs.alias,
-            name=attrs.name,
-            topic=attrs.topic,
-            encrypted=attrs.encrypted,
-            room_params=attrs.room_params,
-            parent_space_id=parent_space_id,
-        )
+    async def create_managed_room(self, spec: ManagedRoomSpec) -> str:
+        if self._bot_id is None:
+            raise RuntimeError("CSApiEffectors needs bot_id to create managed rooms")
+        return await create_managed_room(self.client, spec, bot_id=self._bot_id)
 
-    async def create_lobby_room(
-        self, attrs: RoomCreateAttributes, parent_space_id: str, join_rules_content: dict[str, Any]
-    ) -> str:
-        # Set the join rule as initial_state at creation so the lobby is never briefly invite-only
-        # (before the reconcile pass writes it) nor briefly open. create_room merges this alongside
-        # its own space-parent/encryption events (the initial_state-clobber fix).
-        join_rules_event = {
-            "type": "m.room.join_rules",
-            "state_key": "",
-            "content": join_rules_content,
-        }
-        room_params = {**attrs.room_params}
-        room_params["initial_state"] = [*(room_params.get("initial_state") or []), join_rules_event]
-        return await self.client.create_room(
-            alias_localpart=attrs.alias,
-            name=attrs.name,
-            topic=attrs.topic,
-            encrypted=attrs.encrypted,
-            room_params=room_params,
-            parent_space_id=parent_space_id,
-            suggested=True,
-        )
-
-    async def create_space(self, *, alias: str, name: str, topic: str, params: dict[str, Any]) -> str:
-        return await self.client.create_space(alias_localpart=alias, name=name, topic=topic, params=params)
+    async def resolve_room_alias(self, alias: str) -> str | None:
+        return await self.client.resolve_room_alias(alias)
 
     async def kick_user(self, room_id: str, user_id: str, reason: str | None = None) -> None:
         await self.client.kick_user(room_id, user_id, reason)

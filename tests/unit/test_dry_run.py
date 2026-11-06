@@ -18,7 +18,9 @@ from onbot.config import AdminRoom, AuthentikServer, OnbotConfig, SynapseServer
 from onbot.events import Signal
 from onbot.guard import ReadOnlyGuardStore
 from onbot.reconciler.effectors import DryRunEffectors, DryRunSynapseAdmin, is_synthetic_room
+from onbot.reconciler.state import GroupRoomState
 from onbot.rooms.admin import AdminRoomProvisioner
+from onbot.rooms.provision import ManagedRoomSpec
 from tests.unit.test_engine import _BASE, FakeAdmin, FakeAuthentik, RecordingEffectors
 
 
@@ -58,9 +60,8 @@ async def test_dry_run_effectors_read_live_and_write_nothing(caplog: pytest.LogC
     with caplog.at_level(logging.INFO):
         await dry.kick_user("!real:x", "@a:x", "gone")
         await dry.set_room_power_levels("!real:x", {"users": {}})
-        room_id = await dry.create_group_room(
-            attrs=type("A", (), {"canonical_alias": "#g:x", "name": "G"})(),  # type: ignore[arg-type]
-            parent_space_id=None,
+        room_id = await dry.create_managed_room(
+            ManagedRoomSpec(marker=GroupRoomState(group_id="g"), alias_localpart="g", name="G")
         )
     assert live.kicks == [] and live.power_levels == []
     assert "[dry-run] would kick @a:x from !real:x" in caplog.text

@@ -16,8 +16,12 @@ Four decisions are baked into the room at creation, and each is load-bearing:
 * **Invited, never force-joined.** Admins are people who chose this job; users are employees who
   did not choose their notice board (:mod:`onbot.onboarding.welcome`).
 
-Found again by its canonical alias, and marked with an ``onbot.admin_room`` state event so it is
-recognisably bot-managed rather than some room that happens to share the alias.
+Found again like every room the bot manages: it created the room, and the room carries the locked
+``onbot.admin_room`` marker (:mod:`onbot.rooms.identity`, ONB-17). The alias is presentation only. It
+is consulted once, to adopt a control room created by an older version, and before creating a new
+one: when it belongs to a room that is not the bot's control room, that room is never taken over
+(the bot would otherwise post its help there, invite the admins into it and take commands from it).
+The control room then stays off, with an error naming the alias.
 """
 
 from __future__ import annotations
@@ -32,6 +36,7 @@ from onbot.clients.matrix import ApiClientMatrix
 from onbot.config import OnbotConfig
 from onbot.events import Event
 from onbot.logging import get_logger
+from onbot.models import MatrixRoom
 from onbot.reconciler.state import (
     AdminRoomState,
     OnbotRoomType,
@@ -39,6 +44,8 @@ from onbot.reconciler.state import (
     event_type_name,
     parse_room_state,
 )
+from onbot.rooms.identity import RoomIdentityResolver, RoomKey
+from onbot.rooms.provision import ManagedRoomSpec, create_managed_room
 
 log = get_logger(__name__)
 
@@ -74,10 +81,17 @@ def help_text_hash(text: str) -> str:
 class AdminRoomProvisioner:
     """Ensure the control room exists, is shaped correctly, and carries the current pinned help."""
 
-    def __init__(self, client: ApiClientMatrix, config: OnbotConfig, admins: AdminResolver) -> None:
+    def __init__(
+        self,
+        client: ApiClientMatrix,
+        config: OnbotConfig,
+        admins: AdminResolver,
+        rooms: RoomIdentityResolver,
+    ) -> None:
         self.client = client
         self.config = config
         self.admins = admins
+        self.rooms = rooms
         self.cfg = config.admin_room
         self.server_name = config.synapse_server.server_name
         self.alias = f"#{self.cfg.alias}:{self.server_name}"
@@ -89,9 +103,9 @@ class AdminRoomProvisioner:
         """Return the control room's id, creating it if needed. ``None`` when the feature is off."""
         if not self.cfg.enabled:
             return None
-        room_id = await self.client.resolve_room_alias(self.alias)
+        room_id = await self._find_or_create()
         if room_id is None:
-            room_id = await self._create()
+            return None
         self.room_id = room_id
         await self.ensure_admins_invited()
         await self._ensure_topic(room_id)
@@ -129,27 +143,47 @@ class AdminRoomProvisioner:
         """Bus handler: re-run the invite pass once the reconciler has finished a tick."""
         await self.ensure_admins_invited()
 
+    async def _find_or_create(self) -> str | None:
+        """The control room's id: found by its marker, adopted once by alias, or created.
+
+        ``None`` (and an error in the log) when the alias belongs to a room that is not the bot's control
+        room, or two rooms claim to be it: that needs an admin. A problem that may clear by itself (bot
+        rooms that could not be read) raises, so the startup step tries again.
+        """
+        key = RoomKey(OnbotRoomType.admin_room)
+        resolution = await self.rooms.resolve(await self.rooms.scan(), key, self.alias)
+        if resolution.problem is not None:
+            if resolution.transient:
+                raise RuntimeError(f"admin control room: {resolution.problem}")
+            log.error("the admin control room %s stays off: %s", self.alias, resolution.problem)
+            return None
+        if resolution.room is not None:
+            return resolution.room.room_id
+        room_id = await self._create()
+        self.rooms.register(MatrixRoom(room_id=room_id, canonical_alias=self.alias), key)
+        return room_id
+
     async def _create(self) -> str:
         # Created empty and populated below, one invite at a time. An admin sourced from an Authentik
         # group may not have logged in yet, and so may have no Matrix account; an unknown MXID in
         # `createRoom`'s invite list fails the whole call, leaving the bot with no control room at
         # all. A single failed invite is a warning.
-        room_id = await self.client.create_room(
-            alias_localpart=self.cfg.alias,
-            name=self.cfg.name,
-            topic=self.cfg.topic,
-            encrypted=False,  # ADR-0009: the bot must be able to read what is said here.
-            room_params={
-                "preset": "private_chat",
-                "visibility": "private",
-                "creation_content": {"m.federate": False},
-                "power_level_content_override": admin_room_power_levels(),
-            },
-        )
-        await self.client.put_room_state_event(
-            room_id,
-            self._state_event_type,
-            dump_room_state(AdminRoomState(authentik_server=self.config.authentik_server.url)),
+        room_id = await create_managed_room(
+            self.client,
+            ManagedRoomSpec(
+                marker=AdminRoomState(),
+                alias_localpart=self.cfg.alias,
+                name=self.cfg.name,
+                topic=self.cfg.topic,
+                encrypted=False,  # ADR-0009: the bot must be able to read what is said here.
+                room_params={
+                    "preset": "private_chat",
+                    "visibility": "private",
+                    "creation_content": {"m.federate": False},
+                    "power_level_content_override": admin_room_power_levels(),
+                },
+            ),
+            bot_id=self.config.synapse_server.bot_user_id,
         )
         log.info("created admin control room %s (%s)", self.alias, room_id)
         return room_id
@@ -190,7 +224,7 @@ class AdminRoomProvisioner:
     async def _load_state(self, room_id: str) -> AdminRoomState:
         content = await self.client.get_room_state_event(room_id, self._state_event_type)
         if content is None:
-            return AdminRoomState(authentik_server=self.config.authentik_server.url)
+            return AdminRoomState()
         parsed = parse_room_state(OnbotRoomType.admin_room, content)
         assert isinstance(parsed, AdminRoomState)
         return parsed

@@ -19,7 +19,7 @@ from typing import Any
 from onbot.config import MatrixDynamicRoomSettings, OnbotConfig
 from onbot.identity import build_canonical
 from onbot.logging import get_logger
-from onbot.models import GroupRoomMap, MatrixRoom, RoomCreateAttributes
+from onbot.models import GroupRoomMap, RoomCreateAttributes
 from onbot.utils import get_nested_dict_val_by_path
 
 log = get_logger(__name__)
@@ -205,32 +205,38 @@ def compute_lobby_attributes(
 
 def build_group_room_maps(
     groups: list[dict[str, Any]],
-    actual_rooms: list[MatrixRoom],
     config: OnbotConfig,
     server_name: str,
 ) -> list[GroupRoomMap]:
-    """Project filtered groups to desired rooms, pairing each with its actual room if present.
+    """Project filtered groups to desired rooms (and lobbies, where a group opts into one).
 
-    When a group opts into a lobby (:func:`lobby_enabled_for_group`), a second desired room is
-    computed and paired with its actual lobby room, if one exists yet, by canonical alias.
+    Which actual room belongs to a group is not decided here: rooms are found by creator and marker,
+    never by alias (:mod:`onbot.rooms.identity`, D20). The engine fills in ``room`` and ``lobby``.
     """
-    rooms_by_alias = {r.canonical_alias: r for r in actual_rooms if r.canonical_alias}
     maps: list[GroupRoomMap] = []
     for group in filter_synced_groups(groups, config):
         settings = resolve_room_settings(group["pk"], config)
         desired = compute_room_attributes(group, config, server_name)
         lobby_desired: RoomCreateAttributes | None = None
-        lobby: MatrixRoom | None = None
         if lobby_enabled_for_group(group, settings):
             lobby_desired = compute_lobby_attributes(desired, settings, server_name)
-            lobby = rooms_by_alias.get(lobby_desired.canonical_alias)
-        maps.append(
-            GroupRoomMap(
-                authentik_group=group,
-                desired=desired,
-                room=rooms_by_alias.get(desired.canonical_alias),
-                lobby_desired=lobby_desired,
-                lobby=lobby,
-            )
-        )
+        maps.append(GroupRoomMap(authentik_group=group, desired=desired, lobby_desired=lobby_desired))
     return maps
+
+
+def colliding_aliases(group_maps: list[GroupRoomMap]) -> dict[str, list[str]]:
+    """Desired aliases wanted by more than one room, with who wants them (REC-13).
+
+    With attribute-derived aliases two groups can end up with one alias, by the same value or after
+    the dash stripping (``team-a`` and ``teama``), and a group alias can equal another group's lobby
+    alias. The bot then must not create or adopt a room through that alias for any of them, or they
+    would fight over one room.
+    """
+    owners: dict[str, list[str]] = {}
+    for gm in group_maps:
+        owners.setdefault(gm.desired.canonical_alias, []).append(f"group {gm.group_pk}")
+        if gm.lobby_desired is not None:
+            owners.setdefault(gm.lobby_desired.canonical_alias, []).append(
+                f"the lobby of group {gm.group_pk}"
+            )
+    return {alias: who for alias, who in owners.items() if len(who) > 1}
