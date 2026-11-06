@@ -27,15 +27,18 @@ class Signal(StrEnum):
     reconcile_completed = "reconcile_completed"
     # The offboarding step needs a human: a user was frozen (D9), a step failed, or the step was
     # aborted on an implausible Authentik answer. Payload: ``mxid`` (None for an abort), ``action``,
-    # ``detail``. Meant for the admin room; nothing routes it there yet, the lifecycle also logs it.
+    # ``detail``. Routed to the admin room (``onbot.admin.notifier``); the lifecycle also logs it.
     lifecycle_attention = "lifecycle_attention"
     # A managed room (or the space) the pass could not fully converge: emitted once per room per pass,
     # with ``room_kind``, ``room_id``, ``group_pk`` and ``problems`` (a list of one-line strings).
-    # Meant for the admin room; nothing subscribes yet.
+    # Routed to the admin room, which repeats a room only when its problems change.
     room_not_converged = "room_not_converged"
-    # The pass skipped a destructive action class because its input looked implausible, with
-    # ``action`` (e.g. "kick") and ``reason``. Meant for the admin room; nothing subscribes yet.
+    # The destructive-action guard paused actions and proposed a new batch for an admin to confirm
+    # (D13): ``action`` (the kinds, comma-separated), ``reason``, ``batch_id`` and ``summary`` (the
+    # full report). Emitted once per batch, not on every pass that keeps the actions paused.
     destructive_actions_suppressed = "destructive_actions_suppressed"
+    # A guard batch was closed: ``batch_id``, ``outcome`` (executed, expired, obsolete) and ``text``.
+    guard_batch_closed = "guard_batch_closed"
 
 
 @dataclass(frozen=True, slots=True)

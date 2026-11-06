@@ -1226,6 +1226,70 @@ class AvatarFetch(_StrictModel):
         return [_check_destination(v) for v in value]
 
 
+class DestructiveActionGuard(_StrictModel):
+    """Limits of the destructive-action guard (D4 layers 1 and 2, D13; enforced by :mod:`onbot.guard`).
+
+    Layer 1 compares the pass's input counts with the last known good ones, layer 2 counts the
+    reversible destructive actions of one pass. Either pauses the destructive part of the pass into a
+    batch that an admin releases with ``!confirm <id>`` in the admin control room.
+    """
+
+    max_drop_percent: Annotated[
+        float,
+        Field(
+            title="Largest plausible drop in Authentik's answer (percent)",
+            description=inspect.cleandoc(
+                """Before a pass removes anybody, the bot compares what Authentik returned with the
+                last answer it trusted: the number of active users in the sync scope and the number
+                of groups mapped to rooms. If either dropped by more than this percentage, or came
+                back empty, the bot treats the answer as implausible (an API token that lost its
+                permissions, a broken filter) and pauses every destructive action of the pass:
+                kicks, power-level withdrawals, room teardowns, account locks and erasures. Rooms are
+                still created and users still added and welcomed.
+
+                The paused actions are reported in the admin control room as a batch with a short id,
+                and an administrator releases exactly that batch with `!confirm <id>`. After that,
+                the new numbers count as normal. The comparison moves with every normal pass, so
+                removing people a few at a time never trips it. `100` switches the percentage check
+                off; an empty answer still needs a confirmation."""
+            ),
+            examples=[20, 50],
+            gt=0,
+            le=100,
+        ),
+    ] = 20.0
+    max_reversible_actions_per_pass: Annotated[
+        int,
+        Field(
+            title="Most removals in one pass without confirmation",
+            description=inspect.cleandoc(
+                """How many reversible destructive actions one pass may carry out on its own: kicks
+                from group rooms, account locks (offboarding), teardowns of rooms whose group
+                disappeared, and withdrawals of power levels the bot granted. A pass that would do
+                more pauses all of them and reports them in the admin control room as a batch for an
+                administrator to release with `!confirm <id>`. This also covers switching
+                offboarding's `dry_run` off after a long dry run, when every user marked meanwhile
+                would be locked at once."""
+            ),
+            examples=[10, 50],
+            ge=0,
+        ),
+    ] = 10
+    confirmation_expiry_sec: Annotated[
+        int,
+        Field(
+            title="Time to confirm a paused batch (seconds)",
+            description=inspect.cleandoc(
+                """How long a paused batch waits for `!confirm <id>` or `!reject <id>` before it
+                expires. Its actions stay paused meanwhile. If they still apply after it expired, a
+                later pass proposes them again under a new id. The default is 72 hours."""
+            ),
+            examples=[259200],
+            gt=0,
+        ),
+    ] = 72 * 60 * 60
+
+
 class OnbotConfig(BaseSettings):
     # Unknown top-level keys fail as well (pydantic-settings' default, spelled out here). The env
     # source only looks up ONBOT_* names that belong to a field, so harness or runtime variables
@@ -1605,6 +1669,20 @@ class OnbotConfig(BaseSettings):
             ),
         ),
     ] = Field(default_factory=AvatarFetch)
+
+    destructive_action_guard: Annotated[
+        DestructiveActionGuard,
+        Field(
+            title="Guard against mass removals",
+            description=inspect.cleandoc(
+                """When a pass looks like it would remove far more than usual, the bot pauses the
+                removals and asks an administrator in the admin control room (`!pending`,
+                `!confirm <id>`, `!reject <id>`) instead of carrying them out. Without the admin
+                control room the paused actions are only logged; raise these limits to let them
+                through."""
+            ),
+        ),
+    ] = Field(default_factory=DestructiveActionGuard)
 
     @model_validator(mode="after")
     def _no_settings_without_effect(self) -> OnbotConfig:
