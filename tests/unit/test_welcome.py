@@ -762,6 +762,24 @@ async def test_a_notice_board_the_bot_left_is_replaced_by_a_new_one() -> None:
     assert client.sent == [("!dm-1:matrix.test", "hi")]
 
 
+async def test_a_lost_notice_board_falls_back_to_the_next_one_on_record() -> None:
+    """A user with two rooms (left over from RUN-01): the readable one keeps its bookkeeping."""
+    client = FakeMatrixClient()
+    client.account_data[(BOT, "m.direct")] = {ALICE: ["!purged:matrix.test", "!second:matrix.test"]}
+    client.gone.add("!purged:matrix.test")
+    client.room_state[("!second:matrix.test", "test.matrix.onbot.direct_room")] = {
+        "user_id": ALICE,
+        "welcome_messages_sent": {"id:hi": "2026-01-01T00:00:00+00:00"},
+    }
+    svc = WelcomeService(client, _config([WelcomeMessage(id="hi", text="hi")]))  # type: ignore[arg-type]
+
+    await svc.welcome_user(ALICE)
+
+    assert client.account_data[(BOT, "m.direct")] == {ALICE: ["!second:matrix.test"]}
+    assert client.sent == []
+    assert client.created_dms == 0
+
+
 async def test_a_403_in_a_room_the_bot_is_still_in_is_not_taken_for_a_lost_room() -> None:
     client = FakeMatrixClient()
     client.account_data[(BOT, "m.direct")] = {ALICE: ["!dm:matrix.test"]}

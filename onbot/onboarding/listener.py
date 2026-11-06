@@ -19,8 +19,10 @@ the first pass nobody is. The same set filters the broadcast targets (:meth:`map
 (:data:`DEFAULT_CONCURRENCY`) drain the queue, so a slow or failing welcome never stalls the
 reconcile pass, and 500 new users are welcomed a few at a time instead of one after another inside
 the pass. The queue holds each user at most once, so it is bounded by the number of mapped users.
-One user is never handled by two workers at once, which keeps their messages in order; a user queued
-again while being handled runs once more afterwards. The welcome flow serialises the one document all
+One user is never handled by two workers at once, which keeps their messages in order. A user
+reported again while being handled (the force-join into their own notice board does exactly that) runs
+once more afterwards only if that run did not succeed, or if they left a room meanwhile (their notice
+board must be looked at again). The welcome flow serialises the one document all
 users share, the bot's ``m.direct`` (RUN-01).
 
 **Stopping.** :meth:`request_stop` lets each worker finish the user in hand and drops the rest of the
@@ -113,6 +115,9 @@ class OnboardingListener:
         self._pending: set[str] = set()  # queued, not yet taken by a worker
         self._in_flight: set[str] = set()
         self._again: set[str] = set()  # queued again while in flight
+        # Users whose next run must look at their notice board even if they count as welcomed (they
+        # left a room since the last look).
+        self._recheck: set[str] = set()
         self._stop = asyncio.Event()
         # Users whose welcome failed, with the last error, so a failure repeating every pass is one
         # traceback and then a line per attempt.
@@ -143,6 +148,7 @@ class OnboardingListener:
         for mxid in extract_left_users(result):
             if self._is_target(mxid):
                 # Possibly their notice board: the welcome flow looks and re-invites once (ONB-07).
+                self._recheck.add(mxid)
                 self._welcomed.discard(mxid)
                 self._enqueue(mxid)
 
@@ -208,7 +214,8 @@ class OnboardingListener:
                 self._in_flight.discard(item)
                 if item in self._again:
                     self._again.discard(item)
-                    self._enqueue(item)
+                    if item in self._recheck or item not in self._welcomed:
+                        self._enqueue(item)
 
     async def _process(self, item: str) -> None:
         if item == _PRUNE:
@@ -217,6 +224,7 @@ class OnboardingListener:
             except Exception:
                 log.warning("could not prune the notice boards of departed accounts", exc_info=True)
             return
+        self._recheck.discard(item)  # this run is the look; a leave from now on asks for another
         if not self._is_target(item):
             return  # no longer mapped since it was queued
         try:

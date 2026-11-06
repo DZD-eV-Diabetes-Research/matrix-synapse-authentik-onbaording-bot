@@ -331,9 +331,11 @@ async def test_concurrency_is_bounded_and_one_user_never_runs_twice_at_once() ->
 
     await _pass(events, *(f"@u{i}:matrix.test" for i in range(10)))
     await asyncio.sleep(0.01)
-    # The next pass and a join both report a user already in hand: it runs again afterwards, not now.
+    # The next pass and a join (the force-join into their board) report users already in hand: not
+    # run now, and not again once their run succeeded. A leave asks for another look, though.
     await _pass(events, *(f"@u{i}:matrix.test" for i in range(10)))
     await listener.handle_sync(_joins("@u0:matrix.test"))
+    await listener.handle_sync(_leave("@u1:matrix.test"))
     welcome.gate.set()
     for _ in range(100):
         if not listener.queued and not welcome.running:
@@ -342,8 +344,7 @@ async def test_concurrency_is_bounded_and_one_user_never_runs_twice_at_once() ->
 
     assert welcome.max_running == 3
     assert not welcome.overlap
-    # The three in hand when the second pass came ran once more; nobody else did.
-    assert len(welcome.welcomed) == 13
+    assert sorted(welcome.welcomed) == sorted([f"@u{i}:matrix.test" for i in range(10)] + ["@u1:matrix.test"])
     listener.request_stop()
     await asyncio.wait_for(worker, timeout=1)
 
@@ -367,5 +368,29 @@ async def test_stop_returns_at_once_when_the_workers_are_idle() -> None:
     listener, _ = _listener(_RecordingWelcome())
     worker = asyncio.create_task(listener.run())
     await asyncio.sleep(0)
+    listener.request_stop()
+    await asyncio.wait_for(worker, timeout=1)
+
+
+async def test_a_user_reported_again_while_a_failing_run_is_in_hand_runs_once_more() -> None:
+    class _FailOnce(_GatedWelcome):
+        async def welcome_user(self, mxid: str) -> None:
+            await super().welcome_user(mxid)
+            if len(self.welcomed) == 1:
+                raise RuntimeError("synapse hiccup")
+
+    welcome = _FailOnce()
+    listener, events = _listener(welcome)
+    worker = asyncio.create_task(listener.run())
+    await _pass(events, ALICE)
+    await asyncio.sleep(0.01)
+    await listener.handle_sync(_joins(ALICE))
+    welcome.gate.set()
+    for _ in range(100):
+        if len(welcome.welcomed) == 2 and not welcome.running:
+            break
+        await asyncio.sleep(0.01)
+
+    assert welcome.welcomed == [ALICE, ALICE]
     listener.request_stop()
     await asyncio.wait_for(worker, timeout=1)

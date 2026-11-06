@@ -218,8 +218,9 @@ class WelcomeService:
                     exc.status_code,
                 )
                 await self._forget_direct_room(mxid, room_id)
-                room_id, created = await self._ensure_direct_room(mxid)
-                state = DirectRoomState(user_id=mxid, setup_complete=False)
+                # Again from the top: the next room on record, if any, or a new one.
+                await self._welcome_user(mxid, messages)
+                return
             else:
                 await self._maybe_reinvite(room_id, mxid, state)
         if not state.setup_complete:
