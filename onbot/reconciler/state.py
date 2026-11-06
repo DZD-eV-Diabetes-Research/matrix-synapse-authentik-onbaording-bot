@@ -128,6 +128,16 @@ _STATE_MODEL_BY_TYPE: dict[OnbotRoomType, type[AnyRoomState]] = {
 }
 
 
+# The marker types that identify a room the bot manages by role (D20): together with the bot being the
+# room's creator, one of these says which group room, lobby, space or control room a room is.
+MANAGED_ROOM_TYPES: tuple[OnbotRoomType, ...] = (
+    OnbotRoomType.group_room,
+    OnbotRoomType.visitor_lobby,
+    OnbotRoomType.space,
+    OnbotRoomType.admin_room,
+)
+
+
 def parse_room_state(room_type: OnbotRoomType, content: dict[str, Any]) -> AnyRoomState:
     """Validate raw state-event content into the matching schema for ``room_type``."""
     model = _STATE_MODEL_BY_TYPE[room_type]
