@@ -76,8 +76,8 @@ reports version `0.0.0`.
 
 - **GitHub Actions.** Every action is pinned to a full commit SHA with the release in a comment;
   Dependabot updates both together.
-- **The Docker base image** (`python:3.14.x-slim-bookworm`, tag and digest, in both Dockerfile
-  stages). Python patch releases only; moving to a new Python minor (or from bookworm to trixie) is
+- **The Docker base image** (`python:3.14.x-slim-trixie`, Debian 13, tag and digest, in both
+  Dockerfile stages). Python patch releases only; moving to a new Python minor or Debian release is
   a deliberate change.
 - **Python dependencies, partially.** Dependabot does not support PDM and does not read `pdm.lock`.
   It only sees the ranges in `pyproject.toml` and opens a PR when a release falls outside them (with

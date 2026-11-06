@@ -7,6 +7,8 @@ back only through a real re-enable (review S1, live check 1).
 
 from __future__ import annotations
 
+import asyncio
+import time
 from urllib.parse import quote
 
 import pytest
@@ -79,6 +81,17 @@ async def _deactivated(admin_client, mxid: str) -> bool:
     """
     user = await admin_client.get_json(f"v2/users/{quote(mxid, safe='@:')}")
     return bool(user.get("deactivated"))
+
+
+async def _wait_deactivated(admin_client, mxid: str, *, timeout: float = 60.0) -> bool:
+    """Poll :func:`_deactivated`: MAS hands the deactivation to Synapse through a background job."""
+    deadline = time.monotonic() + timeout
+    while True:
+        if await _deactivated(admin_client, mxid):
+            return True
+        if time.monotonic() > deadline:
+            return False
+        await asyncio.sleep(1)
 
 
 async def test_locked_user_deleted_in_authentik_stays_locked_and_is_erased(
@@ -174,3 +187,39 @@ async def test_locked_user_who_leaves_the_scope_is_frozen(
     assert mas["locked_at"] is not None
     assert mas.get("deactivated_at") is None  # frozen: no erase despite delete_after_n_sec = 0
     assert not await _deactivated(admin_client, login.mxid)
+
+
+@pytest.mark.parametrize("variant", ["path", "group"])
+async def test_known_user_disabled_and_moved_out_of_scope_is_offboarded(
+    variant: str, make_config, authentik_admin: S.AuthentikAdmin, admin_client
+) -> None:
+    """D14: "disable, archive, strip the groups" in one go still locks and erases a known user."""
+    username = S.uniq(f"lifearch{variant}")
+    user, login = S.provision(authentik_admin, username)
+    config = make_config()
+    sync = config.sync_authentik_users_with_matrix_rooms
+    if variant == "path":
+        staff = f"staff-{username}"
+        authentik_admin.set_path(user["pk"], staff)
+        sync.sync_only_users_in_authentik_pathes = [staff]
+    else:
+        group = authentik_admin.create_group(f"{username}-staff")
+        authentik_admin.add_user_to_group(group["pk"], user["pk"])
+        sync.sync_only_users_of_groups_with_id = [str(group["pk"])]
+    life = _live_lifecycle(config)
+    await run_reconcile_once(config)  # active, in scope and mapped: recorded as a known user
+    assert S.mas_user(username)["locked_at"] is None
+
+    authentik_admin.set_active(user["pk"], False)
+    if variant == "path":
+        authentik_admin.set_path(user["pk"], f"archive-{username}")
+    else:
+        authentik_admin.remove_user_from_group(group["pk"], user["pk"])
+    await run_reconcile_once(config)  # mark
+    await run_reconcile_once(config)  # lock
+    assert S.mas_user(username)["locked_at"] is not None
+    assert S.wait_revoked(login.access_token)
+
+    life.delete_after_n_sec = 0
+    await run_reconcile_once(config)
+    assert await _wait_deactivated(admin_client, login.mxid)

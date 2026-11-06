@@ -141,6 +141,10 @@ class AuthentikAdmin:
         r = self._http.patch(f"/core/users/{pk}/", json={"attributes": attributes})
         r.raise_for_status()
 
+    def set_path(self, pk: int, path: str) -> None:
+        r = self._http.patch(f"/core/users/{pk}/", json={"path": path})
+        r.raise_for_status()
+
     def delete_user(self, pk: int) -> None:
         r = self._http.delete(f"/core/users/{pk}/")
         r.raise_for_status()

@@ -477,8 +477,10 @@ within.
   path, attribute and group filters that decide who is synced), and a *known* user who is deleted
   from Authentik. Onbot records every user it sees active, in scope and with a Matrix account
   (`authentik pk -> Matrix ID`, in the bot's account data), so a later deletion is noticed and goes
-  through the same grace periods. A user deleted before Onbot ever saw them active is not known and
-  not offboarded. Matrix accounts that no Authentik user ever mapped to (service, bridge or MAS-only
+  through the same grace periods. A known user who is disabled is offboarded even when they also left
+  the sync scope (moved to another path, removed from the synced group, opt-in attribute removed),
+  so the usual "disable, archive and strip the groups" flow works in one step. A user deleted before
+  Onbot ever saw them active is not known and not offboarded. Matrix accounts that no Authentik user ever mapped to (service, bridge or MAS-only
   accounts) are never touched, and neither is any account an active Authentik user maps to, in or
   out of scope.
 - **Access only comes back on positive evidence.** Onbot lifts a lock only when the Authentik user it
@@ -487,8 +489,8 @@ within.
   anybody. If Authentik suddenly returns no users at all, the offboarding step is skipped for that
   pass (`lifecycle step aborted` in the log).
 - **Leaving the scope freezes.** A user who is being offboarded (marked or locked) but leaves the sync
-  scope, lands on an ignore list, or whose Matrix ID another active Authentik user now maps to, is
-  *frozen*: no unlock and no further step. Onbot writes one `FROZEN` line to the audit log and emits
+  scope while active (or was never known to Onbot as active), lands on an ignore list, or whose
+  Matrix ID another active Authentik user now maps to, is *frozen*: no unlock and no further step. Onbot writes one `FROZEN` line to the audit log and emits
   a `lifecycle_attention` event (meant for the admin room). An admin decides by hand: bring the user
   back into scope (active means the lock is lifted, disabled means offboarding continues), or lock
   or deactivate the account in MAS directly.

@@ -31,10 +31,13 @@
 #       --synapse-admin    Grant the token the Synapse admin scope (default: on, onbot needs it).
 #       --no-synapse-admin Issue a plain user token without admin scope (rooms/DMs only).
 #       --reissue-only     Do NOT (re)create the user, only issue a fresh token for it.
-#       --revoke-previous  Before issuing the new token, end ALL existing sessions of the user
-#                          (`mas-cli manage kill-sessions`): every token issued earlier stops
-#                          working, including the one a running onbot uses, until you deploy the
-#                          new one. The wizard asks; with --yes the default is to keep them.
+#       --revoke-previous  End ALL existing sessions of the user (`mas-cli manage kill-sessions`):
+#                          every token issued earlier stops working, including the one a running
+#                          onbot uses, until you deploy the new one. mas-cli can only end all
+#                          sessions at once, so a probe token is issued first to prove that issuing
+#                          works (nothing is ended if that fails), then every session is ended (the
+#                          probe's too), then the new token is issued. The wizard asks; with --yes
+#                          the default is to keep them.
 #       --keep-previous    Do not end existing sessions (the default with --yes).
 #       --write-token-to F Write the bare token to file F, created with mode 0600 (an existing file
 #                          is replaced). "-" means stdout.
@@ -60,7 +63,7 @@ QUIET=false
 log() { printf '%s\n' "$*" >&2; }   # everything human-facing goes to stderr so stdout is clean
 die() { log "ERROR: $*"; exit 1; }
 
-usage() { sed -n '2,48p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,49p' "$0" | sed 's/^# \{0,1\}//'; }
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -168,8 +171,9 @@ if [ "$INTERACTIVE" = true ]; then
     if [ -z "$REVOKE_PREVIOUS" ]; then
         log ""
         log "Ending the user's existing sessions revokes every token issued to it before, including"
-        log "the one a running onbot uses: it stops working until you deploy the new token."
-        ask_yesno REVOKE_PREVIOUS "End all existing sessions of this user first" true
+        log "the one a running onbot uses: it stops working until you deploy the new token. A probe"
+        log "token is issued first, so nothing is ended when issuing does not work."
+        ask_yesno REVOKE_PREVIOUS "End all existing sessions of this user" true
     fi
     if [ -z "$WRITE_TOKEN_TO" ] && [ "$QUIET" = false ]; then
         ask WRITE_TOKEN_TO "Write the token to this file (mode 0600)" "./onbot-bot-token"
@@ -212,13 +216,39 @@ if [ "$REISSUE_ONLY" = false ]; then
     fi
 fi
 
-# ---------------------------------------------------------------------------- 2) revoke old tokens
-# Before issuing, so the new token is the only valid one afterwards.
+# ---------------------------------------------------------------------------- 2) token helper
+admin_flag=()
+if [ "$SYNAPSE_ADMIN" = true ]; then
+    admin_flag=(--yes-i-want-to-grant-synapse-admin-privileges)
+fi
+
+# issue_token: mint a compatibility token. Sets TOKEN (empty when none could be parsed) and
+# token_out (mas-cli's output). Called directly, never in a subshell, so it can set both.
+issue_token() {
+    token_out="$(dc exec -T mas mas-cli manage issue-compatibility-token "${admin_flag[@]}" "$USERNAME" 2>&1 || true)"
+    # MAS tokens look like mct_<random>_<checksum>; the underscore is part of the token.
+    TOKEN="$(printf '%s' "$token_out" | grep -oE 'mct_[A-Za-z0-9_]+' | head -n1 || true)"
+}
+
+# ---------------------------------------------------------------------------- 3) revoke old tokens
+# `mas-cli manage kill-sessions` ends EVERY session of the user, including one issued a moment
+# before, so the new token can only be issued afterwards. A probe token first proves that issuing
+# works (the user exists, MAS answers, the output parses); only then is anything ended.
 if [ "$REVOKE_PREVIOUS" = true ]; then
-    log "Ending all existing sessions of '$USERNAME' (earlier tokens stop working)..."
+    log "Issuing a probe token for '$USERNAME' to check that issuing works before ending any session..."
+    issue_token
+    if [ -z "$TOKEN" ]; then
+        # mas-cli printed no token, so its output holds nothing secret
+        log "$token_out"
+        die "could not issue a probe token (see above); no session was ended, nothing changed."
+    fi
+    TOKEN=""
+    token_out=""
+    log "Ending all existing sessions of '$USERNAME' (earlier tokens and the probe stop working)..."
     if ! kill_out="$(dc exec -T mas mas-cli manage kill-sessions "$USERNAME" 2>&1)"; then
         log "$kill_out"
-        die "kill-sessions failed (see message above); no new token was issued."
+        die "kill-sessions failed (see message above); no new token was issued. Earlier tokens and" \
+            "the probe token may still work."
     fi
     log "$kill_out"
     # Synapse caches MAS token introspection: tested with MAS 0.14 and Synapse 1.156, an ended
@@ -226,22 +256,21 @@ if [ "$REVOKE_PREVIOUS" = true ]; then
     log "Note: Synapse may accept the old tokens for about two more minutes (introspection cache)."
 fi
 
-# ---------------------------------------------------------------------------- 3) issue token
-admin_flag=()
-if [ "$SYNAPSE_ADMIN" = true ]; then
-    admin_flag=(--yes-i-want-to-grant-synapse-admin-privileges)
-fi
+# ---------------------------------------------------------------------------- 4) issue token
 log "Issuing a compatibility token for '$USERNAME' (synapse admin: $SYNAPSE_ADMIN)..."
-token_out="$(dc exec -T mas mas-cli manage issue-compatibility-token "${admin_flag[@]}" "$USERNAME" 2>&1 || true)"
-# MAS tokens look like mct_<random>_<checksum>; the underscore is part of the token.
-TOKEN="$(printf '%s' "$token_out" | grep -oE 'mct_[A-Za-z0-9_]+' | head -n1 || true)"
+issue_token
 if [ -z "$TOKEN" ]; then
     # mas-cli printed no token, so its output holds nothing secret
     log "$token_out"
+    if [ "$REVOKE_PREVIOUS" = true ]; then
+        die "could not issue the new token, and ALL sessions of '$USERNAME' were already ended:" \
+            "no token of this user works now. Rerun this script without --revoke-previous (for" \
+            "example with --reissue-only) to issue a token."
+    fi
     die "could not parse an mct_ token from mas-cli output. Does user '$USERNAME' exist?"
 fi
 
-# ---------------------------------------------------------------------------- 4) best-effort verify
+# ---------------------------------------------------------------------------- 5) best-effort verify
 # The token acts on the CS API immediately; MAS provisions the user on Synapse asynchronously, so
 # /whoami may lag for a second or two. Non-fatal. The Authorization header goes to curl on stdin
 # (`-H @-`), so the token is on no command line, neither on the host nor in the container.
@@ -261,7 +290,7 @@ if dc exec -T synapse sh -c 'command -v curl >/dev/null 2>&1'; then
     [ "$verified" = true ] || log "warning: could not verify the token via /whoami (see above); it may still work."
 fi
 
-# ---------------------------------------------------------------------------- 5) output
+# ---------------------------------------------------------------------------- 6) output
 if [ -n "$WRITE_TOKEN_TO" ]; then
     if [ "$WRITE_TOKEN_TO" = "-" ]; then
         printf '%s\n' "$TOKEN"

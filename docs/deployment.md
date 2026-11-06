@@ -67,9 +67,12 @@ onbot healthcheck       # is the running service alive? reads its heartbeat file
 onbot healthcheck --deep  # probe Synapse/Authentik/MAS with the real credentials; exit 0 healthy, 1 not
 ```
 
-The one-shot commands do only what they need: `reconcile-once` registers the bot's device (the pass may
-send welcomes) and runs one pass; `broadcast` registers the device, lifts the bot's send rate limit and
-sends. Neither sets the avatar or provisions the admin room; the running service does that.
+The one-shot commands do only what they need. `reconcile-once` does the same startup work as the
+service, once (register the bot's device, lift its send rate limit, set its avatar, provision the admin
+room and invite new admins), then runs one pass, so a cron-only deployment stays complete. It does not
+read the sync stream, so commands in the admin room are only answered by a running service.
+`broadcast` registers the device, lifts the bot's send rate limit and sends; it sets no avatar and does
+not touch the admin room.
 
 Do not run `reconcile-once` against a homeserver while `onbot run` serves it. The two processes do not
 coordinate, and a user whom both welcome at the same moment can end up with two notice boards. Stop

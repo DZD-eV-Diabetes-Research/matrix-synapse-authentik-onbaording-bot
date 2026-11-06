@@ -32,7 +32,9 @@ STARTUP_INITIAL_BACKOFF_SEC = 1.0
 STARTUP_MAX_BACKOFF_SEC = 60.0
 
 # 4xx answers that do not mean "never": not authenticated yet (MAS still booting), timeouts, rate
-# limits. Every other 4xx is the server refusing for good, so a retry would only repeat the refusal.
+# limits. Any other 4xx from the homeserver is a refusal for good, but only when it carries a Matrix
+# ``errcode``: a reverse proxy answers 403, 404 or 421 with an HTML page while the homeserver behind it
+# is still booting, and giving up then would open onboarding without a device (RUN-02).
 _TRANSIENT_CLIENT_ERRORS = frozenset({401, 408, 425, 429})
 
 
@@ -151,17 +153,34 @@ async def run_interruptible(
 def is_permanent_failure(exc: BaseException) -> bool:
     """Whether a startup step failed because the server refused it for good (so: stop retrying).
 
+    A client error from one of onbot's API clients is permanent only when the body is a Matrix error
+    (it has an ``errcode``), so the homeserver itself answered. A bare 4xx is most likely a proxy in
+    front of a server that is not up yet and is retried.
+
     An avatar the fetch policy refuses (internal address, not an image, too large) is permanent too:
-    the same URL is refused the same way on every retry.
+    the same URL is refused the same way on every retry, and so is a 4xx from the avatar's own host
+    (``httpx.HTTPStatusError``, raised only by the avatar fetcher).
     """
     if isinstance(exc, MediaFetchRejected):
         return True
-    status: int | None = None
     if isinstance(exc, ApiError):
-        status = exc.status_code
-    elif isinstance(exc, httpx.HTTPStatusError):
-        status = exc.response.status_code
-    return status is not None and 400 <= status < 500 and status not in _TRANSIENT_CLIENT_ERRORS
+        return _is_final_client_error(exc.status_code) and _matrix_errcode(exc.payload) is not None
+    if isinstance(exc, httpx.HTTPStatusError):
+        return _is_final_client_error(exc.response.status_code)
+    return False
+
+
+def _is_final_client_error(status: int) -> bool:
+    return 400 <= status < 500 and status not in _TRANSIENT_CLIENT_ERRORS
+
+
+def _matrix_errcode(payload: Any) -> str | None:
+    """The Matrix ``errcode`` of an error body, or ``None`` when it is not a Matrix error."""
+    if isinstance(payload, dict):
+        errcode = payload.get("errcode")
+        if isinstance(errcode, str) and errcode:
+            return errcode
+    return None
 
 
 @dataclass(slots=True, eq=False)

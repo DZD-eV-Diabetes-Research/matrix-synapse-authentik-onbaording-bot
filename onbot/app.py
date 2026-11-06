@@ -23,9 +23,11 @@ Process lifecycle (review findings RUN-02, RUN-09, RUN-12, RUN-13):
   cancelled at once, and the rest get ``SHUTDOWN_GRACE_SEC`` (6 s) to finish what they are doing
   before they are cancelled too. A second signal cancels immediately. That keeps a ``docker stop``
   (10 s by default) clean instead of ending in SIGKILL.
-* **One-shot commands only do what they need.** ``reconcile-once`` registers the device (it may send
-  welcomes) and runs one pass; ``broadcast`` builds only the Matrix clients. Neither touches the
-  avatar or the admin room, and neither writes the heartbeat file.
+* **One-shot commands only do what they need.** ``reconcile-once`` runs every startup step once
+  (device, rate-limit override, bot avatar, admin room and its re-invites), because a cron-driven
+  deployment never runs the service and still needs all of them, and then one pass. ``broadcast``
+  builds only the Matrix clients, registers the device and lifts the rate limit. Neither starts the
+  sync stream, and neither writes the heartbeat file.
 """
 
 from __future__ import annotations
@@ -228,15 +230,14 @@ class App:
         return steps
 
     def reconcile_once_steps(self) -> list[StartupStep]:
-        """What a single pass needs: a registered device for the welcome sends it may trigger, and the
-        lifted rate limit, because a pass creates rooms and sends messages just like the service (a
-        cron-driven ``reconcile-once`` deployment never runs the service steps)."""
-        return [
-            StartupStep("version negotiation", self.negotiate_versions),
-            StartupStep("device registration", self.register_device),
-            StartupStep("onboarding", self.open_onboarding),
-            StartupStep("rate-limit override", self.relax_ratelimit),
-        ]
+        """The service's startup steps, for a single pass that runs each of them once, in list order.
+
+        A cron-driven ``reconcile-once`` deployment never runs the service, so it needs all of them: a
+        registered device for the welcome sends a pass may trigger, the lifted rate limit (a pass
+        creates rooms and sends messages just like the service), the bot avatar, and the admin room,
+        whose re-invite of new admins rides on the pass's ``reconcile_completed`` signal.
+        """
+        return self.service_steps()
 
 
 def _matrix_clients(
@@ -276,7 +277,10 @@ async def build_app(config: OnbotConfig, *, heartbeat: Heartbeat | None = None) 
         matrix, admin = _matrix_clients(stack, config)
         # One uploader for the bot avatar, the group rooms and the onboarding rooms: it caches by
         # source URL, so the bot's avatar is fetched and uploaded once no matter how many rooms wear it.
-        media = MediaUploader(matrix, fetcher=SafeImageFetcher(_fetch_policy(config)))
+        # The uploader does not own a fetcher it is handed, so the stack closes it (RUN-12).
+        fetcher = SafeImageFetcher(_fetch_policy(config))
+        stack.push_async_callback(fetcher.aclose)
+        media = MediaUploader(matrix, fetcher=fetcher)
         stack.push_async_callback(media.aclose)
         events = EventBus()
         # Lifecycle enforcement: under MAS only the MAS admin API can revoke a live session (§7 Q1),
@@ -445,8 +449,9 @@ async def _stop_loops(
 async def run_reconcile_once(config: OnbotConfig) -> None:
     """Run a single reconcile pass and exit (``onbot reconcile-once``).
 
-    Onboarding still fires for users discovered this pass, but the long-running sync stream is not
-    started, and the service-only startup work (avatar, rate limit, admin room) is skipped.
+    Runs the service's startup steps once each (device, rate-limit override, bot avatar, admin room),
+    then the pass. Onboarding still fires for users discovered this pass, but the long-running sync
+    stream is not started, so admin room commands are not read.
     """
     async with build_app(config) as app:
         await StartupSupervisor(app.reconcile_once_steps()).run_once()

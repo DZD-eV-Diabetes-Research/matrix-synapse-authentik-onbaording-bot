@@ -303,6 +303,42 @@ class TestClassifyAccounts:
         assert result[mx("x")].status is AccountStatus.frozen
         assert result[mx("x")].reason == expected_reason
 
+    def test_known_user_disabled_outside_scope_is_orphaned(self) -> None:
+        """D14: a known binding is enough evidence to offboard a disabled user outside the scope."""
+        snap = snapshot(user("x", active=False, in_scope=False))
+        result = classify_accounts(snap, _known(x="pk-x"), LifecycleLedger())
+        assert result[mx("x")].status is AccountStatus.orphaned
+        assert result[mx("x")].pk == "pk-x"
+
+    def test_known_tracked_user_disabled_outside_scope_continues(self) -> None:
+        snap = snapshot(user("x", active=False, in_scope=False))
+        entry = LOCKED.model_copy(update={"authentik_pk": "pk-x"})
+        result = classify_accounts(snap, _known(x="pk-x"), _ledger(x=entry))
+        assert result[mx("x")].status is AccountStatus.orphaned
+
+    def test_ledger_binding_alone_does_not_lift_the_scope_freeze(self) -> None:
+        """Only a known binding counts for D14; a user never seen active stays frozen (D9)."""
+        snap = snapshot(user("x", active=False, in_scope=False))
+        entry = LOCKED.model_copy(update={"authentik_pk": "pk-x"})
+        result = classify_accounts(snap, KnownUsers(), _ledger(x=entry))
+        assert result[mx("x")].status is AccountStatus.frozen
+
+    def test_known_user_active_outside_scope_is_still_frozen(self) -> None:
+        snap = snapshot(user("x", in_scope=False))
+        result = classify_accounts(snap, _known(x="pk-x"), _ledger(x=LOCKED))
+        assert result[mx("x")].status is AccountStatus.frozen
+
+    def test_known_user_disabled_outside_scope_with_an_active_namesake_is_frozen(self) -> None:
+        old = user("x-old", active=False, in_scope=False, pk="pk-x", mxid=mx("x"))
+        newcomer = user("x", pk="pk-new", in_scope=False)
+        result = classify_accounts(snapshot(old, newcomer), _known(x="pk-x"), LifecycleLedger())
+        assert result[mx("x")].status is AccountStatus.frozen
+
+    def test_known_user_disabled_outside_scope_on_ignore_list_is_frozen(self) -> None:
+        snap = snapshot(user("x", active=False, in_scope=False, ignored=True))
+        result = classify_accounts(snap, _known(x="pk-x"), LifecycleLedger())
+        assert result[mx("x")].status is AccountStatus.frozen
+
     def test_tracked_user_on_matrix_ignore_list_is_frozen(self) -> None:
         snap = snapshot(user("x"), excluded={mx("bot"), mx("x")})
         result = classify_accounts(snap, KnownUsers(), _ledger(x=LOCKED))

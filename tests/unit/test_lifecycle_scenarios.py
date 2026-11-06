@@ -460,6 +460,97 @@ async def test_mxid_of_an_active_user_outside_the_scope_is_never_locked() -> Non
     assert w.mas.calls == []
 
 
+# --- D14: a known user who is disabled and leaves the scope at once is still offboarded ----------
+
+_SCOPES: dict[str, dict[str, Any]] = {
+    "path": {"sync_only_users_in_authentik_pathes": ["staff"]},
+    "group": {"sync_only_users_of_groups_with_id": ["grp-staff"]},
+    "attribute": {"sync_only_users_with_authentik_attributes": {"chat": True}},
+}
+_IN_SCOPE: dict[str, dict[str, Any]] = {
+    "path": {"path": "staff"},
+    "group": {"path": "staff", "groups": ["grp-staff"]},
+    "attribute": {"path": "staff", "attributes": {"chat": True}},
+}
+
+
+def _leave_scope(w: World, pk: int, variant: str) -> None:
+    """The usual "remove somebody" flow in Authentik: archive the user and strip what synced them."""
+    if variant == "path":
+        w.directory.users[pk]["path"] = "archive"
+    elif variant == "group":
+        w.directory.users[pk]["groups"] = []
+    else:
+        w.directory.users[pk]["attributes"] = {}
+
+
+@pytest.mark.parametrize("variant", sorted(_SCOPES))
+async def test_known_user_disabled_and_moved_out_of_scope_is_offboarded(variant: str) -> None:
+    w = World(delete_after=DAY, **_SCOPES[variant])
+    pk = w.person("erin", **_IN_SCOPE[variant])
+    await w.tick()  # seen active, in scope and mapped: erin becomes a known user
+    assert w.store.ledger().entries == {}
+
+    w.directory.set_active(pk, False)
+    _leave_scope(w, pk, variant)  # in the same interval as the disable
+    await w.tick()  # mark
+    assert mx("erin") in w.store.ledger().entries
+    await w.tick()  # cooldown 0: lock
+    assert w.locked("erin")
+    await w.tick(DAY)
+    assert w.mas.ops("deactivate") == ["erin"]
+    assert w.mas.ops("unlock") == []
+    assert [e for e in w.reports if e.payload.get("action") == "freeze"] == []
+
+
+@pytest.mark.parametrize("variant", sorted(_SCOPES))
+async def test_known_locked_user_moved_out_of_scope_while_disabled_continues(variant: str) -> None:
+    """Archiving after the lock (a later interval) does not freeze a known user either (D14)."""
+    w = World(delete_after=DAY, **_SCOPES[variant])
+    pk = w.person("erin", **_IN_SCOPE[variant])
+    await w.tick()
+    w.directory.set_active(pk, False)
+    await w.tick()
+    await w.tick()
+    assert w.locked("erin")
+    _leave_scope(w, pk, variant)
+    await w.tick(DAY)
+    assert w.mas.ops("deactivate") == ["erin"]
+
+
+@pytest.mark.parametrize("variant", sorted(_SCOPES))
+async def test_never_mapped_disabled_account_outside_the_scope_stays_untouched(variant: str) -> None:
+    """REC-14 still holds: onbot never saw this user active in scope, so it never binds the account."""
+    w = World(delete_after=0, **_SCOPES[variant])
+    w.person("erin", **_IN_SCOPE[variant])  # an unrelated known user, so the pass is not trivial
+    pk = w.person("svc", path="service")  # Matrix account exists, Authentik user never in scope
+    await w.tick()
+    w.directory.set_active(pk, False)
+    for _ in range(3):
+        await w.tick(DAY)
+    assert w.mas.calls == []
+    assert w.store.ledger().entries == {}
+
+
+async def test_known_user_reactivated_outside_the_scope_while_locked_is_frozen() -> None:
+    """D9 still applies to a user who is active again but outside the scope: no unlock, no erase."""
+    w = World(delete_after=DAY, sync_only_users_in_authentik_pathes=["staff"])
+    pk = w.person("erin", path="staff")
+    await w.tick()
+    w.directory.set_active(pk, False)
+    await w.tick()
+    await w.tick()
+    assert w.locked("erin")
+    w.directory.set_active(pk, True)
+    w.directory.users[pk]["path"] = "archive"
+    await w.tick()
+    await w.tick(DAY * 2)
+    assert w.mas.ops("unlock") == [] and w.mas.ops("deactivate") == []
+    assert w.locked("erin")
+    frozen = [e for e in w.reports if e.payload.get("mxid") == mx("erin")]
+    assert [e.payload["action"] for e in frozen] == ["freeze"]
+
+
 # --- LIF-06: dry-run calls no effector; only onbot's own locks are unlocked ---------------------
 
 

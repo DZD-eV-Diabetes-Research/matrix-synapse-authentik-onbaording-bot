@@ -364,7 +364,14 @@ case "$args" in
   "compose config --services") printf 'mas\\nsynapse\\n' ;;
   *"mas-cli manage register-user"*) echo "User registered" ;;
   *"mas-cli manage kill-sessions"*) echo "killed 2 sessions" ;;
-  *"mas-cli manage issue-compatibility-token"*) echo "Compatibility token issued: {FAKE_TOKEN}" ;;
+  *"mas-cli manage issue-compatibility-token"*)
+    # FAKE_ISSUE_FAIL lists the issue calls (1-based) that fail, e.g. "1" or "2".
+    n=$(( $(cat "$FAKE_LOG.issues" 2>/dev/null || echo 0) + 1 ))
+    echo "$n" > "$FAKE_LOG.issues"
+    case ",${{FAKE_ISSUE_FAIL:-}}," in
+      *",$n,"*) echo "Error: database unavailable" ;;
+      *) echo "Compatibility token issued: {FAKE_TOKEN}" ;;
+    esac ;;
   *"synapse sh -c"*) exit 0 ;;
   *"synapse curl"*)
     stdin="$(cat)"
@@ -378,7 +385,9 @@ esac
 """
 
 
-def _provision(tmp_path: Path, *args: str) -> tuple[subprocess.CompletedProcess[str], str]:
+def _provision(
+    tmp_path: Path, *args: str, issue_fail: str = ""
+) -> tuple[subprocess.CompletedProcess[str], str]:
     stack = tmp_path / "stack"
     stack.mkdir(exist_ok=True)
     (stack / "docker-compose.yml").write_text("services: {}\n")
@@ -393,7 +402,12 @@ def _provision(tmp_path: Path, *args: str) -> tuple[subprocess.CompletedProcess[
     log = tmp_path / "docker.log"
     result = subprocess.run(
         ["bash", str(REPO / "scripts/provision-bot-account.sh"), "-m", str(stack), "-y", *args],
-        env={"PATH": f"{bin_dir}:/usr/bin:/bin", "FAKE_LOG": str(log), "HOME": str(tmp_path)},
+        env={
+            "PATH": f"{bin_dir}:/usr/bin:/bin",
+            "FAKE_LOG": str(log),
+            "HOME": str(tmp_path),
+            "FAKE_ISSUE_FAIL": issue_fail,
+        },
         stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
@@ -439,13 +453,51 @@ def test_provision_needs_somewhere_to_put_the_token(tmp_path: Path) -> None:
     assert "issue-compatibility-token" not in log  # nothing minted
 
 
-def test_provision_revokes_previous_sessions_before_issuing(tmp_path: Path) -> None:
+def _mas_commands(log: str) -> list[str]:
+    return [line for line in log.splitlines() if line.startswith("ARGV ") and "mas-cli" in line]
+
+
+def test_provision_revokes_previous_sessions_after_a_probe_and_before_the_final_token(
+    tmp_path: Path,
+) -> None:
+    """kill-sessions ends every session, so: probe token, end all sessions, then the final token."""
     result, log = _provision(tmp_path, "--reissue-only", "--revoke-previous", "-q")
     assert result.returncode == 0, result.stderr
-    commands = [line for line in log.splitlines() if "mas-cli" in line]
-    assert "kill-sessions dzd-bot" in commands[0]
-    assert "issue-compatibility-token" in commands[1]
-    assert not any("register-user" in line for line in commands)
+    commands = _mas_commands(log)
+    assert len(commands) == 3
+    assert "issue-compatibility-token" in commands[0]  # the probe
+    assert "kill-sessions dzd-bot" in commands[1]
+    assert "issue-compatibility-token" in commands[2]  # the token that is handed out
+    assert result.stdout == f"{FAKE_TOKEN}\n"
+    assert FAKE_TOKEN not in result.stderr
+
+
+def test_provision_ends_no_session_when_the_probe_token_fails(tmp_path: Path) -> None:
+    result, log = _provision(tmp_path, "--reissue-only", "--revoke-previous", "-q", issue_fail="1")
+    assert result.returncode != 0
+    assert "kill-sessions" not in log
+    assert len(_mas_commands(log)) == 1
+    assert "could not issue a probe token" in result.stderr
+    assert "no session was ended" in result.stderr
+    assert result.stdout == ""
+
+
+def test_provision_says_clearly_when_the_final_token_fails_after_the_revoke(tmp_path: Path) -> None:
+    result, log = _provision(tmp_path, "--reissue-only", "--revoke-previous", "-q", issue_fail="2")
+    assert result.returncode != 0
+    commands = _mas_commands(log)
+    assert "kill-sessions dzd-bot" in commands[1]
+    assert "ALL sessions of 'dzd-bot' were already ended" in result.stderr
+    assert "without --revoke-previous" in result.stderr
+    assert result.stdout == ""
+    assert FAKE_TOKEN not in result.stderr  # the probe token is never printed
+
+
+def test_provision_without_revoke_issues_a_single_token(tmp_path: Path) -> None:
+    result, log = _provision(tmp_path, "--reissue-only", "-q")
+    assert result.returncode == 0, result.stderr
+    commands = _mas_commands(log)
+    assert len(commands) == 1 and "issue-compatibility-token" in commands[0]
 
 
 def test_provision_keeps_previous_sessions_by_default_without_a_terminal(tmp_path: Path) -> None:
