@@ -158,3 +158,11 @@ integration suite stays a required gate, but:
   docs-only commits and PRs run lint, unit tests and the secret scan only.
 - A release reuses a green CI run of the tagged SHA when one exists and runs the CI only otherwise.
 - Speeding up the suite itself (cached stack start, parallel tests) is part of S14.
+
+## D18 HTTP layer (S11, decided 2026-11-06)
+
+- `synapse_server.oauth2` is removed: MAS 0.14 does not grant the Matrix API scopes to
+  `client_credentials`, so the option could never work. A config that still sets it fails at startup
+  with exit 2 and a specific message pointing to `bot_access_token` (compatibility token).
+- A paginated listing that stays inconsistent after one re-read fails the whole pass (fail closed);
+  the next tick retries.

@@ -48,6 +48,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   This `CHANGELOG.md`.
 
 ### Changed
+- **httpx and httpcore request lines are logged only at `log_level: DEBUG`** (RUN-15).
+- **`onbot healthcheck --deep` fails when MAS does not know the bot's own user** (LIF-10).
 - **Shorter CI waits (review decision D17):** pushes and PRs that change documentation only skip the
   integration suite (about 20 minutes); any other path, and `CHANGELOG.md`, still runs it. A release
   reuses a green CI run of exactly the tagged commit on `main` (all four jobs passed) and runs the full
@@ -120,6 +122,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   troubleshooting.
 
 ### Fixed
+- **Retries never duplicate effects (review S11, RUN-05):** non-idempotent requests (createRoom, kick,
+  force-join) are no longer blindly resent after a timeout or 5xx. A room created despite a lost
+  response is found by a creation marker and reused instead of being created twice; kick and join
+  check the membership before resending.
+- **OAuth2 token refresh is single-flight (RUN-06, SEC-10):** concurrent callers share one MAS
+  exchange and a rotated refresh token is presented once. MAS 5xx and unreachable errors are retried,
+  a 401 replaces the token once, and only `invalid_grant` drops the refresh token.
+- **429 responses wait as long as `retry_after_ms` or `Retry-After` asks** (capped at 30 s). Matrix
+  calls time out after 30 s; only the sync long-poll waits longer (RUN-10).
+- **A paginated Authentik or Synapse listing that changes while it is read is re-read (RUN-14);** if it
+  stays inconsistent the pass fails instead of acting on a list with gaps (a missing user would be
+  kicked).
 - **Startup behind a reverse proxy:** a 403 or 404 without a Matrix error body while the homeserver
   boots no longer makes startup give up device registration and open onboarding without a device;
   such answers are retried.
@@ -155,11 +169,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   what stops is the redundant state write per room per tick.
 
 ### Removed
+- **`synapse_server.oauth2` (breaking for configs that set it, review S11, RUN-11):** MAS does not grant
+  the Matrix API or Synapse admin scopes to `client_credentials`, so the option never worked. A config
+  that still sets it stops at startup with exit code 2 and says so. Use
+  `synapse_server.bot_access_token` with a MAS compatibility token (`scripts/provision-bot-account.sh`),
+  which is now required. `mas_admin` is unchanged.
 - Dropped the vestigial `storage_dir` and `storage_encryption_key` config fields — they backed the
   libolm key store removed in ADR-0009 and were unused. **Breaking for existing config files:** the
   model forbids unknown keys, so remove these two settings if present.
 
 ### Security
+- **The avatar fetch guard refuses to start if httpx changes the internals it relies on;** `httpcore` is a
+  declared dependency (review S11).
 - **Releases are gated (review S15, SUP-02):** the release workflow runs the full CI on the tagged
   commit, requires the tag to be on `main` and publishes from a `release` environment. All workflows
   run with read-only defaults, pin every action by commit SHA, never persist checkout credentials, and

@@ -63,7 +63,7 @@ authentik_poll_rate_sec: 15
 # Required:    True
 # Env-var:     'ONBOT_SYNAPSE_SERVER'
 # Description: Connection data and credentials for the Matrix client-server and Synapse admin
-#              APIs. Authenticate with either `bot_access_token` or `oauth2`, not both.
+#              APIs. The bot authenticates with `bot_access_token`.
 synapse_server:
 
   # ## server_name - Matrix server name ###
@@ -107,31 +107,17 @@ synapse_server:
   # ## bot_access_token - Bot access token ###
   # YAML-path:   synapse_server.bot_access_token
   # Type:        str (secret)
-  # Required:    False
-  # Default:     null
+  # Required:    True
   # Env-var:     'ONBOT_SYNAPSE_SERVER__BOT_ACCESS_TOKEN'
   # Description: Access token authorising the bot against the Synapse APIs. On a homeserver fronted
   #              by the Matrix Authentication Service this is a compatibility token, issued with
-  #              `mas-cli manage issue-compatibility-token`. Provide the bare token; do not prefix it
-  #              with `Bearer` (the client adds that). Leave unset (`null`) when using `oauth2`
-  #              instead. Prefer supplying it through the
-  #              `ONBOT_SYNAPSE_SERVER__BOT_ACCESS_TOKEN` environment variable rather than committing
-  #              it to the config file.
+  #              `mas-cli manage issue-compatibility-token` (`scripts/provision-bot-account.sh` does
+  #              that for you). Provide the bare token; do not prefix it with `Bearer` (the client
+  #              adds that). Prefer supplying it through the `ONBOT_SYNAPSE_SERVER__BOT_ACCESS_TOKEN`
+  #              environment variable rather than committing it to the config file.
   # Example:
   #  >bot_access_token: syt_ONLY_AN_EXAMPLE_TOKEN_sadaw4
   bot_access_token:
-
-  # ## oauth2 - OAuth2 authentication (alternative to the access token) ###
-  # YAML-path:   synapse_server.oauth2
-  # Type:        Object (MatrixOAuth2)
-  # Required:    False
-  # Default:     null
-  # Env-var:     'ONBOT_SYNAPSE_SERVER__OAUTH2'
-  # Description: Authenticate as an OAuth2 client of the Matrix Authentication Service instead of
-  #              carrying a static token. When set, this is used in place of `bot_access_token` and
-  #              the short-lived tokens it mints refresh automatically. Provide exactly one of
-  #              `bot_access_token` or `oauth2`.
-  oauth2:
 
   # ## bot_avatar_url - Bot avatar ###
   # YAML-path:   synapse_server.bot_avatar_url

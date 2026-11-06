@@ -111,7 +111,7 @@ authentik_poll_rate_sec: 0
 *Synapse server*
 
 Connection data and credentials for the Matrix client-server and Synapse admin
-APIs. Authenticate with either `bot_access_token` or `oauth2`, not both.
+APIs. The bot authenticates with `bot_access_token`.
 
 | Property | Value |
 |---|---|
@@ -201,134 +201,21 @@ bot_user_id: '@welcome-bot:company.org'
 
 Access token authorising the bot against the Synapse APIs. On a homeserver fronted
 by the Matrix Authentication Service this is a compatibility token, issued with
-`mas-cli manage issue-compatibility-token`. Provide the bare token; do not prefix it
-with `Bearer` (the client adds that). Leave unset (`null`) when using `oauth2`
-instead. Prefer supplying it through the
-`ONBOT_SYNAPSE_SERVER__BOT_ACCESS_TOKEN` environment variable rather than committing
-it to the config file.
+`mas-cli manage issue-compatibility-token` (`scripts/provision-bot-account.sh` does
+that for you). Provide the bare token; do not prefix it with `Bearer` (the client
+adds that). Prefer supplying it through the `ONBOT_SYNAPSE_SERVER__BOT_ACCESS_TOKEN`
+environment variable rather than committing it to the config file.
 
 | Property | Value |
 |---|---|
 | Type | str (secret) |
-| Required | No |
-| Default | `null` |
+| Required | **Yes** |
 | Environment variable | `ONBOT_SYNAPSE_SERVER__BOT_ACCESS_TOKEN` |
 
 **Examples:**
 
 ```yaml
 bot_access_token: syt_ONLY_AN_EXAMPLE_TOKEN_sadaw4
-```
-
----
-
-### `synapse_server.oauth2`
-
-*OAuth2 authentication (alternative to the access token)*
-
-Authenticate as an OAuth2 client of the Matrix Authentication Service instead of
-carrying a static token. When set, this is used in place of `bot_access_token` and
-the short-lived tokens it mints refresh automatically. Provide exactly one of
-`bot_access_token` or `oauth2`.
-
-| Property | Value |
-|---|---|
-| Type | Object (MatrixOAuth2) |
-| Required | No |
-| Default | `null` |
-| Environment variable | `ONBOT_SYNAPSE_SERVER__OAUTH2` |
-
----
-
-#### `synapse_server.oauth2` — `MatrixOAuth2` schema
-
----
-
-#### `synapse_server.oauth2.token_endpoint`
-
-*MAS token endpoint*
-
-The `token_endpoint` advertised by the Matrix Authentication Service, as listed in
-its OpenID discovery document at `/.well-known/openid-configuration`.
-
-| Property | Value |
-|---|---|
-| Type | str |
-| Required | **Yes** |
-| Environment variable | `ONBOT_SYNAPSE_SERVER__OAUTH2__TOKEN_ENDPOINT` |
-
-**Examples:**
-
-```yaml
-token_endpoint: https://auth.company.org/oauth2/token
-```
-
----
-
-#### `synapse_server.oauth2.client_id`
-
-*OAuth2 client id*
-
-Client id of the OAuth2 client registered for the bot in the Matrix
-Authentication Service. The client must be allowed to use the `client_credentials`
-grant.
-
-| Property | Value |
-|---|---|
-| Type | str |
-| Required | **Yes** |
-| Environment variable | `ONBOT_SYNAPSE_SERVER__OAUTH2__CLIENT_ID` |
-
-**Examples:**
-
-```yaml
-client_id: 01HXQ3B9ZK7Y2QW8N4V6M0EXAMPLE
-```
-
----
-
-#### `synapse_server.oauth2.client_secret`
-
-*OAuth2 client secret*
-
-Client secret belonging to `client_id`. Provide the bare secret — the bot builds
-the HTTP authorization header itself. Treat this as a credential: prefer supplying it
-through the `ONBOT_SYNAPSE_SERVER__OAUTH2__CLIENT_SECRET` environment variable rather
-than committing it to the config file.
-
-| Property | Value |
-|---|---|
-| Type | str (secret) |
-| Required | **Yes** |
-| Environment variable | `ONBOT_SYNAPSE_SERVER__OAUTH2__CLIENT_SECRET` |
-
-**Examples:**
-
-```yaml
-client_secret: ONLY_AN_EXAMPLE_SECRET_pMv1kZ8sQ0
-```
-
----
-
-#### `synapse_server.oauth2.scope`
-
-*Requested OAuth2 scopes*
-
-Space-separated scopes to request with the token. The bot needs the Matrix
-client-server API scope, plus the Synapse admin scope for the room and account
-management it performs. `null` requests the client's default scopes.
-
-| Property | Value |
-|---|---|
-| Type | str |
-| Required | No |
-| Default | `null` |
-| Environment variable | `ONBOT_SYNAPSE_SERVER__OAUTH2__SCOPE` |
-
-**Examples:**
-
-```yaml
-scope: urn:matrix:org.matrix.msc2967.client:api:* urn:synapse:admin:*
 ```
 
 ---
