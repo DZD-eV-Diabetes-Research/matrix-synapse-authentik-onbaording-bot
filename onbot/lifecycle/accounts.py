@@ -816,17 +816,22 @@ class AccountLifecycleManager:
         """Whether no effector may be called: the configured dry run, or a preview."""
         return self.cfg.dry_run or self.preview
 
-    async def plan_accounts(self, snapshot: DirectorySnapshot) -> list[PlannedAccountAction]:
+    async def plan_accounts(self, snapshot: DirectorySnapshot) -> list[PlannedAccountAction] | None:
         """The destructive steps (lock, erase) a pass over ``snapshot`` would take now; acts on nothing.
 
         The reconciler hands these to the destructive-action guard before the real pass, which then
         only takes the steps the guard permits. A configured dry run plans nothing: it destroys
-        nothing either. A preview plans as configured.
+        nothing either. A preview plans as configured. ``None`` means the step is refused this pass
+        (an unreadable ledger): :meth:`reconcile_accounts` then aborts and reports it.
         """
         if not self.cfg.enabled or self.cfg.dry_run or not snapshot.users:
             return []
-        ledger = await self.store.load()
-        known = await self.store.load_known_users()
+        try:
+            ledger = await self.store.load()
+            known = await self.store.load_known_users()
+        except LedgerUnreadable as exc:
+            log.debug("lifecycle plan skipped: %s", exc)
+            return None
         now = self.clock()
         update_known_users(known, snapshot, ledger, now)  # in memory only, as the pass will see it
         planned: list[PlannedAccountAction] = []

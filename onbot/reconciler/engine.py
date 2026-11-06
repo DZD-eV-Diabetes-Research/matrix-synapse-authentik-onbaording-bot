@@ -143,6 +143,9 @@ class _PassInputs:
 
     users_in_scope: int | None = None
     mapped_groups: int | None = None
+    # The lifecycle refused its step (an unreadable ledger): its locks and erasures are unknown this
+    # pass, so the guard must not read their absence as "no longer applies".
+    lifecycle_refused: bool = False
 
     def counts(self) -> InputCounts:
         return InputCounts(users_in_scope=self.users_in_scope, mapped_groups=self.mapped_groups)
@@ -283,7 +286,9 @@ class ReconcilerEngine:
             if snapshot is not None:
                 await self._run_lifecycle(snapshot, decision)
             if not self.dry_run:
-                await self.guard.record(decision, plan.actions, complete=not stage_errors)
+                await self.guard.record(
+                    decision, plan.actions, complete=not stage_errors and not inputs.lifecycle_refused
+                )
         finally:
             self.last_pass_report = report
             await self._publish_report(report)
@@ -1304,11 +1309,12 @@ class ReconcilerEngine:
             inputs.users_in_scope = len(
                 {u.mxid for u in snapshot.users if u.is_active and u.in_scope and not u.ignored and u.mxid}
             )
+        steps = await self.lifecycle.plan_accounts(snapshot)
+        if steps is None:
+            inputs.lifecycle_refused = True  # reconcile_accounts aborts the step and reports it
+            return snapshot
         plan.note(
-            [
-                DestructiveAction(kind=_LIFECYCLE_ACTION_KINDS[step.action], target=step.mxid)
-                for step in await self.lifecycle.plan_accounts(snapshot)
-            ]
+            [DestructiveAction(kind=_LIFECYCLE_ACTION_KINDS[step.action], target=step.mxid) for step in steps]
         )
         return snapshot
 

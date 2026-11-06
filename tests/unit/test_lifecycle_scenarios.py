@@ -934,3 +934,47 @@ async def test_a_preview_shows_what_switching_dry_run_off_would_pause(
     assert "[dry-run] guard: paused 11 destructive action(s)" in caplog.text
     assert "11 reversible destructive actions in one pass" in caplog.text
     assert _proposals(w) == []  # a preview records no batch
+
+
+# --- wave 2 review: an unreadable ledger through the engine ----------------------------------------
+
+LEDGER_TYPE = "org.company.onbot.lifecycle"
+GUARD_TYPE = "org.company.onbot.guard"
+
+
+@pytest.mark.parametrize("blob_key", [LEDGER_TYPE, "org.company.onbot.known_users"])
+async def test_an_unreadable_ledger_aborts_the_step_reports_once_and_the_pass_still_succeeds(
+    blob_key: str,
+) -> None:
+    """S1 reported an unreadable ledger once; the guard's planning step (S3) lost that and raised."""
+    w = World(guard=True)
+    pk = w.person("anna")
+    w.person("ben")
+    await w.tick()
+    broken = {"schema_version": 99, "entries": {}} if blob_key == LEDGER_TYPE else {"users": {"1": 5}}
+    w.store.raw[blob_key] = broken
+    w.directory.set_active(pk, False)
+    for _ in range(3):
+        await w.tick()  # must not raise
+        assert w.engine.last_reconcile_at is not None
+
+    aborts = [e for e in w.reports if e.payload.get("action") == "abort"]
+    assert len(aborts) == 1
+    assert w.mas.calls == []
+    assert w.store.raw[blob_key] == broken  # never overwritten
+
+
+async def test_an_unreadable_ledger_does_not_close_the_open_batches() -> None:
+    """Its locks are unknown while the step is refused; that is not "no longer applies"."""
+    w = World(guard=True)
+    for name in ("anna", "ben", "cleo", "dino"):
+        w.person(name)
+    await w.tick()
+    w.directory.visible = {"anna"}
+    await w.tick()
+    await w.tick(DAY)
+    [proposal] = _proposals(w)
+    w.store.raw[LEDGER_TYPE] = {"schema_version": 99, "entries": {}}
+    await w.tick()
+    assert proposal.payload["batch_id"] in w.store.raw[GUARD_TYPE]["batches"]
+    assert [e for e in w.guard_events if e.signal is Signal.guard_batch_closed] == []
