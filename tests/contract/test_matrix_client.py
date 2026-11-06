@@ -171,7 +171,7 @@ async def test_get_room_state_event_returns_none_on_404() -> None:
 
 @respx.mock
 async def test_send_text_message_uses_unique_txn() -> None:
-    route = respx.put(url__regex=r".*/v3/rooms/!r:x/send/m\.room\.message/.+").mock(
+    route = respx.put(url__regex=r".*/v3/rooms/%21r%3Ax/send/m\.room\.message/.+").mock(
         return_value=httpx.Response(200, json={"event_id": "$msg"})
     )
     client = _client()

@@ -21,6 +21,10 @@ Retry policy (review findings RUN-05, RUN-06, RUN-10):
 * **Auth:** a token the provider cannot supply for a transient reason (MAS restarting, MAS
   unreachable) is retried for every method, since nothing was sent yet. A 401 makes the provider
   drop the rejected token; when it can mint a new one, the request is resent once with it.
+
+Paths (SEC-08): every value interpolated into a path goes through :func:`path_segment`, so a user
+ID, room ID or event type can never add a segment or climb out of its own (``x/../victim`` stays
+one segment), and an absolute URL is only followed to the client's own origin.
 """
 
 from __future__ import annotations
@@ -30,6 +34,7 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Hashable, Mapping
 from types import TracebackType
 from typing import Any
+from urllib.parse import quote, urlsplit
 
 import httpx
 from tenacity import (
@@ -207,6 +212,19 @@ def _retry_after(response: httpx.Response, payload: Any) -> float | None:
     return max(when.timestamp() - time.time(), 0.0)
 
 
+def path_segment(value: object) -> str:
+    """``value`` as exactly one percent-encoded URL path segment (SEC-08).
+
+    ``/``, ``?``, ``#``, ``%`` and every other reserved character are encoded, so the value cannot
+    end its segment early. A value that is empty, ``.`` or ``..`` is refused: HTTP clients resolve
+    such dot segments before sending, which would move the request to another resource.
+    """
+    text = str(value)
+    if text in ("", ".", ".."):
+        raise ValueError(f"refusing {text!r} as a URL path segment")
+    return quote(text, safe="")
+
+
 class BaseApiClient:
     """Thin async wrapper over ``httpx.AsyncClient`` with auth, retries and pagination."""
 
@@ -255,8 +273,14 @@ class BaseApiClient:
 
     def _build_url(self, path: str) -> str:
         # Absolute URLs pass through unchanged so callers can reach sibling APIs off the same
-        # host (e.g. the Matrix media repo at /_matrix/media, outside this client's base path).
+        # host (e.g. the Matrix media repo at /_matrix/media, outside this client's base path), but
+        # only on this client's own origin: its bearer token must never travel elsewhere (SEC-08).
         if path.startswith(("http://", "https://")):
+            own, target = urlsplit(self._base_url), urlsplit(path)
+            if (target.scheme, target.netloc) != (own.scheme, own.netloc):
+                raise ValueError(
+                    f"refusing to send this client's credentials to {target.scheme}://{target.netloc}"
+                )
             return path
         return f"{self._base_url}{path.lstrip('/')}"
 

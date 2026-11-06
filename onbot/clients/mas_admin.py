@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from onbot.auth.token_provider import TokenProvider
-from onbot.clients.base import ApiError, BaseApiClient
+from onbot.clients.base import ApiError, BaseApiClient, path_segment
 from onbot.logging import get_logger
 
 log = get_logger(__name__)
@@ -149,7 +149,7 @@ class ApiClientMasAdmin(BaseApiClient):
         (LIF-10).
         """
         try:
-            result = await self.get_json(f"users/by-username/{username}")
+            result = await self.get_json(f"users/by-username/{path_segment(username)}")
         except ApiError as exc:
             if exc.status_code == 404 and _is_mas_error_body(exc.payload):
                 return None
@@ -164,10 +164,10 @@ class ApiClientMasAdmin(BaseApiClient):
         unless they were finished (:meth:`finish_session`).
         """
         # Locking a locked user (and unlocking an unlocked one) answers 200, so retries are safe.
-        await self.post_json(f"users/{user_id}/lock", idempotent=True)
+        await self.post_json(f"users/{path_segment(user_id)}/lock", idempotent=True)
 
     async def unlock_user(self, user_id: str) -> None:
-        await self.post_json(f"users/{user_id}/unlock", idempotent=True)
+        await self.post_json(f"users/{path_segment(user_id)}/unlock", idempotent=True)
 
     async def count_locked_users(self) -> int:
         """How many MAS users are locked (``meta.count`` of the filtered user list)."""
@@ -193,7 +193,7 @@ class ApiClientMasAdmin(BaseApiClient):
     async def finish_session(self, kind: str, session_id: str) -> bool:
         """End one session for good; ``False`` when MAS says it was already finished (a race)."""
         try:
-            await self.post_json(f"{kind}/{session_id}/finish")
+            await self.post_json(f"{path_segment(kind)}/{path_segment(session_id)}/finish")
         except ApiError as exc:
             if exc.status_code == 400 and _is_mas_error_body(exc.payload):
                 return False
@@ -207,4 +207,4 @@ class ApiClientMasAdmin(BaseApiClient):
         anyway, so callers check :meth:`capabilities` first.
         """
         body = None if skip_erase is None else {"skip_erase": skip_erase}
-        await self.post_json(f"users/{user_id}/deactivate", json_body=body)
+        await self.post_json(f"users/{path_segment(user_id)}/deactivate", json_body=body)
