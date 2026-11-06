@@ -58,6 +58,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   This `CHANGELOG.md`.
 
 ### Changed
+- **Room deletion is its own irreversible step (review S5, D19):** closing a room (block and kick)
+  stays under `max_reversible_actions_per_pass`. A room is only deleted in a pass that also closes it,
+  and never while that closing waits for a confirmation.
 - **`!reject <id>` holds a batch only while the condition that created it lasts** (review W2R, D13),
   at the latest until it expires; then its actions are judged again and the end is reported.
   `!pending` and `!status` list rejected batches.
@@ -149,6 +152,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   troubleshooting.
 
 ### Fixed
+- **The media deletion that continues an erasure over later passes no longer asks for a new
+  confirmation every pass;** only an implausible Authentik answer (layer 1) still pauses it.
 - **An unreadable lifecycle ledger is reported once again** instead of every pass failing (a
   regression of the guard work, review W2R).
 - **Room deletion uses Synapse's asynchronous v2 API and waits for it,** so a long purge is no longer
@@ -220,6 +225,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   model forbids unknown keys, so remove these two settings if present.
 
 ### Security
+- **Guard layer 3 for irreversible actions (review S5, D4, D13):** from
+  `destructive_action_guard.confirm_irreversible_actions_from` (default 3) irreversible actions in one
+  pass (account erasures, room deletions under `delete_disabled_rooms`), they wait for `!confirm <id>`
+  in the admin control room. One or two run as before. The batch report marks them as irreversible.
 - **An unreadable guard state fails closed (review W2R):** it no longer starts empty (which dropped
   the last known good counts and rejected batches, so implausible removals could run). It pauses
   every destructive action, is reported once in the admin room and is never overwritten. `!guard
