@@ -14,8 +14,9 @@ one of them:
 
 Locking is a second request, because ``power_level_content_override`` replaces the server's whole
 default ``events`` map rather than merging into it. If it fails, the room still exists and is marked;
-the identity scan of the next pass finds a marked room without the lock and adopts it through the
-one-time alias check (:mod:`onbot.rooms.identity`), which locks it then.
+the next pass of the same process retries the lock (the identity resolver remembers the rooms it
+created). After a restart in between, the identity scan finds a marked room without the lock and
+adopts it through the one-time alias check (:mod:`onbot.rooms.identity`), which locks it then.
 
 The lock level, and what counts as locked:
 
@@ -112,7 +113,7 @@ async def create_managed_room(client: ApiClientMatrix, spec: ManagedRoomSpec, *,
 
     The room is created through :meth:`ApiClientMatrix.create_room`, so an ambiguous failure is
     resolved by the creation nonce (RUN-05) and never creates a second room. A failed lock is logged
-    and not raised: the room exists and is marked, and the next identity scan adopts and locks it.
+    and not raised: the room exists and is marked, and the next pass retries the lock.
     """
     room_id = await client.create_room(
         alias_localpart=spec.alias_localpart,
@@ -132,7 +133,7 @@ async def create_managed_room(client: ApiClientMatrix, spec: ManagedRoomSpec, *,
             await lock_markers(client, room_id, client.server_name, bot_id=bot_id, room_version=room_version)
         except Exception:
             log.warning(
-                "created %s room %s, but could not protect its onbot marker yet; the next pass does",
+                "created %s room %s, but could not protect its onbot marker yet; the next pass retries",
                 spec.room_type.value,
                 room_id,
                 exc_info=True,

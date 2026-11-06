@@ -144,8 +144,11 @@ in, so your identity directory and your chat rooms need not be the same list.
 - **Onbot recognises its rooms by who created them, not by their alias.** A room belongs to a group
   only when Onbot itself created it and it carries Onbot's marker naming that group. The marker is
   part of the room from its creation, and only Onbot can change it (a room moderator cannot), so
-  nobody can move a room to another group. The alias is only the room's address: a moderator who
-  changes or removes it changes nothing for Onbot, and Onbot does not build a second room.
+  nobody can move a room to another group. Onbot also checks who wrote the marker: one written by
+  anybody but Onbot (possible in rooms from older versions, or for somebody at Onbot's own level in a
+  room older than version 12) is reported, and the room is neither adopted nor torn down. The alias
+  is only the room's address: a moderator who changes or removes it changes nothing for Onbot, and
+  Onbot does not build a second room.
 - **A room somebody else created at a group's alias is never taken over.** Any user can claim a free
   alias, so a user could create a room at the alias a group is about to get. Onbot then skips that
   group, reports it in the log and the admin control room, and creates nothing: it neither joins the
@@ -730,14 +733,20 @@ lock every account that now looks deleted.
   - `!confirm <id>` releases exactly that batch. It runs at once, and only what still applies is done:
     somebody who is back in Authentik meanwhile is left alone. A confirmation never covers more than
     the batch showed; actions that came up later get a batch of their own. After a confirmed drop the
-    new numbers count as normal;
+    new numbers count as normal. A confirmed batch that cannot run within `confirmation_expiry_sec`
+    of its confirmation (for example a room deletion that keeps waiting for the closing of its room)
+    is closed and reported; its actions are then judged again like any others, so one that still
+    needs a confirmation is proposed again under a new id;
   - `!reject <id>` holds the batch without running it, and it is not proposed again while the
     situation that created it lasts (for example a broken token that you are about to replace). The
     rejection ends when that situation is over (the numbers look plausible again, or the pass no
     longer has too many removals with these), at the latest when the batch expires. Its actions that
     still apply are then judged again like any others: one user who really was deleted meanwhile is
     locked as usual, a still implausible answer pauses them in a new batch. The end is reported in
-    the room.
+    the room. Irreversible actions in a rejected batch (erasures, room deletions) are the exception:
+    they stay held until the batch expires, also when fewer of them remain than
+    `confirm_irreversible_actions_from` (one or two would otherwise run on their own). When the rest
+    of the batch ends earlier, that is reported as a partial end.
 - **A batch expires** after `confirmation_expiry_sec` (72 hours by default). Its actions stay paused
   meanwhile; if they still apply afterwards, a later pass proposes them again under a new id.
 - **An unreadable guard state** (the bot's account data `<reversed server name>.onbot.guard` edited

@@ -130,8 +130,9 @@ class _FakeClient:
             },
             {"type": "m.room.power_levels", "state_key": "", "content": self.power.get(room_id, {})},
         ]
+        # Every state event in this fake is written by the room's creator (the bot in its own rooms).
         events += [
-            {"type": t, "state_key": k, "content": c}
+            {"type": t, "state_key": k, "sender": self.creators[room_id], "content": c}
             for (room, t, k), c in self.state.items()
             if room == room_id
         ]

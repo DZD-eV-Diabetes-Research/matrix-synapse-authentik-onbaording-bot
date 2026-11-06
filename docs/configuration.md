@@ -176,9 +176,15 @@ What this means in practice:
 
   Either way the conflict is reported in the admin room. There is no bot command for it; resolve it
   by hand (see below).
-- If MAS cannot be read, Onbot uses the bindings and the attribute for that pass and reports it.
-  If the binding record itself cannot be read, Onbot leaves memberships and power levels alone and
-  offboards nobody until it is repaired.
+- A user whose mapping attribute names an account MAS links to somebody else is skipped and
+  reported, even when that owner is disabled or outside the sync scope and Onbot never saw them.
+- If MAS cannot be read, Onbot resolves users with a recorded binding from it and reports the
+  outage. Users it has never seen are skipped until MAS answers again: they are not joined or bound,
+  and the account their mapping attribute names is left alone for that pass (no join, kick,
+  power-level change, lock or erase). Recording an unchecked guess as a binding would later count
+  against the account's real, MAS-linked owner. (A user whose account does not exist yet is not
+  affected.) If the binding record itself cannot be read, Onbot leaves memberships and power levels
+  alone and offboards nobody until it is repaired.
 
 #### Resolving a conflict or a wrong binding by hand
 

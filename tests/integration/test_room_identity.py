@@ -210,10 +210,18 @@ async def test_a_moderator_deleting_the_alias_gets_no_second_room(
 
 
 async def test_a_moderator_cannot_rewrite_the_marker(
-    make_config, authentik_admin: S.AuthentikAdmin, matrix_client: ApiClientMatrix
+    make_config,
+    authentik_admin: S.AuthentikAdmin,
+    matrix_client: ApiClientMatrix,
+    admin_client: ApiClientSynapseAdmin,
 ) -> None:
     """The marker is locked at creation, so a moderator cannot move the room to another group."""
     *_, room_id, moderator = await _moderated_room(make_config, authentik_admin, matrix_client, "mrk")
+    # The marker came with createRoom's initial_state: Synapse records the creator as its sender,
+    # which is what the identity scan requires of a marker (wave 3 review).
+    state = await admin_client.get_room_state_events(room_id)
+    (marker,) = [e for e in state if e["type"] == GROUP_MARKER]
+    assert marker["sender"] == S.BOT_USER_ID
     forged = dump_room_state(GroupRoomState(group_id="someone-elses-group"))
     assert _put_state(moderator.access_token, room_id, GROUP_MARKER, forged) == 403
     # ...nor add a second marker of another type to confuse the identity.
@@ -319,6 +327,48 @@ async def test_an_unmarked_bot_room_at_the_alias_is_not_adopted(
 
     assert member.mxid not in await admin_client.list_room_members(unmarked)
     assert await matrix_client.resolve_room_alias(_alias(alias)) == unmarked
+    assert await _bot_rooms_named(admin_client, group["name"]) == []
+
+
+async def test_a_legacy_room_whose_marker_a_moderator_rewrote_is_not_adopted(
+    make_config,
+    authentik_admin: S.AuthentikAdmin,
+    matrix_client: ApiClientMatrix,
+    admin_client: ApiClientSynapseAdmin,
+) -> None:
+    """Wave 3 review: a stray legacy room (unlocked marker of a group that is gone). A moderator
+    points its marker at a live group and gives it that group's alias. The marker's sender is the
+    moderator, so the bot neither adopts nor locks the room, and joins nobody into it."""
+    prefix = S.uniq("rwr")
+    alias = S.uniq("rwrroom")
+    group = _group(authentik_admin, prefix, alias)
+    _m, moderator = S.provision(authentik_admin, S.uniq("rwrmod"))
+    stray = await _legacy_room(
+        matrix_client,
+        S.uniq("rwrold"),
+        {"schema_version": 1, "room_type": "group_room", "group_id": "a-group-that-is-gone"},
+    )
+    power = await matrix_client.get_room_power_levels(stray)
+    power["users"] = {**(power.get("users") or {}), moderator.mxid: 50}
+    await matrix_client.set_room_power_levels(stray, power)
+    await matrix_client.invite_user(stray, moderator.mxid)
+    joined = _cs("POST", moderator.access_token, f"rooms/{quote(stray, safe='')}/join", {})
+    assert joined.status_code == 200, joined.text
+    forged = {"schema_version": 1, "room_type": "group_room", "group_id": group["pk"]}
+    assert _put_state(moderator.access_token, stray, GROUP_MARKER, forged) == 200
+    put_alias = _cs(
+        "PUT", moderator.access_token, f"directory/room/{quote(_alias(alias), safe='')}", {"room_id": stray}
+    )
+    assert put_alias.status_code == 200, put_alias.text
+    _u, member = S.provision(authentik_admin, S.uniq("rwrmember"), groups=[group["pk"]])
+
+    await run_reconcile_once(_config(make_config, prefix))
+
+    assert member.mxid not in await admin_client.list_room_members(stray)
+    after = await matrix_client.get_room_power_levels(stray)
+    create = await matrix_client.get_room_state_event(stray, "m.room.create") or {}
+    assert not markers_locked(after, S.SERVER_NAME, S.BOT_USER_ID, room_version=create.get("room_version"))
+    assert await matrix_client.resolve_room_alias(_alias(alias)) == stray  # no second room either
     assert await _bot_rooms_named(admin_client, group["name"]) == []
 
 

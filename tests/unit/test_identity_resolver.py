@@ -242,9 +242,17 @@ async def test_a_mas_that_cannot_be_read_degrades_to_the_bindings_and_reports_on
 
 async def test_links_that_match_nobody_point_at_the_subject_setting() -> None:
     mas = FakeMasLinks({"alice": "alice"})  # the provider sends usernames, onbot looks for uid
-    resolver, reports = _resolver(_config(mas=True), MemoryBindings(), mas)
-    await resolver.resolve([_user(1, "alice")], bind=["1"], matrix_mxids={mx("alice")})
+    store = MemoryBindings({"2": mx("bob")})
+    resolver, reports = _resolver(_config(mas=True), store, mas)
+    users = [_user(1, "alice"), _user(2, "bob")]
+    result = await resolver.resolve(users, bind=["1", "2"], matrix_mxids={mx("alice"), mx("bob")})
     assert any("upstream_subject_attribute" in r for r in reports)
+    # A pass whose in-scope users have no link of their own cannot be told apart from a wrong
+    # setting: the guess of a MAS-linked account is skipped and never bound; bound users resolve.
+    assert result.mxids == {"2": mx("bob")}
+    assert result.rejected == {"1": mx("alice")}
+    assert result.deferred == {}
+    assert store.mxids() == {"2": mx("bob")}
 
 
 async def test_the_subject_attribute_and_provider_are_configurable() -> None:
@@ -347,3 +355,58 @@ async def test_a_mas_owner_against_a_guess_and_a_binding_fails_closed() -> None:
     assert result.mxids == {}
     assert result.held == {mx("alice"): ("1", "2", "3")}
     assert result.rejected == {}
+
+
+async def test_a_guess_never_takes_an_account_mas_links_to_an_absent_unbound_owner() -> None:
+    """Wave 3 review: alice owns @alice through MAS but is disabled or outside the scope (absent from
+    the call) and was never bound. carl's attribute names @alice: carl is skipped, never bound."""
+    store = MemoryBindings()
+    mas = FakeMasLinks({"hash-1": "alice", "hash-3": "bob"})
+    resolver, reports = _resolver(_config(mas=True, attribute="attributes.mx"), store, mas)
+    carl = _user(2, "carl", attributes={"mx": "alice"})
+    bob = _user(3, "bob", attributes={"mx": "bob"})
+    result = await resolver.resolve([carl, bob], bind=["2", "3"], matrix_mxids={mx("alice"), mx("bob")})
+    assert result.mxids == {"3": mx("bob")}
+    assert result.held == {}
+    assert result.rejected == {"2": mx("alice")}
+    assert result.deferred == {}
+    assert store.mxids() == {"3": mx("bob")}
+    assert sum("'carl' (pk 2)" in r and "upstream subject hash-1" in r for r in reports) == 1
+
+
+# --- MAS configured but unreadable -----------------------------------------------------------------
+
+
+async def test_while_mas_cannot_be_read_users_never_seen_are_deferred_not_bound() -> None:
+    """Wave 3 review: a guess recorded during a MAS outage would later count as authoritative evidence
+    against the MAS-linked owner. Users never seen are skipped and their target is left alone; bound
+    users resolve as usual. Once MAS answers, they are resolved through it."""
+    store = MemoryBindings({"3": mx("bob")})
+    mas = FakeMasLinks({"hash-1": "alice", "hash-9": "alice2"})
+    mas.fail = True
+    resolver, reports = _resolver(_config(mas=True), store, mas)
+    renamed = _user(1, "alice2")  # never bound, the attribute names somebody else's account
+    newcomer = _user(4, "dora")  # never logged in: no account, so the guess touches nobody
+    users = [renamed, _user(3, "bob"), newcomer]
+    existing = {mx("alice"), mx("alice2"), mx("bob")}
+    result = await resolver.resolve(users, bind=["1", "3", "4"], matrix_mxids=existing)
+    assert result.mxids == {"3": mx("bob"), "4": mx("dora")}
+    assert result.deferred == {"1": mx("alice2")}
+    assert mx("alice2") in result.held_mxids  # no join, kick, lock or erase of that account
+    assert store.mxids() == {"3": mx("bob")}
+    assert any("not seen before are skipped" in r for r in reports)
+
+    mas.fail = False
+    await resolver.refresh()
+    result = await resolver.resolve(users, bind=["1", "3", "4"], matrix_mxids=existing)
+    assert result.mxids == {"1": mx("alice"), "3": mx("bob"), "4": mx("dora")}
+    assert result.deferred == {}
+    assert store.mxids() == {"1": mx("alice"), "3": mx("bob")}
+
+
+async def test_without_mas_users_never_seen_are_still_resolved_by_the_attribute() -> None:
+    store = MemoryBindings()
+    resolver, _ = _resolver(_config(), store)
+    result = await resolver.resolve([_user(1, "alice")], bind=["1"], matrix_mxids={mx("alice")})
+    assert result.mxids == {"1": mx("alice")}
+    assert result.deferred == {}
