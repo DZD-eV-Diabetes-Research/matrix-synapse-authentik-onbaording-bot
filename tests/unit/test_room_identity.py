@@ -12,6 +12,7 @@ import pytest
 
 from onbot.clients.base import ApiError
 from onbot.reconciler.state import DirectRoomState, GroupRoomState, OnbotRoomType
+from onbot.models import MatrixRoom
 from onbot.rooms.identity import RoomIdentityResolver, RoomKey, classify_room, stray_claims
 from onbot.rooms.provision import (
     PRIVILEGED_LOCK_LEVEL,
@@ -561,3 +562,36 @@ async def test_an_upgrade_seen_only_live_stays_followed_on_the_next_pass() -> No
     assert first.room is not None and first.room.room_id == "!new"
     second = await rooms.resolve(await rooms.scan(), G1, G1_ALIAS)
     assert second.room is not None and second.room.room_id == "!new", second.problem
+
+
+async def test_a_lock_that_failed_at_creation_is_retried_on_the_next_pass() -> None:
+    """register() no longer records a new room as locked: its real state is read, and the lock is
+    retried for the room this process created, even without an alias to adopt it by."""
+    server = FakeServer()
+    server.add("!new", room_state(OnbotRoomType.group_room, "g1", locked=False))  # the lock failed
+    rooms = _resolver(server)
+    rooms.register(MatrixRoom(room_id="!new"), G1)
+
+    identity = await rooms.identify("!new")
+    assert identity is not None and not identity.locked
+
+    resolution = await rooms.resolve(await rooms.scan(), G1, None)
+    assert resolution.room is not None and resolution.room.room_id == "!new"
+    assert not resolution.may_create
+    ((room_id, power),) = server.power_writes
+    assert room_id == "!new" and markers_locked(power, SERVER, BOT, room_version="12")
+    assert (await rooms.identify("!new")).trusted  # type: ignore[union-attr]
+
+
+async def test_a_lock_retry_that_fails_again_skips_the_role_for_the_pass() -> None:
+    server = FakeServer()
+    server.add("!new", room_state(OnbotRoomType.group_room, "g1", locked=False))
+    rooms = _resolver(server)
+    rooms.register(MatrixRoom(room_id="!new"), G1)
+
+    async def refuse(room_id: str, power_levels: dict[str, Any]) -> None:
+        raise ApiError("PUT", "/state/m.room.power_levels", 502)
+
+    server.set_room_power_levels = refuse  # type: ignore[method-assign]
+    with pytest.raises(ApiError):
+        await rooms.resolve(await rooms.scan(), G1, None)

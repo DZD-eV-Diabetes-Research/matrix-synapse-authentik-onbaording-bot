@@ -35,7 +35,9 @@ From then on the old room, which keeps its locked marker, no longer claims the r
 
 Reads use the Synapse admin API (the room list and the full state of one room), which work whether or
 not the bot is a member. One state read per bot room and process: what a room is never changes once
-it is locked, so the result is cached; only unlocked or unreadable rooms are read again.
+it is locked, so the result is cached; only unlocked or unreadable rooms are read again. A room the
+bot just created is read once on the next scan, so its real lock state counts; a lock that failed at
+creation is retried then.
 """
 
 from __future__ import annotations
@@ -292,6 +294,8 @@ class RoomIdentityResolver:
         # scan does not read them.
         self._direct_rooms = direct_rooms
         self._cache: dict[str, RoomIdentity | None] = {}
+        # Rooms this process created, by role: their lock is retried when it failed at creation.
+        self._created: dict[str, RoomKey] = {}
         self._reported: set[str] = set()
         # The space as last resolved by the reconciler, for the welcome flow's space placement.
         self.space_id: str | None = None
@@ -355,10 +359,14 @@ class RoomIdentityResolver:
         return identity
 
     def register(self, room: MatrixRoom, key: RoomKey) -> None:
-        """Record a room the bot just created for ``key`` (its marker came with ``createRoom``)."""
-        self._cache[room.room_id] = RoomIdentity(
-            room_id=room.room_id, key=key, locked=True, room_version=room.room_version
-        )
+        """Record a room the bot just created for ``key`` (its marker came with ``createRoom``).
+
+        Whether its marker got locked is not assumed (:func:`create_managed_room` only logs a failed
+        lock): the next scan reads the room's real state, and :meth:`resolve` retries the lock of a
+        room this process created for the role.
+        """
+        self._cache.pop(room.room_id, None)
+        self._created[room.room_id] = key
 
     # --- resolving a role -----------------------------------------------------------------------
 
@@ -380,6 +388,18 @@ class RoomIdentityResolver:
             )
         if trusted:
             return await self._resolved(index, trusted[0])
+
+        own = [i for i in index.claims(key) if self._created.get(i.room_id) == key]
+        if len(own) == 1:
+            # Created by this process for the role, but locking its marker failed then: retry. A
+            # failure raises, so the role is skipped this pass and tried again on the next.
+            await self._lock(own[0])
+            log.warning(
+                "room identity: protected the marker of %s, the %s, which failed when it was created",
+                own[0].room_id,
+                key.describe(),
+            )
+            return await self._resolved(index, own[0])
 
         if not index.complete:
             return Resolution(
