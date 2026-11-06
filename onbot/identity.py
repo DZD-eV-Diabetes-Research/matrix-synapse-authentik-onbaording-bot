@@ -19,8 +19,12 @@ Resolution order for one Authentik user:
 3. **The mapping attribute** (``authentik_username_mapping_attribute``), only for a user never seen
    before (:func:`compute_mxid`).
 
-Several Authentik users that resolve to one MXID fail closed: all of them are skipped (no join, no
-kick, no power-level change, no lock or erase) and the conflict is reported.
+Several Authentik users that resolve to one MXID (D21): when exactly one of them is linked to it
+through MAS and the others only guess by the mapping attribute (never seen, no MAS link), the
+MAS-linked owner is managed normally and the guessers are skipped and reported. Otherwise (two MAS
+links, two bindings, a MAS link against another user's binding, a binding against a guess) the
+conflict fails closed: all of them are skipped (no join, no kick, no power-level change, no lock or
+erase) and the conflict is reported.
 """
 
 from __future__ import annotations
@@ -112,10 +116,14 @@ class IdentityUnavailable(RuntimeError):
 class Resolution:
     """The outcome of resolving a set of Authentik users."""
 
-    #: ``pk -> MXID`` of every user that resolved to exactly one account nobody else claims.
+    #: ``pk -> MXID`` of every user that resolved to exactly one account nobody else claims, and of
+    #: a MAS-linked owner whose only rivals were attribute guesses (D21).
     mxids: Mapping[str, str] = field(default_factory=dict)
     #: ``MXID -> the pks that claim it``: conflicts, every claimant skipped (fail closed).
     held: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    #: ``pk -> MXID`` of attribute guesses that lost an account to its MAS-linked owner (D21):
+    #: those users are skipped, the account is managed for its owner.
+    rejected: Mapping[str, str] = field(default_factory=dict)
 
     def mxid(self, pk: object) -> str | None:
         return self.mxids.get(str(pk))
@@ -258,6 +266,10 @@ class IdentityResolver:
         users = list(users)
         known = self._known.users
         candidates: dict[str, str] = {}
+        # pk -> what its candidate rests on: "mas" (an upstream link), "binding" or "guess" (the
+        # mapping attribute of a user never seen). Decides who keeps a contested account (D21).
+        evidence: dict[str, str] = {}
+        names: dict[str, str] = {}
         renamed: list[str] = []
         rebound: list[str] = []
         mas_conflicts: list[str] = []
@@ -268,6 +280,7 @@ class IdentityResolver:
         for user in users:
             pk = str(user["pk"])
             name = f"{user.get('username')!r} (pk {pk})"
+            names[pk] = name
             computed = attribute_mxid(user, self.config)
             bound = known.get(pk)
             from_mas: set[str] = set()
@@ -278,10 +291,12 @@ class IdentityResolver:
             if len(from_mas) > 1:
                 mas_conflicts.append(f"{name}: {', '.join(sorted(from_mas))}")
                 mas_multi[pk] = from_mas
+                evidence[pk] = "mas"
                 mas_matches += 1
                 continue
             if from_mas:
                 mxid = next(iter(from_mas))
+                evidence[pk] = "mas"
                 mas_matches += 1
                 if bound is not None and bound.mxid != mxid:
                     rebound.append(f"{name}: MAS links {mxid}, the recorded binding was {bound.mxid}")
@@ -289,8 +304,10 @@ class IdentityResolver:
                     changed = True
             elif bound is not None:
                 mxid = bound.mxid
+                evidence[pk] = "binding"
             elif computed is not None:
                 mxid = computed
+                evidence[pk] = "guess"
             else:
                 if pk not in self._unmappable_logged:
                     self._unmappable_logged.add(pk)
@@ -312,13 +329,26 @@ class IdentityResolver:
         for pk, mxids in mas_multi.items():
             for mxid in mxids:
                 claims[mxid].add(pk)
-        held = {mxid: tuple(sorted(pks)) for mxid, pks in claims.items() if len(pks) > 1}
+        held: dict[str, tuple[str, ...]] = {}
+        rejected: dict[str, str] = {}
+        for mxid, pks in claims.items():
+            if len(pks) < 2:
+                continue
+            # A binding of a user not in this call is authoritative evidence too.
+            owners = [pk for pk in pks if evidence.get(pk, "binding") != "guess"]
+            if len(owners) == 1 and evidence.get(owners[0]) == "mas" and owners[0] not in mas_multi:
+                # D21: MAS positively links the account to one claimant; the others only guessed
+                # by the mapping attribute. The owner keeps it, the guessers are skipped.
+                for pk in pks - {owners[0]}:
+                    rejected[pk] = mxid
+                continue
+            held[mxid] = tuple(sorted(pks))
         for mxids in mas_multi.values():
             # One Authentik subject linked to several accounts: held on each, even unclaimed ones.
             for mxid in mxids:
                 held.setdefault(mxid, tuple(sorted(claims[mxid])))
         held_pks = {pk for pks in held.values() for pk in pks}
-        resolved = {pk: mxid for pk, mxid in candidates.items() if pk not in held_pks}
+        resolved = {pk: mxid for pk, mxid in candidates.items() if pk not in held_pks and pk not in rejected}
 
         excluded = {self.config.synapse_server.bot_user_id, *self.config.matrix_user_ignore_list}
         existing = set(matrix_mxids)
@@ -333,6 +363,16 @@ class IdentityResolver:
             await self.store.save_known_users(self._known)
 
         await self._report_findings(users, renamed, rebound, mas_conflicts, held)
+        for pk, mxid in sorted(rejected.items()):
+            if self._first(("rejected", pk, mxid)):
+                owner = next(o for o, m in resolved.items() if m == mxid)
+                guesser = names.get(pk, f"pk {pk}")
+                await self._report(
+                    None,
+                    f"Authentik user {guesser} names the Matrix account {mxid} by the mapping "
+                    f"attribute, but MAS links that account to {names[owner]}. onbot manages {mxid} "
+                    f"for its owner and skips {guesser}.",
+                )
         if bind and self._mas_view is not None and self._mas_view.links and users and not mas_matches:
             await self._report(
                 ("mas-no-match", self.subject_attribute),
@@ -342,7 +382,7 @@ class IdentityResolver:
                 "provider (and `mas_admin.upstream_provider_id`); until then users are resolved from "
                 "onbot's recorded bindings and the mapping attribute",
             )
-        return Resolution(mxids=resolved, held=held)
+        return Resolution(mxids=resolved, held=held, rejected=rejected)
 
     async def _report_findings(
         self,

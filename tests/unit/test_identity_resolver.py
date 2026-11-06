@@ -271,3 +271,59 @@ async def test_the_lookup_is_off_without_a_subject_attribute() -> None:
     assert not resolver.uses_mas
     assert (await resolver.resolve([_user(1, "bob")])).mxids == {"1": mx("bob")}
     assert mas.asked_provider == []
+
+
+# --- D21: who keeps a contested account ------------------------------------------------------------
+
+
+async def test_a_mas_linked_owner_wins_over_an_attribute_guess() -> None:
+    store = MemoryBindings()
+    mas = FakeMasLinks({"hash-1": "alice"})
+    resolver, reports = _resolver(_config(mas=True, attribute="attributes.mx"), store, mas)
+    users = [_user(1, "alice", attributes={"mx": "alice"}), _user(2, "carl", attributes={"mx": "alice"})]
+    result = await resolver.resolve(users, bind=["1", "2"], matrix_mxids={mx("alice")})
+    assert result.mxids == {"1": mx("alice")}
+    assert result.held == {}
+    assert result.rejected == {"2": mx("alice")}
+    assert store.mxids() == {"1": mx("alice")}
+    assert sum("'carl' (pk 2)" in r and "MAS links that account to 'alice' (pk 1)" in r for r in reports) == 1
+    await resolver.resolve(users, bind=["1", "2"], matrix_mxids={mx("alice")})
+    assert len(reports) == 1  # once per process
+
+
+async def test_a_mas_link_against_another_users_binding_fails_closed() -> None:
+    store = MemoryBindings({"2": mx("alice")})
+    mas = FakeMasLinks({"hash-1": "alice"})
+    resolver, _ = _resolver(_config(mas=True), store, mas)
+    result = await resolver.resolve([_user(1, "alice"), _user(2, "carl")], matrix_mxids={mx("alice")})
+    assert result.mxids == {}
+    assert result.held == {mx("alice"): ("1", "2")}
+    assert result.rejected == {}
+
+
+async def test_two_mas_links_to_one_account_fail_closed() -> None:
+    mas = FakeMasLinks({"hash-1": "alice", "hash-2": "alice"})
+    resolver, _ = _resolver(_config(mas=True), MemoryBindings(), mas)
+    result = await resolver.resolve([_user(1, "alice"), _user(2, "carl")])
+    assert result.mxids == {}
+    assert result.held == {mx("alice"): ("1", "2")}
+
+
+async def test_two_bindings_to_one_account_fail_closed() -> None:
+    store = MemoryBindings({"1": mx("alice"), "2": mx("alice")})
+    resolver, _ = _resolver(_config(), store)
+    result = await resolver.resolve([_user(1, "alice"), _user(2, "carl")])
+    assert result.mxids == {}
+    assert result.held == {mx("alice"): ("1", "2")}
+
+
+async def test_a_mas_owner_against_a_guess_and_a_binding_fails_closed() -> None:
+    """Only a single authoritative claimant beats guesses; a second authoritative one holds all."""
+    store = MemoryBindings({"3": mx("alice")})
+    mas = FakeMasLinks({"hash-1": "alice"})
+    resolver, _ = _resolver(_config(mas=True, attribute="attributes.mx"), store, mas)
+    users = [_user(1, "alice", attributes={"mx": "alice"}), _user(2, "carl", attributes={"mx": "alice"})]
+    result = await resolver.resolve(users)
+    assert result.mxids == {}
+    assert result.held == {mx("alice"): ("1", "2", "3")}
+    assert result.rejected == {}
