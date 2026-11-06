@@ -213,3 +213,15 @@ integration suite stays a required gate, but:
   built: triggered by an admin command (no automatic upgrades in the reconciler), the bot force-joins
   the group members into the new room, and the old room stays as a read-only archive that the bot
   keeps in scope for offboarding.
+
+## D21 Identity conflicts (S9, decided 2026-11-06)
+
+- When several Authentik users resolve to one MXID, a claimant positively linked through MAS wins
+  over claimants that only resolve by the mapping attribute (never seen, no binding, no MAS link);
+  those are skipped and reported. Two claimants with authoritative evidence (MAS links or recorded
+  bindings) still fail closed for all of them.
+- When MAS disagrees with a recorded binding, onbot follows MAS, rebinds and reports it.
+- No `!identity` admin command for now; conflicts are resolved in Authentik or in the `known_users`
+  account data by hand (documented).
+- The production Authentik provider uses the hashed user ID as `sub`, matching the default
+  `mas_admin.upstream_subject_attribute: uid`.
