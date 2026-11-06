@@ -1243,9 +1243,11 @@ class DestructiveActionGuard(_StrictModel):
                 last answer it trusted: the number of active users in the sync scope and the number
                 of groups mapped to rooms. If either dropped by more than this percentage, or came
                 back empty, the bot treats the answer as implausible (an API token that lost its
-                permissions, a broken filter) and pauses every destructive action of the pass:
-                kicks, power-level withdrawals, room teardowns, account locks and erasures. Rooms are
-                still created and users still added and welcomed.
+                permissions, a broken filter). Fewer users pauses every destructive action of the
+                pass: kicks, power-level withdrawals, room teardowns, account locks and erasures.
+                Fewer groups pauses what happens in rooms (kicks, withdrawals, teardowns); locks and
+                erasures do not depend on the groups. Rooms are still created and users still added
+                and welcomed.
 
                 The paused actions are reported in the admin control room as a batch with a short id,
                 and an administrator releases exactly that batch with `!confirm <id>`. After that,

@@ -637,8 +637,10 @@ lock every account that now looks deleted.
   account locks and erasures. Then:
   - *Plausibility:* the number of active users in the sync scope and the number of groups mapped to
     rooms are compared with the last answer Onbot trusted. An empty answer, or a drop of more than
-    `max_drop_percent` (20 % by default), pauses *every* removal of the pass. The comparison moves
-    with every normal pass, so removing people a few at a time never trips it.
+    `max_drop_percent` (20 % by default), pauses removals: fewer users pauses *every* removal of the
+    pass, fewer groups pauses what happens in rooms (kicks, withdrawals, teardowns) but not account
+    locks, which do not depend on groups. Each number moves with every pass in which it looked
+    normal, so removing people a few at a time never trips it.
   - *Volume:* more than `max_reversible_actions_per_pass` (10 by default) kicks, locks, teardowns and
     withdrawals in one pass pauses all of them.
 - **Everything else goes on.** Rooms are still created and named, users still added and welcomed,

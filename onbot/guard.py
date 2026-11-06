@@ -189,9 +189,10 @@ class GuardDecision:
     permitted: frozenset[str]  # keys of the planned actions that may run now
     held: tuple[DestructiveAction, ...]  # planned actions paused this pass
     reasons: tuple[str, ...]  # why they are paused
-    input_tripped: bool  # layer 1: the baseline must not move
+    input_tripped: bool  # layer 1 tripped on at least one metric
     confirmed_batches: tuple[str, ...]  # confirmed batches whose actions run in this pass
     decided_at: float = 0.0
+    tripped_metrics: frozenset[str] = frozenset()  # their baseline must not move
 
     def permits(self, action: DestructiveAction) -> bool:
         return action.key in self.permitted
@@ -210,7 +211,14 @@ class GuardNotice:
 
 def input_drops(baseline: InputCounts, counts: InputCounts, max_drop_percent: float) -> list[str]:
     """Layer 1: why ``counts`` look implausible against ``baseline`` (empty list: they do not)."""
-    reasons: list[str] = []
+    return list(input_drops_by_metric(baseline, counts, max_drop_percent).values())
+
+
+def input_drops_by_metric(
+    baseline: InputCounts, counts: InputCounts, max_drop_percent: float
+) -> dict[str, str]:
+    """:func:`input_drops`, keyed by the metric that dropped."""
+    reasons: dict[str, str] = {}
     for metric, label in _METRICS:
         new = getattr(counts, metric)
         if new is None:
@@ -220,12 +228,12 @@ def input_drops(baseline: InputCounts, counts: InputCounts, max_drop_percent: fl
             # D13: an empty list always needs confirmation, unless an admin already accepted zero.
             if old is None or old > 0:
                 known = f" (last known good: {old})" if old else ""
-                reasons.append(f"Authentik returned no {label}{known}")
+                reasons[metric] = f"Authentik returned no {label}{known}"
             continue
         if old and new < old:
             drop = (old - new) * 100.0 / old
             if drop > max_drop_percent:
-                reasons.append(
+                reasons[metric] = (
                     f"{label} dropped from {old} to {new} (-{drop:.0f}%), more than the "
                     f"{max_drop_percent:g}% allowed"
                 )
@@ -264,12 +272,18 @@ def decide(
     if held:
         reasons.append("waiting for open batch(es) " + ", ".join(sorted({waiting[a.key] for a in held})))
 
-    drops = input_drops(state.baseline, counts, limits.max_drop_percent)
-    input_tripped = bool(drops)
-    if input_tripped:
+    drops = input_drops_by_metric(state.baseline, counts, limits.max_drop_percent)
+    reasons += drops.values()
+    if "users_in_scope" in drops:
+        # Fewer users: every removal of the pass is judged on that answer.
         held += rest
-        reasons += drops
-    else:
+        rest = []
+    elif "mapped_groups" in drops:
+        # Fewer groups: only what happens in rooms depends on the group list. Locks and erasures are
+        # judged on the users alone, so a deployment with no group rooms is not stuck.
+        held += [a for a in rest if a.room_id is not None]
+        rest = [a for a in rest if a.room_id is None]
+    if rest:
         reversible = [a for a in rest if a.reversible]
         if len(reversible) > limits.max_reversible_actions_per_pass:
             held += reversible
@@ -284,18 +298,21 @@ def decide(
         permitted=frozenset(permitted),
         held=tuple(held),
         reasons=tuple(reasons),
-        input_tripped=input_tripped,
+        input_tripped=bool(drops),
         confirmed_batches=confirmed_batches,
         decided_at=now,
+        tripped_metrics=frozenset(drops),
     )
 
 
-def _merge_counts(baseline: InputCounts, counts: InputCounts) -> InputCounts:
-    """``counts`` where measured, the old baseline elsewhere."""
+def _merge_counts(
+    baseline: InputCounts, counts: InputCounts, *, keep: frozenset[str] = frozenset()
+) -> InputCounts:
+    """``counts`` where measured and not in ``keep``, the old baseline elsewhere."""
     return InputCounts(
         **{
             metric: getattr(counts, metric)
-            if getattr(counts, metric) is not None
+            if getattr(counts, metric) is not None and metric not in keep
             else getattr(baseline, metric)
             for metric, _ in _METRICS
         }
@@ -373,8 +390,9 @@ def record(
             )
         )
 
-    if complete and not decision.input_tripped:
-        state.baseline = _merge_counts(state.baseline, decision.counts)
+    if complete:
+        # Every metric that looked plausible moves; one that dropped keeps its last known good value.
+        state.baseline = _merge_counts(state.baseline, decision.counts, keep=decision.tripped_metrics)
 
     for batch_id in list(state.batches):
         batch = state.batches[batch_id]

@@ -430,3 +430,28 @@ def test_limits_come_from_the_config() -> None:
 def test_implausible_limits_are_config_errors(bad: dict[str, Any]) -> None:
     with pytest.raises(ValueError):
         OnbotConfig.model_validate({**_CONFIG, "destructive_action_guard": bad})
+
+
+def test_a_group_drop_pauses_what_happens_in_rooms_only() -> None:
+    """Locks are judged on the users alone: an empty group list must not stall offboarding."""
+    state = state_with_baseline(100, 10)
+    teardown = DestructiveAction(kind=ActionKind.room_teardown, target="!r:x", room_id="!r:x", group_pk="g")
+    planned = [kick(1), teardown, lock(2), erase(3)]
+    decision = decide(state, counts(100, 0), planned, LIMITS, now=0)
+    assert {a.key for a in decision.held} == {kick(1).key, teardown.key}
+    assert decision.permitted == {lock(2).key, erase(3).key}
+    assert decision.tripped_metrics == {"mapped_groups"}
+
+
+def test_the_baseline_moves_per_metric() -> None:
+    """A deployment without group rooms still learns its user count, so a user drop is caught."""
+    state = GuardState()
+    for users in (50, 52, 51):
+        decision = decide(state, counts(users, 0), [lock(1)], LIMITS, now=0)
+        assert decision.permitted == {lock(1).key}
+        record(state, decision, [lock(1)], LIMITS, now=0, complete=True)
+    assert state.baseline == InputCounts(users_in_scope=51, mapped_groups=None)
+
+    decision = decide(state, counts(5, 0), [lock(1)], LIMITS, now=1)
+    assert decision.permitted == frozenset()
+    assert "from 51 to 5" in " ".join(decision.reasons)
