@@ -100,16 +100,7 @@ class ApiClientMatrix(BaseApiClient):
         """Fetch + cache ``GET /_matrix/client/versions`` (the bot's capability source of truth)."""
         payload = await self.get_json(CLIENT_VERSIONS_PATH)
         self._versions = ServerVersions.from_payload(payload)
-        log.info(
-            "negotiated CS-API: sliding_sync=%s authenticated_media=%s",
-            self._versions.supports_simplified_sliding_sync(),
-            self._versions.supports_authenticated_media(),
-        )
-        return self._versions
-
-    @property
-    def versions(self) -> ServerVersions | None:
-        """Cached negotiation result, or ``None`` until :meth:`negotiate_versions` has run."""
+        log.info("negotiated CS-API: sliding_sync=%s", self._versions.supports_simplified_sliding_sync())
         return self._versions
 
     # --- device registration (MAS compatibility) ----------------------------

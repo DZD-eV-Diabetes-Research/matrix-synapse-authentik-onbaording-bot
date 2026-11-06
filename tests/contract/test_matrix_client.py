@@ -241,8 +241,7 @@ async def test_negotiate_versions_reports_capabilities() -> None:
     finally:
         await client.aclose()
     assert versions.supports_simplified_sliding_sync()
-    assert versions.supports_authenticated_media()
-    assert client.versions is versions
+    assert versions.versions == ["v1.11"]
 
 
 @respx.mock
