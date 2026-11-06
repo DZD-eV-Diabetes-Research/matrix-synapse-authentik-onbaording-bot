@@ -19,7 +19,11 @@ as a reason to abort the pass. Concretely, a name is dropped when it
   :func:`~onbot.admin.admins.resolve_admin_mxids` applies: a name the operator has told the bot
   never to touch does not become the most powerful account in every room because a second list
   mentions it);
-* carries no ``authentik_username_mapping_attribute``, so its MXID would have to be guessed;
+* resolves to no Matrix ID (no MAS link, no recorded binding and no
+  ``authentik_username_mapping_attribute``), or to one other Authentik users resolve to as well
+  (D8: the resolution goes through :class:`~onbot.identity.IdentityResolver`, like every other user);
+* resolves to an account on ``matrix_user_ignore_list``, which promises that the bot never changes
+  that account's power level (MNT-13);
 * names the bot itself, which is the room creator and already outranks everyone (under room
   version 12 it must stay *absent* from the ``users`` map, so writing it in would be rejected);
 * has no Matrix account yet. The bot never creates accounts (MAS provisions them on first login), so
@@ -40,7 +44,7 @@ from typing import Any
 
 from onbot.clients.authentik import ApiClientAuthentik
 from onbot.config import OnbotConfig
-from onbot.identity import compute_mxid
+from onbot.identity import IdentityResolver
 from onbot.logging import get_logger
 from onbot.models import MappedUser
 
@@ -54,8 +58,11 @@ class _LookupFailed(Exception):
 class GlobalRoomAdminResolver:
     """Resolves ``global_room_admins`` usernames to MXIDs, once per reconcile pass."""
 
-    def __init__(self, authentik: ApiClientAuthentik, config: OnbotConfig) -> None:
+    def __init__(
+        self, authentik: ApiClientAuthentik, config: OnbotConfig, *, identity: IdentityResolver | None = None
+    ) -> None:
         self.authentik = authentik
+        self.identity = identity or IdentityResolver(config)
         self.config = config
         self._mxids: frozenset[str] = frozenset()
         # name -> MXID of the last pass that resolved it; what a transient lookup failure falls back to.
@@ -80,9 +87,8 @@ class GlobalRoomAdminResolver:
             self._previous = {}
             return self._mxids
 
-        known: dict[str, dict[str, Any]] = {
-            str(u.authentik_obj.get("username")): u.authentik_obj for u in mapped_users
-        }
+        # Already resolved this pass (through the binding or MAS, D8): no request, no second opinion.
+        known: dict[str, MappedUser] = {str(u.authentik_obj.get("username")): u for u in mapped_users}
         resolved: set[str] = set()
         by_name: dict[str, str] = {}
         for name in names:
@@ -93,7 +99,8 @@ class GlobalRoomAdminResolver:
                     name,
                 )
                 continue
-            user = known.get(name)
+            mapped = known.get(name)
+            user = mapped.authentik_obj if mapped is not None else None
             if user is None:
                 try:
                     user = await self._lookup(name)
@@ -111,8 +118,16 @@ class GlobalRoomAdminResolver:
                     continue
             if user is None:
                 continue
-            mxid = self._mxid_for(user, name)
+            mxid = mapped.mxid if mapped is not None else await self._mxid_for(user, name)
             if mxid is None:
+                continue
+            if mxid in self.config.matrix_user_ignore_list:
+                log.warning(
+                    "global_room_admins names %r, whose account %s is on matrix_user_ignore_list; "
+                    "not granting it room admin anywhere",
+                    name,
+                    mxid,
+                )
                 continue
             if mxid == self.config.synapse_server.bot_user_id:
                 log.warning("global_room_admins names the bot itself (%r); ignoring", name)
@@ -161,19 +176,14 @@ class GlobalRoomAdminResolver:
             return None
         return exact[0]
 
-    def _mxid_for(self, user: dict[str, Any], name: str) -> str | None:
-        cfg = self.config.sync_authentik_users_with_matrix_rooms
-        try:
-            return compute_mxid(
-                user,
-                username_attribute=cfg.authentik_username_mapping_attribute,
-                server_name=self.config.synapse_server.server_name,
-            )
-        except KeyError:
+    async def _mxid_for(self, user: dict[str, Any], name: str) -> str | None:
+        mxid = (await self.identity.resolve([user])).mxid(user["pk"])
+        if mxid is None:
             log.warning(
-                "cannot map an MXID for global room admin %r (no %r on the Authentik user); "
-                "not granting it room admin anywhere",
+                "cannot resolve a Matrix ID for global room admin %r (no MAS link, recorded binding or "
+                "%r on the Authentik user, or another user resolves to the same account); not granting "
+                "it room admin anywhere",
                 name,
-                cfg.authentik_username_mapping_attribute,
+                self.config.sync_authentik_users_with_matrix_rooms.authentik_username_mapping_attribute,
             )
-            return None
+        return mxid

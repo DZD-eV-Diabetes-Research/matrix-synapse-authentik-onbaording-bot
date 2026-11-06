@@ -9,7 +9,10 @@ into the control room as ``m.notice`` messages, which the command router ignores
 * ``guard_state_unreadable``: the guard cannot read its state and holds every destructive action;
 * ``lifecycle_attention``: an offboarding user was frozen (D9), a step failed, or the step was aborted
   on an empty Authentik answer;
-* ``room_not_converged``: a managed room the pass could not fully converge (REC-03).
+* ``room_not_converged``: a managed room the pass could not fully converge (REC-03);
+* ``identity_attention``: a user maps to another Matrix ID than the account they own (a rename), MAS
+  disagrees with a recorded binding, several Authentik users resolve to one account, or the identity
+  sources cannot be read (D8). The resolver emits each finding once per process.
 
 The room must stay readable, so nothing is repeated on every pass: a room is posted again only when
 its problems change (or after it converged in between), and an identical lifecycle report only once
@@ -79,6 +82,7 @@ class AdminRoomNotifier:
         events.subscribe(Signal.guard_state_unreadable, self._on_batch_closed)
         events.subscribe(Signal.lifecycle_attention, self._on_lifecycle_attention)
         events.subscribe(Signal.room_not_converged, self._on_room_not_converged)
+        events.subscribe(Signal.identity_attention, self._on_identity_attention)
         events.subscribe(Signal.reconcile_completed, self._on_reconcile_completed)
 
     async def bind(self, room_id: str) -> None:
@@ -118,6 +122,9 @@ class AdminRoomNotifier:
         while len(self._lifecycle_posted) > MAX_REMEMBERED:
             self._lifecycle_posted.popitem(last=False)
         await self.post(format_lifecycle_attention(payload))
+
+    async def _on_identity_attention(self, event: Event) -> None:
+        await self.post(f"User identity: {event.payload.get('text')}")
 
     async def _on_room_not_converged(self, event: Event) -> None:
         payload = event.payload

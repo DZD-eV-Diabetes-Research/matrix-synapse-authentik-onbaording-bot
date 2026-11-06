@@ -38,7 +38,7 @@ from onbot.guard import (
     MemoryGuardStore,
     summarize_actions,
 )
-from onbot.identity import build_canonical, compute_mxid
+from onbot.identity import IdentityResolver, Resolution, attribute_mxid, build_canonical, is_ignored
 from onbot.lifecycle.accounts import (
     EMPTY_DIRECTORY_MESSAGE,
     AccountLifecycleManager,
@@ -172,6 +172,7 @@ class ReconcilerEngine:
         lifecycle: AccountLifecycleManager | None = None,
         guard: DestructiveActionGuard | None = None,
         *,
+        identity: IdentityResolver | None = None,
         dry_run: bool = False,
     ) -> None:
         self.config = config
@@ -187,7 +188,16 @@ class ReconcilerEngine:
         # verdict is logged but not recorded.
         self.dry_run = dry_run
         self.server_name = config.synapse_server.server_name
-        self.global_admins = GlobalRoomAdminResolver(authentik, config)
+        # The one Authentik user -> MXID resolution (D8, MNT-13). By default it keeps its bindings
+        # where the lifecycle keeps its known users, so both read the same record.
+        store = getattr(lifecycle, "store", None)
+        self.identity = identity or IdentityResolver(
+            config, store=store if hasattr(store, "load_known_users") else None, events=self.events
+        )
+        self.global_admins = GlobalRoomAdminResolver(authentik, config, identity=self.identity)
+        # Matrix accounts that several Authentik users resolve to this pass: nobody joins, kicks,
+        # changes the power level of, locks or erases them (D8, fail closed).
+        self._held_mxids: frozenset[str] = frozenset()
         # Unix timestamp of the last pass that ran to completion; reported by the admin room's
         # `!status` command. ``None`` until the first pass finishes.
         self.last_reconcile_at: float | None = None
@@ -247,10 +257,15 @@ class ReconcilerEngine:
             " (dry run: nothing is changed)" if self.dry_run else "",
         )
         matrix_users = await self.admin.list_users()
+        # Bindings and MAS links for this pass, before anybody is resolved (D8).
+        await self.identity.refresh()
         users, users_in_scope = await self._gather_mapped_users(matrix_users)
         # Before any membership or power-level decision: every one of them consults this set, and an
-        # admin that resolves halfway through would land in some rooms and not others.
-        await self.global_admins.resolve(users, {u["name"] for u in matrix_users})
+        # admin that resolves halfway through would land in some rooms and not others. Without a
+        # readable binding record nobody can be resolved; the previous set stays (memberships and
+        # power levels are not managed this pass anyway).
+        if self.identity.unavailable is None:
+            await self.global_admins.resolve(users, {u["name"] for u in matrix_users})
 
         # Rooms and offboarding are independent stages (SEC-04, LIF-04): a room the bot cannot
         # manage, or a room stage that fails as a whole (a missing space, a Synapse 500 on the room
@@ -420,22 +435,25 @@ class ReconcilerEngine:
         """The synced users with a Matrix account, and how many active users in the sync scope map to
         a Matrix ID at all (the guard's ``users_in_scope``; ``None`` while user sync is off)."""
         cfg = self.config.sync_authentik_users_with_matrix_rooms
-        if not cfg.enabled:
+        self._held_mxids = frozenset()
+        if not cfg.enabled or self.identity.unavailable is not None:
+            # Off, or nobody can be resolved (an unreadable binding record): membership and power
+            # levels are left alone this pass, never projected from an empty or guessed user list.
             return [], None
+        scoped = [
+            u for u in await self._list_scoped_users(filter_is_active=True) if not is_ignored(u, self.config)
+        ]
+        # Every one of them is active, in scope and not ignored: a first sight is recorded as their
+        # binding, which keeps them on that account across renames (D8).
+        resolution = await self.identity.resolve(
+            scoped, bind=[str(u["pk"]) for u in scoped], matrix_mxids={u["name"] for u in matrix_users}
+        )
+        self._held_mxids = resolution.held_mxids
         by_mxid: dict[str, dict[str, Any]] = {}
-        for user in await self._list_scoped_users(filter_is_active=True):
-            if user["username"] in self.config.authentik_user_ignore_list:
-                continue
-            try:
-                mxid = compute_mxid(
-                    user,
-                    username_attribute=cfg.authentik_username_mapping_attribute,
-                    server_name=self.server_name,
-                )
-            except KeyError:
-                log.warning("cannot map MXID for Authentik user %r; skipping", user.get("pk"))
-                continue
-            by_mxid[mxid] = user
+        for user in scoped:
+            mxid = resolution.mxid(user["pk"])
+            if mxid is not None:
+                by_mxid[mxid] = user
 
         bot_id = self.config.synapse_server.bot_user_id
         mapped: list[MappedUser] = []
@@ -821,7 +839,7 @@ class ReconcilerEngine:
         # MNT-01): with user sync off the mapped set is empty by construction, and projecting it would
         # kick every member of every room. Rooms themselves (name, topic, lobby join rule) still converge.
         sync_cfg = self.config.sync_authentik_users_with_matrix_rooms
-        manage_members = sync_cfg.enabled
+        manage_members = sync_cfg.enabled and self.identity.unavailable is None
         pl_groups: list[PowerLevelGroup] = []
         kick_enabled = False
         if manage_members:
@@ -910,7 +928,8 @@ class ReconcilerEngine:
             kick_enabled=kick_enabled,
             # `matrix_user_ignore_list` promises these accounts are never touched: server admins,
             # bridges and other bots that sit in group rooms without an Authentik counterpart (REC-07).
-            protected_ids=[bot_id, *global_admins, *self.config.matrix_user_ignore_list],
+            # An account several Authentik users resolve to is left alone until an admin decides (D8).
+            protected_ids=[bot_id, *global_admins, *self.config.matrix_user_ignore_list, *self._held_mxids],
         )
         problems: list[str] = []
         await self._add_members(room.room_id, mdiff.to_add, problems)
@@ -1059,11 +1078,14 @@ class ReconcilerEngine:
             held = await self._write_power_levels(room, room_type, fresh_state, desired=desired)
         except _RoomStepProblems as exc:
             problems, held = exc, exc.held
+        # A held withdrawal of an account several Authentik users resolve to is never proposed: its
+        # level stays until an admin resolves the conflict (D8).
         actions = [
             DestructiveAction(
                 kind=ActionKind.withdraw_power_level, target=mxid, room_id=room.room_id, group_pk=group_pk
             )
             for mxid in held
+            if mxid not in self._held_mxids
         ]
         by_key = {a.key: a.target for a in actions}
 
@@ -1354,7 +1376,6 @@ class ReconcilerEngine:
         token that lost its view permission gets an empty ``200``, and judging every account on that
         would be wrong. (The destructive-action guard catches a partial answer, see ``onbot.guard``.)
         """
-        cfg = self.config.sync_authentik_users_with_matrix_rooms
         everyone = await self.authentik.list_users(filter_is_active=None)
         if not everyone:
             log.warning(EMPTY_DIRECTORY_MESSAGE)
@@ -1364,24 +1385,31 @@ class ReconcilerEngine:
             return None
         in_scope = {str(u["pk"]) for u in await self._list_scoped_users(filter_is_active=None)}
         ignored = set(self.config.authentik_user_ignore_list)
+        resolution: Resolution
+        if self.identity.unavailable is not None:
+            # The lifecycle reads the same record and refuses its step; the mapping attribute only
+            # sizes the directory for the guard's plausibility check here.
+            resolution = Resolution(
+                mxids={str(u["pk"]): m for u in everyone if (m := attribute_mxid(u, self.config)) is not None}
+            )
+        else:
+            resolution = await self.identity.resolve(
+                everyone,
+                bind=[
+                    str(u["pk"])
+                    for u in everyone
+                    if u.get("is_active") is True
+                    and str(u["pk"]) in in_scope
+                    and not is_ignored(u, self.config)
+                ],
+                matrix_mxids={u["name"] for u in matrix_users},
+            )
         users: list[DirectoryUser] = []
         for user in everyone:
             pk = str(user["pk"])
             is_active = user.get("is_active") is True
-            try:
-                mxid: str | None = compute_mxid(
-                    user,
-                    username_attribute=cfg.authentik_username_mapping_attribute,
-                    server_name=self.server_name,
-                )
-            except KeyError:
-                mxid = None
-                if pk in in_scope and not is_active:
-                    log.warning(
-                        "cannot map MXID for disabled Authentik user %r; only a recorded binding can "
-                        "offboard it",
-                        pk,
-                    )
+            # A user in a conflict gets no MXID here; the account itself is held below (D8).
+            mxid = resolution.mxid(pk)
             users.append(
                 DirectoryUser(
                     pk=pk,
@@ -1400,4 +1428,5 @@ class ReconcilerEngine:
             ),
             synced_mxids=frozenset(active_mxids),
             ignored_usernames=frozenset(ignored),
+            held_mxids=resolution.held_mxids | self._held_mxids,
         )

@@ -70,6 +70,7 @@ from onbot.guard import (
     ReadOnlyGuardStore,
 )
 from onbot.heartbeat import RECONCILE, SYNC, SYNC_MAX_AGE_SEC, Heartbeat, reconcile_max_age_sec
+from onbot.identity import IdentityResolver
 from onbot.lifecycle.accounts import (
     AccountLifecycleManager,
     AdminApiLifecycleEffectors,
@@ -344,6 +345,7 @@ async def build_app(
         # ask the homeserver whether it is MAS-backed after all and then refuse every lock and
         # erase (LIF-09). Until it answered they act on nobody.
         lifecycle_effectors: LifecycleEffectors
+        mas_admin: ApiClientMasAdmin | None = None
         if config.mas_admin is not None:
             mas_admin = ApiClientMasAdmin(
                 mas_url=config.mas_admin.url,
@@ -372,6 +374,10 @@ async def build_app(
         # One guard for the engine (decides, records) and the control room (!confirm, !reject): its
         # state is reloaded under one lock for every operation (D13).
         guard = DestructiveActionGuard(GuardLimits.from_config(config), guard_store, events)
+        # One Authentik user -> MXID resolution for the reconciler, the lifecycle and the bot admins
+        # (D8): through MAS when configured, else the recorded bindings, which live in the known-users
+        # record of the ledger store (read-only in a preview).
+        identity = IdentityResolver(config, store=ledger_store, mas=mas_admin, events=events)
         live_effectors = CSApiEffectors(matrix, media=media)
         stack.push_async_callback(live_effectors.aclose)
         effectors: MatrixEffectors = live_effectors
@@ -387,6 +393,7 @@ async def build_app(
             events=events,
             lifecycle=lifecycle,
             guard=guard,
+            identity=identity,
             dry_run=dry_run,
         )
         welcome = WelcomeService(matrix, config, admin=admin, media=media)
@@ -398,7 +405,7 @@ async def build_app(
         # Watches Authentik cheaply and wakes the engine on a real change, so the engine's own tick
         # can stay slow (see onbot/discovery.py).
         discovery = DiscoveryPoller(authentik, config, engine.trigger)
-        admins = AdminResolver(authentik, config)
+        admins = AdminResolver(authentik, config, identity=identity)
         control_room: ControlRoomHandler | None = None
         notifier: AdminRoomNotifier | None = None
         if config.admin_room.enabled and not dry_run:

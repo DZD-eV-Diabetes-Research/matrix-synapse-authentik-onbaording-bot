@@ -46,6 +46,12 @@ class Signal(StrEnum):
     # replaces it (``!guard reset``): ``detail`` (the problem) and ``text`` (the report). Emitted once
     # per problem per process, not on every pass.
     guard_state_unreadable = "guard_state_unreadable"
+    # User identity needs a human (D8, ``onbot.identity``): a user maps to another Matrix ID than
+    # the one they are bound to (a rename, a changed mapping attribute), MAS links a user to another
+    # account than the recorded binding, several Authentik users resolve to one Matrix account (all
+    # of them are skipped), or MAS or the binding record cannot be read. Payload: ``text``. Each
+    # finding is emitted once per process, not on every pass.
+    identity_attention = "identity_attention"
 
 
 @dataclass(frozen=True, slots=True)
