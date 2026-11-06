@@ -609,3 +609,49 @@ async def test_cs_api_effectors_create_lobby_sets_join_rule_and_suggested() -> N
     assert {"type": "m.room.join_rules", "state_key": "", "content": join_rules} in initial_state
     # The lobby's own create params (power levels) are preserved.
     assert kwargs["room_params"]["power_level_content_override"] == {"state_default": 100}
+
+
+# --- auth issuer (LIF-09) ------------------------------------------------------------------------
+
+_UNRECOGNIZED = httpx.Response(404, json={"errcode": "M_UNRECOGNIZED", "error": "Unrecognized request"})
+
+
+@pytest.mark.parametrize(
+    ("stable", "unstable", "expected"),
+    [
+        (
+            httpx.Response(200, json={"issuer": "https://auth.test/", "token_endpoint": "x"}),
+            None,
+            "https://auth.test/",
+        ),
+        (_UNRECOGNIZED, httpx.Response(200, json={"issuer": "https://old.test/"}), "https://old.test/"),
+        (_UNRECOGNIZED, _UNRECOGNIZED, None),
+    ],
+)
+@respx.mock
+async def test_auth_issuer_tells_a_mas_backed_homeserver(
+    stable: httpx.Response, unstable: httpx.Response | None, expected: str | None
+) -> None:
+    respx.get("https://matrix.test/_matrix/client/v1/auth_metadata").mock(return_value=stable)
+    if unstable is not None:
+        respx.get("https://matrix.test/_matrix/client/unstable/org.matrix.msc2965/auth_issuer").mock(
+            return_value=unstable
+        )
+    client = _client()
+    try:
+        assert await client.get_auth_issuer() == expected
+    finally:
+        await client.aclose()
+
+
+@respx.mock
+async def test_auth_issuer_does_not_hide_a_server_error() -> None:
+    respx.get("https://matrix.test/_matrix/client/v1/auth_metadata").mock(return_value=httpx.Response(502))
+    client = ApiClientMatrix(
+        server_url="https://matrix.test", access_token="tok", server_name="matrix.test", max_retry_attempts=1
+    )
+    try:
+        with pytest.raises(ApiError):
+            await client.get_auth_issuer()
+    finally:
+        await client.aclose()
