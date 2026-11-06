@@ -60,6 +60,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   This `CHANGELOG.md`.
 
 ### Changed
+- **Guard batches expire more conservatively (review W3R, pending maintainer confirmation):** erasures
+  and room deletions in a rejected batch stay held until the batch expires, even when fewer than
+  `confirm_irreversible_actions_from` remain. A confirmed batch that cannot run within
+  `confirmation_expiry_sec` of its confirmation (for example a room deletion waiting for its teardown)
+  is closed and reported, and its actions are judged again.
 - **Users are resolved through MAS (upstream link by subject) when `mas_admin` is set, else through the
   `authentik pk -> MXID` binding recorded at first sight (review S9, D8, SEC-07);** the mapping
   attribute only applies to users never seen. A renamed user, or a changed
@@ -178,6 +183,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   troubleshooting.
 
 ### Fixed
+- **After following a bot-created room upgrade, the next pass no longer reports the old and new room as
+  a conflict** (review W3R).
+- **When protecting a new room's marker fails at creation, the next pass retries it** instead of
+  treating the room as protected.
 - **The media deletion that continues an erasure over later passes no longer asks for a new
   confirmation every pass;** only an implausible Authentik answer (layer 1) still pauses it.
 - **An unreadable lifecycle ledger is reported once again** instead of every pass failing (a
@@ -251,6 +260,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   model forbids unknown keys, so remove these two settings if present.
 
 ### Security
+- **No attribute guess takes an account MAS links to somebody else (review W3R, D21):** also when that
+  owner is disabled, outside the sync scope or never seen by onbot; the guesser is skipped and
+  reported.
+- **While MAS cannot be read, users onbot has never seen are skipped** and the accounts their mapping
+  attribute names are left alone (no join, kick, lock or erase); no binding is recorded from an
+  unchecked guess.
+- **A room's onbot marker counts only when the bot wrote it (review W3R):** a marker rewritten by a
+  moderator (legacy unlocked rooms) or by a user at the bot's level (rooms older than version 12) is
+  reported, and the room is neither adopted nor torn down.
 - **Every URL path segment in the Synapse, MAS and Matrix clients is percent-encoded (review S9,
   SEC-08),** so a localpart such as `x/../victim` can no longer redirect a MAS lock to another account;
   absolute URLs are only followed to the client's own origin.

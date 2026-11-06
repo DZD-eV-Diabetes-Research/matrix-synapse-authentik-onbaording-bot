@@ -70,13 +70,15 @@ Note: D20, S17 and the revised S6 brief were written by the maintainer and were 
   irreversible actions keeps them held until it expires, instead of ending once fewer than 3 remain
   (the remaining 1 or 2 erasures would otherwise run without asking); (b) confirmed batches expire
   too (a deletion waiting weeks for its teardown is proposed again instead of running on an old
-  confirmation). Confirm both or choose the original behaviour.
+  confirmation). Confirm both or choose the original behaviour. Also: a confirmation resets the
+  batch's expiry window (W3R's interpretation), so a last-minute confirmation is not lost.
 
 **Wave 3 review (cold):** S5 fixed; S6 fixed (REC-04, SEC-02, REC-13, ONB-17, ONB-16, ONB-02, SEC-11);
 S9 SEC-07 partial. New findings handed to W3R (instance 1): an attribute guess can take an account MAS
 links to an absent unbound owner; stray legacy rooms adoptable after a moderator rewrites the marker
 (no marker sender check); a followed upgrade becomes a permanent conflict; failed marker lock cached as
 locked. S8 started in parallel (instance 2); S7 and S12 follow after W3R and S8.
+W3R merged (all items fixed, its full integration run on the branch 1295 passed).
 
 **Next:** act on the wave 3 review, then wave 4 (S7, S8, S12), then wave 5 (S14).
 
