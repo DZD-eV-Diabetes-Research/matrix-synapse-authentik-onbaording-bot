@@ -18,7 +18,7 @@ This file is the entry point; `SESSIONS.md` holds the session briefs and the sta
 - Full integration run on main (556c41b): 820 passed, 1 failed. The failure was a test written by S2
   that passed the S13 `SecretStr` token unwrapped (401); fixed in 0173aa6, file rerun green (4 passed).
 - W1F merged (ea282bd, follow-up 8d2e642): 824 unit and contract tests green, config docs
-  regenerated. Full integration run on main after W1F started (instance 0).
+  regenerated. Full integration run on main after W1F (2e885e3): 855 passed, 0 failed.
 - S16 timing decided: the maintainer first pushes the current `main` normally so the new CI runs once
   on GitHub, then the scrub is prepared on a mirror clone and the maintainer force-pushes `main` and
   all tags. Wave 2 starts after the scrub (or is rebased onto the rewritten `main`).
