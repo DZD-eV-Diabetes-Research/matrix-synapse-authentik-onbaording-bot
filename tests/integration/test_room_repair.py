@@ -115,6 +115,24 @@ async def _service(config: OnbotConfig) -> AsyncIterator[App]:
 # --- teardown and deletion through the guard (S5 handover) ------------------------------------------
 
 
+async def _sweep(config: OnbotConfig) -> None:
+    """Delete the bot's group rooms of every other test's groups from the shared stack.
+
+    Teardown judges every room the bot created on the server: under this test's name prefix, the
+    rooms of all other tests' groups are obsolete too, and their number would trip the guard. One pass
+    with this test's groups live, the guard's limits off and deletion on removes them first.
+    """
+    sweep = config.model_copy(deep=True)
+    rooms = sweep.sync_matrix_rooms_based_on_authentik_groups
+    rooms.disable_rooms_when_mapped_authentik_group_disappears = True
+    rooms.delete_disabled_rooms = True
+    guard = sweep.destructive_action_guard
+    guard.max_reversible_actions_per_pass = 1_000_000
+    guard.confirm_irreversible_actions_from = 1_000_000
+    sweep.admin_room.enabled = False
+    await run_reconcile_once(sweep)
+
+
 async def test_teardown_blocks_and_kicks_and_a_returning_group_is_unblocked(
     make_config,
     authentik_admin: S.AuthentikAdmin,
@@ -126,6 +144,7 @@ async def test_teardown_blocks_and_kicks_and_a_returning_group_is_unblocked(
     group = authentik_admin.create_group(f"{prefix}-room", attributes={"is_chatroom": True})
     _u, member = S.provision(authentik_admin, S.uniq("tdnmember"), groups=[group["pk"]])
     config = _config(make_config, prefix, teardown=True)
+    await _sweep(config)
     await run_reconcile_once(config)
     room_id = await _room_of(matrix_client, config, group)
     assert member.mxid in await admin_client.list_room_members(room_id)
@@ -156,6 +175,7 @@ async def test_a_deletion_below_the_limit_runs_in_the_pass_that_closes_the_room(
     S.provision(authentik_admin, S.uniq("delmember"), groups=[group["pk"]])
     config = _config(make_config, prefix, teardown=True)
     config.sync_matrix_rooms_based_on_authentik_groups.delete_disabled_rooms = True
+    await _sweep(config)
     await run_reconcile_once(config)
     room_id = await _room_of(matrix_client, config, group)
 
@@ -184,6 +204,7 @@ async def test_three_deletions_wait_for_a_confirmation_while_the_rooms_are_close
     config.admin_room.enabled = True
     config.admin_room.alias = S.uniq("onbot-admin")
     config.admin_room.admin_user_ids = [admin.mxid]
+    await _sweep(config)
     await run_reconcile_once(config)
     rooms = [await _room_of(matrix_client, config, g) for g in groups]
 
