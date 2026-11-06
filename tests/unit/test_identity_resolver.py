@@ -291,6 +291,26 @@ async def test_a_mas_linked_owner_wins_over_an_attribute_guess() -> None:
     assert len(reports) == 1  # once per process
 
 
+async def test_an_absent_owner_whose_account_mas_links_still_beats_a_guess() -> None:
+    """The room stage resolves active users only: a disabled alice is absent, her binding is not."""
+    store = MemoryBindings({"1": mx("alice")})
+    mas = FakeMasLinks({"hash-1": "alice"})
+    resolver, _ = _resolver(_config(mas=True, attribute="attributes.mx"), store, mas)
+    result = await resolver.resolve([_user(2, "carl", attributes={"mx": "alice"})])
+    assert result.mxids == {}
+    assert result.held == {}
+    assert result.rejected == {"2": mx("alice")}
+
+
+async def test_a_binding_against_a_guess_fails_closed_when_mas_does_not_link_the_account() -> None:
+    store = MemoryBindings({"1": mx("alice")})
+    mas = FakeMasLinks({})
+    resolver, _ = _resolver(_config(mas=True), store, mas)
+    result = await resolver.resolve([_user(2, "alice")])
+    assert result.held == {mx("alice"): ("1", "2")}
+    assert result.rejected == {}
+
+
 async def test_a_mas_link_against_another_users_binding_fails_closed() -> None:
     store = MemoryBindings({"2": mx("alice")})
     mas = FakeMasLinks({"hash-1": "alice"})

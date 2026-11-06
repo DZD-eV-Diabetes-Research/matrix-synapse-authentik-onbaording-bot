@@ -144,6 +144,11 @@ class _MasView:
     by_subject: dict[str, set[str]]
     links: int
 
+    @property
+    def linked(self) -> set[str]:
+        """Every MXID some upstream link points to."""
+        return {mxid for mxids in self.by_subject.values() for mxid in mxids}
+
 
 class IdentityResolver:
     """Resolves Authentik users to MXIDs: through MAS, the recorded binding, then the attribute.
@@ -331,16 +336,23 @@ class IdentityResolver:
                 claims[mxid].add(pk)
         held: dict[str, tuple[str, ...]] = {}
         rejected: dict[str, str] = {}
+        owner_of: dict[str, str] = {}  # contested MXID -> the MAS-linked owner (D21)
+        linked_mxids = self._mas_view.linked if self._mas_view is not None else set()
         for mxid, pks in claims.items():
             if len(pks) < 2:
                 continue
-            # A binding of a user not in this call is authoritative evidence too.
+            # A binding of a user not in this call is authoritative evidence too, backed by MAS when
+            # MAS links the account at all (the room stage sees active users only, so a disabled
+            # owner is often absent; a guesser has no link, so it cannot be the one MAS means).
+            linked = mxid in linked_mxids
             owners = [pk for pk in pks if evidence.get(pk, "binding") != "guess"]
-            if len(owners) == 1 and evidence.get(owners[0]) == "mas" and owners[0] not in mas_multi:
+            owner_evidence = evidence.get(owners[0], "mas" if linked else "binding") if owners else None
+            if len(owners) == 1 and owner_evidence == "mas" and owners[0] not in mas_multi:
                 # D21: MAS positively links the account to one claimant; the others only guessed
                 # by the mapping attribute. The owner keeps it, the guessers are skipped.
                 for pk in pks - {owners[0]}:
                     rejected[pk] = mxid
+                owner_of[mxid] = owners[0]
                 continue
             held[mxid] = tuple(sorted(pks))
         for mxids in mas_multi.values():
@@ -365,12 +377,12 @@ class IdentityResolver:
         await self._report_findings(users, renamed, rebound, mas_conflicts, held)
         for pk, mxid in sorted(rejected.items()):
             if self._first(("rejected", pk, mxid)):
-                owner = next(o for o, m in resolved.items() if m == mxid)
+                owner = names.get(owner_of[mxid], f"pk {owner_of[mxid]}")
                 guesser = names.get(pk, f"pk {pk}")
                 await self._report(
                     None,
                     f"Authentik user {guesser} names the Matrix account {mxid} by the mapping "
-                    f"attribute, but MAS links that account to {names[owner]}. onbot manages {mxid} "
+                    f"attribute, but MAS links that account to {owner}. onbot manages {mxid} "
                     f"for its owner and skips {guesser}.",
                 )
         if bind and self._mas_view is not None and self._mas_view.links and users and not mas_matches:
