@@ -17,7 +17,7 @@ def test_event_type_name_reverses_domain() -> None:
 
 
 def test_group_room_state_roundtrip() -> None:
-    state = GroupRoomState(group_id="pk-1", authentik_server="https://authentik/")
+    state = GroupRoomState(group_id="pk-1")
     content = dump_room_state(state)
     assert content["schema_version"] == SCHEMA_VERSION
     assert content["room_type"] == "group_room"
@@ -34,3 +34,22 @@ def test_direct_room_state_defaults() -> None:
     parsed = parse_room_state(OnbotRoomType.direct_room, dump_room_state(state))
     assert isinstance(parsed, DirectRoomState)
     assert parsed.user_id == "@alice:company.org"
+
+
+def test_marker_no_longer_carries_the_authentik_url() -> None:
+    """SEC-11: the (often internal) Authentik URL was readable by every room member."""
+    legacy = {
+        "schema_version": 1,
+        "room_type": "group_room",
+        "group_id": "g1",
+        "authentik_server": "http://ak:9000",
+    }
+    parsed = parse_room_state(OnbotRoomType.group_room, legacy)
+    assert "authentik_server" not in dump_room_state(parsed)
+
+
+def test_direct_room_setup_complete_defaults_for_legacy_markers() -> None:
+    legacy = {"schema_version": 1, "room_type": "direct_room", "user_id": "@a:company.org"}
+    parsed = parse_room_state(OnbotRoomType.direct_room, legacy)
+    assert isinstance(parsed, DirectRoomState)
+    assert parsed.setup_complete is True

@@ -305,7 +305,7 @@ async def test_dm_created_despite_a_timeout_is_adopted_not_created_twice() -> No
     )
     client = _matrix()
     try:
-        room_id = await client.create_direct_message_room("@u:matrix.test")
+        room_id = await client.create_room(is_direct=True, invite=["@u:matrix.test"])
     finally:
         await client.aclose()
     assert room_id == "!dm"

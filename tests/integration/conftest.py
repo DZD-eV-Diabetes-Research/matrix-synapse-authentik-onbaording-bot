@@ -30,7 +30,7 @@ import pytest_asyncio
 from testcontainers.compose import DockerCompose
 
 from onbot.clients.authentik import ApiClientAuthentik
-from onbot.clients.matrix import ApiClientMatrix
+from onbot.clients.matrix import ApiClientMatrix, CSApiEffectors
 from onbot.clients.synapse_admin import ApiClientSynapseAdmin
 from onbot.config import (
     AdminRoom,
@@ -40,6 +40,8 @@ from onbot.config import (
     SynapseServer,
 )
 from onbot.guard import guard_account_data_type
+from onbot.lifecycle.accounts import known_users_account_data_type, lifecycle_account_data_type
+from onbot.rooms.identity import RoomIdentityResolver
 from tests.integration import stack_api as S
 from tests.integration.stack_instance import SKIP_VAR, StackUnavailable, skip_requested, start_stack
 
@@ -211,6 +213,27 @@ def fresh_guard_state(bot_token: str) -> None:
     httpx.put(url, json={}, headers={"Authorization": f"Bearer {bot_token}"}, timeout=30.0).raise_for_status()
 
 
+@pytest_asyncio.fixture
+async def own_offboarding_records(matrix_client: ApiClientMatrix) -> AsyncIterator[None]:
+    """Start from an empty known-users record and ledger, and put the shared ones back afterwards.
+
+    Every test shares the one bot, so its known-users record and ledger hold every user earlier tests
+    mapped or locked. A narrowed token makes *all* of them look deleted, and an erase cooldown of zero
+    erases every one of them that is still locked, which puts other tests' users into this test's
+    passes (and, from three erasures on, behind the guard's layer 3). With fresh records only this
+    test's users are known.
+    """
+    types = [known_users_account_data_type(S.SERVER_NAME), lifecycle_account_data_type(S.SERVER_NAME)]
+    saved = {t: await matrix_client.get_account_data(S.BOT_USER_ID, t) for t in types}
+    for t in types:
+        await matrix_client.set_account_data(S.BOT_USER_ID, t, {})
+    try:
+        yield
+    finally:
+        for t, content in saved.items():
+            await matrix_client.set_account_data(S.BOT_USER_ID, t, content)
+
+
 @pytest.fixture(scope="session")
 def onbot_config(bot_token: str) -> OnbotConfig:
     """A loaded OnbotConfig pointing at the live stack (the canonical session config)."""
@@ -268,3 +291,16 @@ async def authentik_client(onbot_config: OnbotConfig) -> AsyncIterator[ApiClient
         yield client
     finally:
         await client.aclose()
+
+
+@pytest.fixture
+def room_identity(
+    matrix_client: ApiClientMatrix, admin_client: ApiClientSynapseAdmin
+) -> RoomIdentityResolver:
+    """The bot's room identity resolver (D20), as the service wires it, over the live stack."""
+    return RoomIdentityResolver(
+        admin_client,
+        CSApiEffectors(matrix_client, bot_id=S.BOT_USER_ID),
+        bot_id=S.BOT_USER_ID,
+        server_name=S.SERVER_NAME,
+    )

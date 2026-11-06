@@ -227,15 +227,18 @@ class FakeMediaAdmin:
     def __init__(self) -> None:
         self.media_deleted: list[str] = []
         self.fail = False
+        self.stock: dict[str, int] = {}  # media files per user; none unless a test uploads some
 
     async def delete_user_media(self, user_id: str, *, limit: int = 100) -> dict[str, Any]:
         if self.fail:
             raise RuntimeError("media API 500")
         self.media_deleted.append(user_id)
-        return {"total": 0}
+        deleted = min(limit, self.stock.get(user_id, 0))
+        self.stock[user_id] = self.stock.get(user_id, 0) - deleted
+        return {"total": deleted}
 
     async def count_user_media(self, user_id: str) -> int:
-        return 0
+        return self.stock.get(user_id, 0)
 
 
 class Clock:
@@ -936,6 +939,83 @@ async def test_a_preview_shows_what_switching_dry_run_off_would_pause(
     assert "[dry-run] guard: paused 11 destructive action(s)" in caplog.text
     assert "11 reversible destructive actions in one pass" in caplog.text
     assert _proposals(w) == []  # a preview records no batch
+
+
+# --- S5: guard layer 3, irreversible erasures -------------------------------------------------------
+
+
+async def _erase_due(w: World, names: list[str]) -> None:
+    """Disable ``names`` among forty staff and run until their erasure is due (locks run on their own)."""
+    staff = {name: w.person(name) for name in [f"s{n:02d}" for n in range(40)] + names}
+    await w.tick()
+    for name in names:
+        w.directory.set_active(staff[name], False)
+    await w.tick()  # mark
+    await w.tick()  # lock: below the layer-2 limit
+    assert sorted(w.mas.ops("lock")) == sorted(names)
+    await w.tick(DAY)  # the erasure is due
+
+
+async def test_two_erasures_run_without_a_confirmation() -> None:
+    w = World(guard=True, delete_after=0)
+    await _erase_due(w, ["gone1", "gone2"])
+    assert sorted(w.mas.ops("deactivate")) == ["gone1", "gone2"]
+    assert _proposals(w) == []
+
+
+async def test_three_erasures_wait_for_a_confirmation_then_run() -> None:
+    w = World(guard=True, delete_after=0)
+    await _erase_due(w, ["gone1", "gone2", "gone3"])
+    assert w.mas.ops("deactivate") == []
+    [proposal] = _proposals(w)
+    assert proposal.payload["action"] == "erase"
+    assert "erase 3 account(s) (irreversible)" in proposal.payload["summary"]
+    assert "Irreversible: 3 of these action(s) cannot be undone" in proposal.payload["summary"]
+    await w.tick(DAY)
+    assert w.mas.ops("deactivate") == []  # still waiting, and not proposed again
+    assert len(_proposals(w)) == 1
+
+    ok, _ = await w.guard.confirm(proposal.payload["batch_id"], "@admin:company.org")
+    assert ok
+    await w.tick()
+    assert sorted(w.mas.ops("deactivate")) == ["gone1", "gone2", "gone3"]
+
+
+async def test_the_media_cleanup_of_a_confirmed_erasure_does_not_ask_again() -> None:
+    """Wave 2 review: paged media deletion (LIF-12) was re-planned as an erasure on every pass."""
+    w = World(guard=True, delete_after=0)
+    w.lc.include_user_media_on_delete = True
+    names = ["gone1", "gone2", "gone3"]
+    for name in names:
+        w.media.stock[mx(name)] = 100 * 50 + 30  # more than one pass's budget
+    await _erase_due(w, names)
+    [proposal] = _proposals(w)
+    await w.guard.confirm(proposal.payload["batch_id"], "@admin:company.org")
+    await w.tick()  # deactivates all three and deletes the first 5000 files of each
+    assert sorted(w.mas.ops("deactivate")) == names
+    assert all(w.media.stock[mx(name)] == 30 for name in names)
+    for name in names:
+        w.synapse.mxids.remove(mx(name))  # Synapse hides deactivated users from the listing
+
+    await w.tick()  # the continuation: no new confirmation
+    assert all(w.media.stock[mx(name)] == 0 for name in names)
+    assert len(_proposals(w)) == 1
+    assert w.store.ledger().entries == {}
+    assert sorted(w.mas.ops("deactivate")) == names  # never repeated
+
+
+async def test_the_media_cleanup_still_waits_while_the_user_list_is_implausible() -> None:
+    w = World(guard=True, delete_after=0)
+    w.lc.include_user_media_on_delete = True
+    w.media.stock[mx("gone1")] = 100 * 50 + 30
+    await _erase_due(w, ["gone1"])
+    assert w.media.stock[mx("gone1")] == 30
+    w.synapse.mxids.remove(mx("gone1"))
+
+    w.directory.visible = {"akadmin"}  # a narrowed token: layer 1 holds everything, this as well
+    await w.tick()
+    assert w.media.stock[mx("gone1")] == 30
+    assert _proposals(w)[-1].payload["action"] == "delete_media"
 
 
 # --- wave 2 review: an unreadable ledger through the engine ----------------------------------------

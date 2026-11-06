@@ -19,6 +19,8 @@ from onbot.config import (
 )
 from onbot.onboarding.notice_board import notice_board_power_levels
 from onbot.onboarding.welcome import WelcomeService
+from onbot.reconciler.state import OnbotRoomType
+from onbot.rooms.identity import RoomIdentity, RoomKey
 
 BOT = "@bot:matrix.test"
 ALICE = "@alice:matrix.test"
@@ -56,6 +58,7 @@ class FakeMatrixClient:
         self.power_levels: dict[str, dict[str, Any]] = {}
         self.power_level_writes: list[str] = []
         self.avatars: dict[str, str] = {}
+        self.create_calls: list[dict[str, Any]] = []
 
     async def get_room_power_levels(self, room_id: str) -> dict[str, Any]:
         return dict(self.power_levels.get(room_id, {}))
@@ -79,19 +82,18 @@ class FakeMatrixClient:
     async def set_account_data(self, user_id: str, data_type: str, content: dict[str, Any]) -> None:
         self.account_data[(user_id, data_type)] = dict(content)
 
-    async def create_direct_message_room(
-        self,
-        user_id: str,
-        *,
-        name: str | None = None,
-        topic: str | None = None,
-        power_level_content_override: dict[str, Any] | None = None,
-    ) -> str:
+    server_name = "matrix.test"
+
+    async def create_room(self, **kwargs: Any) -> str:
         self.created_dms += 1
+        self.create_calls.append(kwargs)
         room_id = f"!dm-{self.created_dms}:matrix.test"
-        self.power_levels[room_id] = dict(power_level_content_override or {})
-        self.room_state[(room_id, "m.room.name")] = {"name": name}
-        self.room_state[(room_id, "m.room.topic")] = {"topic": topic}
+        params = kwargs.get("room_params") or {}
+        self.power_levels[room_id] = dict(params.get("power_level_content_override") or {})
+        self.room_state[(room_id, "m.room.name")] = {"name": kwargs.get("name")}
+        self.room_state[(room_id, "m.room.topic")] = {"topic": kwargs.get("topic")}
+        for event in params.get("initial_state") or []:
+            self.room_state[(room_id, event["type"])] = dict(event["content"])
         return room_id
 
     async def get_room_state_event(
@@ -393,3 +395,104 @@ async def test_undrifted_power_levels_are_not_rewritten() -> None:
     await svc.welcome_user(ALICE)
 
     assert client.power_level_writes == []
+
+
+# --- ONB-02: a setup interrupted after createRoom is finished later ---
+
+
+async def test_the_notice_board_is_marked_at_creation_as_not_set_up_yet() -> None:
+    """The marker travels with createRoom (initial_state), so no window leaves the room unmarked."""
+    client = FakeMatrixClient()
+    svc = WelcomeService(client, _config(["hi"]))  # type: ignore[arg-type]
+    await svc.welcome_user(ALICE)
+
+    (call,) = client.create_calls
+    marker = call["room_params"]["initial_state"][-1]
+    assert marker["type"] == "test.matrix.onbot.direct_room"
+    assert marker["content"]["user_id"] == ALICE
+    assert marker["content"]["setup_complete"] is False
+    assert call["is_direct"] is True and call["invite"] == [ALICE]
+    # ...and once set up, the room says so.
+    assert _direct_state(client, "!dm-1:matrix.test")["setup_complete"] is True
+
+
+async def test_a_failed_space_link_is_retried_with_the_force_join_and_the_messages() -> None:
+    """Before the fix the second call took the "existing room" branch and never joined the user."""
+    client = FakeMatrixClient()
+    client.aliases["#OnBotSpace:matrix.test"] = "!space:matrix.test"
+    admin = FakeSynapseAdmin()
+    svc = WelcomeService(client, _config(["hi"], place_in_space=True), admin=admin)  # type: ignore[arg-type]
+    link = client.link_room_to_space
+
+    async def broken_link(space_id: str, room_id: str, *, suggested: bool = False) -> None:
+        raise ApiError("PUT", "/state/m.space.child", 502)
+
+    client.link_room_to_space = broken_link  # type: ignore[method-assign]
+    with pytest.raises(ApiError):
+        await svc.welcome_user(ALICE)
+    assert admin.joined == [] and client.sent == []
+    assert _direct_state(client, "!dm-1:matrix.test")["setup_complete"] is False
+
+    client.link_room_to_space = link  # type: ignore[method-assign]
+    await svc.welcome_user(ALICE)
+
+    assert client.created_dms == 1
+    assert client.space_links == [("!space:matrix.test", "!dm-1:matrix.test")]
+    assert admin.joined == [("!dm-1:matrix.test", ALICE)]
+    assert [body for _, body in client.sent] == ["hi"]
+    assert _direct_state(client, "!dm-1:matrix.test")["setup_complete"] is True
+
+
+async def test_a_notice_board_of_an_older_version_is_not_set_up_again() -> None:
+    """A marker without `setup_complete` predates the field: its room is not force-joined again."""
+    client = FakeMatrixClient()
+    admin = FakeSynapseAdmin()
+    client.account_data[(BOT, "m.direct")] = {ALICE: ["!old:matrix.test"]}
+    client.room_state[("!old:matrix.test", "test.matrix.onbot.direct_room")] = {"user_id": ALICE}
+    svc = WelcomeService(client, _config(["hi"]), admin=admin)  # type: ignore[arg-type]
+
+    await svc.welcome_user(ALICE)
+
+    assert admin.joined == []
+    assert [body for _, body in client.sent] == ["hi"]
+
+
+class _SpaceIdentity:
+    """Stand-in for the room identity resolver: which room is the bot's space."""
+
+    def __init__(self, space_id: str | None, trusted: frozenset[str] = frozenset()) -> None:
+        self.space_id = space_id
+        self.trusted = trusted
+
+    async def identify(self, room_id: str) -> RoomIdentity | None:
+        if room_id not in self.trusted:
+            return None
+        return RoomIdentity(room_id=room_id, key=RoomKey(OnbotRoomType.space, name="OnBotSpace"), locked=True)
+
+
+async def test_the_dm_goes_into_the_space_the_reconciler_found() -> None:
+    client = FakeMatrixClient()
+    rooms = _SpaceIdentity("!real-space:matrix.test")
+    svc = WelcomeService(client, _config(["hi"], place_in_space=True), rooms=rooms)  # type: ignore[arg-type]
+    await svc.welcome_user(ALICE)
+    assert client.space_links == [("!real-space:matrix.test", "!dm-1:matrix.test")]
+
+
+async def test_the_space_alias_is_used_once_it_is_shown_to_be_the_bots_space() -> None:
+    client = FakeMatrixClient()
+    client.aliases["#OnBotSpace:matrix.test"] = "!space:matrix.test"
+    rooms = _SpaceIdentity(None, frozenset({"!space:matrix.test"}))
+    svc = WelcomeService(client, _config(["hi"], place_in_space=True), rooms=rooms)  # type: ignore[arg-type]
+    await svc.welcome_user(ALICE)
+    assert client.space_links == [("!space:matrix.test", "!dm-1:matrix.test")]
+
+
+async def test_a_squatted_space_alias_does_not_get_the_dms() -> None:
+    """D20: the alias alone does not make a room the bot's space."""
+    client = FakeMatrixClient()
+    client.aliases["#OnBotSpace:matrix.test"] = "!squat:matrix.test"
+    rooms = _SpaceIdentity(None)
+    svc = WelcomeService(client, _config(["hi"], place_in_space=True), rooms=rooms)  # type: ignore[arg-type]
+    await svc.welcome_user(ALICE)
+    assert client.space_links == []
+    assert [body for _, body in client.sent] == ["hi"]  # the welcome itself still goes out

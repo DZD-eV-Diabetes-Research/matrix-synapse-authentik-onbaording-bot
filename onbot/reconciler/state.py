@@ -37,8 +37,10 @@ def event_type_name(server_name: str, room_type: OnbotRoomType | str) -> str:
 
 
 class _OnbotRoomState(BaseModel):
+    # Rooms from older versions also carry `authentik_server`, the configured (often internal)
+    # Authentik URL, readable by every member (SEC-11). It is no longer written; unknown keys are
+    # ignored on read, so the next rewrite of a marker drops it.
     schema_version: int = SCHEMA_VERSION
-    authentik_server: str | None = None
     avatar_source_url: str | None = None
     # The `global_room_admins` the bot last seated at PL 100 in this room. Recorded because the
     # power-level pass can only withdraw a level it knows it granted: a global admin is usually not a
@@ -49,8 +51,15 @@ class _OnbotRoomState(BaseModel):
     global_admins: list[str] = Field(default_factory=list)
 
 
+# The space and the admin control room exist once per configuration, not once per group. Their marker
+# records the alias localpart the configuration gave them when the bot created or adopted them, so the
+# rooms of two configurations on one homeserver (a test stack, a second deployment) never claim the
+# same role. Markers from before this field read as `None` and are adopted once by alias (D20).
+
+
 class SpaceRoomState(_OnbotRoomState):
     room_type: Literal[OnbotRoomType.space] = OnbotRoomType.space
+    configured_alias: str | None = None
 
 
 class GroupRoomState(_OnbotRoomState):
@@ -70,6 +79,11 @@ class DirectRoomState(_OnbotRoomState):
     # event carrying one with M_BAD_JSON.
     # https://spec.matrix.org/latest/appendices/#canonical-json
     force_joined_at: int | None = None
+    # False from creation until the room is fully set up (space link, avatar, force-join). The marker
+    # is written in the room's `initial_state`, so a failure or a restart after `createRoom` leaves
+    # it False, and the next welcome finishes the setup instead of skipping it forever (ONB-02).
+    # Markers written before this field existed read as complete.
+    setup_complete: bool = True
 
 
 class VisitorLobbyRoomState(_OnbotRoomState):
@@ -94,6 +108,7 @@ class AdminRoomState(_OnbotRoomState):
     """
 
     room_type: Literal[OnbotRoomType.admin_room] = OnbotRoomType.admin_room
+    configured_alias: str | None = None
     help_text_hash: str | None = None
     help_event_id: str | None = None
 
@@ -126,6 +141,16 @@ _STATE_MODEL_BY_TYPE: dict[OnbotRoomType, type[AnyRoomState]] = {
     OnbotRoomType.admin_room: AdminRoomState,
     OnbotRoomType.visitor_lobby: VisitorLobbyRoomState,
 }
+
+
+# The marker types that identify a room the bot manages by role (D20): together with the bot being the
+# room's creator, one of these says which group room, lobby, space or control room a room is.
+MANAGED_ROOM_TYPES: tuple[OnbotRoomType, ...] = (
+    OnbotRoomType.group_room,
+    OnbotRoomType.visitor_lobby,
+    OnbotRoomType.space,
+    OnbotRoomType.admin_room,
+)
 
 
 def parse_room_state(room_type: OnbotRoomType, content: dict[str, Any]) -> AnyRoomState:

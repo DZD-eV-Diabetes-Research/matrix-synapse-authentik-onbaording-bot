@@ -38,8 +38,8 @@ Start a session by pointing Claude at this file and the session ID, for example:
 | 4 | S3 | Guard layers 1 and 2, reconciler dry-run | M | S2 | done (merged in wave 2) |
 | 5 | S16 | Git history scrub | S | S0, no open branches | done (force-pushed 2026-11-06, new main 89afecf) |
 | 6 | S4 | Offboarding completeness | M | S1 | done (merged in wave 2) |
-| 7 | S5 | Guard layer 3: `!confirm` for irreversible actions | M | S3, S4 | open |
-| 8 | S6 | Room identity (marker plus creator) and unified room provisioning | L | S2 | open |
+| 7 | S5 | Guard layer 3: `!confirm` for irreversible actions | M | S3, S4 | done (merged in wave 3) |
+| 8 | S6 | Room identity (marker plus creator) and unified room provisioning | L | S2 | done (merged in wave 3) |
 | 9 | S7 | Room repair: space link, lobbies, blocks | M | S6 | open |
 | 10 | S8 | Onboarding correctness | M | S6 | open |
 | 11 | S9 | User identity across renames | M | S1, S3 | open |
@@ -377,6 +377,11 @@ edit the marker, a room upgraded by a human (reported, skipped).
 ---
 
 ## S7 Room repair
+
+**From S5:** no integration test covers room teardown (block, kick) and deletion
+(`delete_disabled_rooms`, now its own irreversible guard step that only runs in a pass that also
+closes the room) against the live stack; the room path is covered by engine unit tests only. Add
+live tests for teardown, deletion below the layer 3 limit, and deletion held for `!confirm`.
 
 **Goal:** rooms converge back to the desired shape, not only at creation.
 

@@ -9,7 +9,7 @@ Authentik users resolving to one account leave that account alone.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, ClassVar
 
 from onbot.config import OnbotConfig
 from onbot.events import Event, EventBus, Signal
@@ -21,6 +21,8 @@ from onbot.lifecycle.accounts import (
     MatrixAccountDataLedgerStore,
 )
 from onbot.reconciler.engine import ReconcilerEngine
+from onbot.reconciler.state import OnbotRoomType
+from tests.unit.room_fakes import IdentityScanMixin
 from tests.unit.test_engine import RecordingEffectors
 from tests.unit.test_lifecycle_scenarios import Clock, FakeMas, FakeMediaAdmin, Store
 
@@ -78,10 +80,16 @@ class Directory:
         return [dict(g, users=members(g["pk"])) for g in _GROUPS]
 
 
-class Synapse:
-    """Synapse admin surface: accounts, two group rooms and their members."""
+class Synapse(IdentityScanMixin):
+    """Synapse admin surface: accounts, two group rooms (bot-created, with markers, D20), members."""
+
+    room_markers: ClassVar[dict[str, tuple[OnbotRoomType, str | None]]] = {
+        ROOM1: (OnbotRoomType.group_room, "g1"),
+        ROOM2: (OnbotRoomType.group_room, "g2"),
+    }
 
     def __init__(self) -> None:
+        self.room_state_events = {}
         self.mxids: list[str] = [mx("bot")]
         self.members: dict[str, set[str]] = {ROOM1: {mx("bot")}, ROOM2: {mx("bot")}}
         self.added: list[tuple[str, str]] = []
@@ -277,8 +285,9 @@ async def test_a_changed_mapping_attribute_kicks_and_locks_nobody() -> None:
 
 
 async def test_a_newcomer_naming_an_existing_account_leaves_it_alone() -> None:
-    """SEC-07: carl's attribute names alice's account. Neither carl's groups reach @alice nor is
-    @alice kicked, demoted or (once disabled) locked: both are skipped until an admin decides."""
+    """SEC-07: carl's attribute names alice's account, which only a binding ties to alice (no MAS).
+    Neither carl's groups reach @alice nor is @alice kicked, demoted or (once disabled) locked: both
+    are skipped until an admin decides."""
     w = World(attribute="attributes.mx")
     w.person(1, "alice", "g1", mx="alice")
     before = await _settled(w)
@@ -294,6 +303,32 @@ async def test_a_newcomer_naming_an_existing_account_leaves_it_alone() -> None:
     await w.tick()
     await w.tick()
     assert w.mas.calls == []  # frozen, never locked while the conflict stands
+
+
+async def test_with_mas_the_linked_owner_keeps_her_account_against_a_guess() -> None:
+    """D21: MAS links @alice to alice; carl only names it by the attribute. Carl gets nothing,
+    alice stays managed as usual: untouched while active, locked once disabled."""
+    w = World(mas_identity=True, attribute="attributes.mx")
+    w.person(1, "alice", "g1", mx="alice")
+    for pk in range(2, 8):  # one leaver of seven stays under the guard's 20 % drop limit
+        w.person(pk, f"user{pk}", "g1", mx=f"user{pk}")
+    before = await _settled(w)
+    w.mas.calls.clear()
+
+    w.directory.add(30, "carl", "g2", mx="alice")
+    await w.tick()
+    await w.tick()
+    _assert_untouched(w, before)
+    assert (ROOM2, mx("alice")) not in w.synapse.added
+    assert (
+        sum("'carl' (pk 30)" in r and "MAS links that account to 'alice'" in r for r in w.identity_reports)
+        == 1
+    )
+
+    w.directory.users[1]["is_active"] = False
+    await w.tick()  # mark
+    await w.tick()  # lock: the guess froze nothing
+    assert w.mas.ops("lock") == ["alice"]
 
 
 async def test_with_mas_a_rename_is_resolved_through_the_upstream_link() -> None:

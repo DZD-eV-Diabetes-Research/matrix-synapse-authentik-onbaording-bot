@@ -7,12 +7,14 @@ and power levels, so "zero kicks" and "zero withdrawals" are observed, not infer
 
 from __future__ import annotations
 
-from typing import Any
+from dataclasses import replace
+from typing import Any, ClassVar
 
+from onbot.clients.base import ApiError
 from onbot.config import OnbotConfig
 from onbot.events import Event, EventBus, Signal
 from onbot.reconciler.engine import ReconcilerEngine
-from onbot.reconciler.state import granted_power_levels_type
+from onbot.reconciler.state import OnbotRoomType, granted_power_levels_type
 from tests.unit.test_engine import _BASE, FakeAdmin, RecordingEffectors
 
 ROOM1 = "!room1:company.org"
@@ -67,6 +69,12 @@ class Directory:
 
 class Rooms(FakeAdmin):
     """Synapse admin API over rooms that remember their members."""
+
+    room_markers: ClassVar[dict[str, tuple[OnbotRoomType, str | None]]] = {
+        ROOM1: (OnbotRoomType.group_room, "g1"),
+        ROOM2: (OnbotRoomType.group_room, "g2"),
+        SPACE: (OnbotRoomType.space, None),
+    }
 
     def __init__(self, directory: Directory) -> None:
         super().__init__()
@@ -240,8 +248,117 @@ async def test_an_empty_group_list_tears_down_no_room() -> None:
     assert rooms.deleted == []
     assert effectors.kicks == []
     [proposed] = [e for e in seen if e.signal is Signal.destructive_actions_suppressed]
-    assert proposed.payload["action"] == "room_teardown"
+    assert proposed.payload["action"] == "room_delete,room_teardown"
     assert "no Authentik groups mapped to rooms" in proposed.payload["reason"]
+    assert "Irreversible: 2 of these action(s) cannot be undone" in proposed.payload["summary"]
+
+
+# --- layer 3: room deletion is irreversible (D19) -----------------------------------------------------
+
+OBSOLETE = [f"!old{n}:company.org" for n in range(14)]
+
+
+class ObsoleteRooms(Rooms):
+    """Rooms whose groups are gone, each with one member left."""
+
+    def __init__(self, directory: Directory, count: int) -> None:
+        super().__init__(directory)
+        self.obsolete = OBSOLETE[:count]
+        # Bot-created rooms with a locked marker naming a vanished group: the only teardown
+        # candidates since room identity is creator plus marker (D20).
+        self.room_markers = {
+            **Rooms.room_markers,
+            **{room: (OnbotRoomType.group_room, f"gone{n}") for n, room in enumerate(self.obsolete)},
+        }
+        for n, room in enumerate(self.obsolete):
+            self.members[room] = {BOT, mx(f"member{n}")}
+
+    async def list_non_space_rooms(self) -> list[dict[str, Any]]:
+        return await super().list_non_space_rooms() + [
+            {"room_id": room, "canonical_alias": None, "name": room} for room in self.obsolete
+        ]
+
+
+def obsolete_world(count: int) -> tuple[ReconcilerEngine, ObsoleteRooms, LiveEffectors, list[Event]]:
+    engine, directory, _rooms, _effectors, seen = world(
+        ["alice"],
+        ["carol"],
+        sync_matrix_rooms_based_on_authentik_groups={
+            "disable_rooms_when_mapped_authentik_group_disappears": True,
+            "delete_disabled_rooms": True,
+        },
+    )
+    rooms = ObsoleteRooms(directory, count)
+    effectors = LiveEffectors(rooms)
+    engine.admin, engine.effectors = rooms, effectors  # type: ignore[assignment]
+    # The room identity scan (D20) reads and writes through its own references.
+    engine.rooms.admin, engine.rooms.writer = rooms, effectors  # type: ignore[assignment]
+    for n, room in enumerate(rooms.obsolete):
+        effectors.state_store[(room, "org.company.onbot.group_room")] = {
+            "room_type": "group_room",
+            "group_id": f"gone{n}",
+        }
+    return engine, rooms, effectors, seen
+
+
+async def test_two_room_deletions_run_without_a_confirmation_after_their_teardown() -> None:
+    engine, rooms, effectors, seen = obsolete_world(2)
+    await engine.reconcile_once()
+    assert rooms.deleted == OBSOLETE[:2]
+    assert {(room, True) for room in OBSOLETE[:2]} <= set(rooms.blocked_changes)
+    assert {room for room, _ in effectors.kicks} == set(OBSOLETE[:2])
+    assert [e for e in seen if e.signal is Signal.destructive_actions_suppressed] == []
+
+
+async def test_three_room_deletions_wait_for_a_confirmation_while_the_teardowns_run() -> None:
+    engine, rooms, effectors, seen = obsolete_world(3)
+    await engine.reconcile_once()
+    assert rooms.deleted == []
+    # Closing the rooms is reversible (layer 2) and runs; only the deletion waits.
+    assert {(room, True) for room in OBSOLETE[:3]} <= set(rooms.blocked_changes)
+    assert {room for room, _ in effectors.kicks} == set(OBSOLETE[:3])
+    [proposed] = [e for e in seen if e.signal is Signal.destructive_actions_suppressed]
+    assert proposed.payload["action"] == "room_delete"
+    assert "delete 3 room(s) (irreversible)" in proposed.payload["summary"]
+
+    ok, _ = await engine.guard.confirm(proposed.payload["batch_id"], "@admin:company.org")
+    assert ok
+    await engine.reconcile_once()
+    assert sorted(rooms.deleted) == sorted(OBSOLETE[:3])
+
+
+async def test_no_room_is_deleted_while_its_teardown_waits_for_a_confirmation() -> None:
+    """Eleven teardowns are over the layer-2 limit; the two deletions below layer 3 must wait too."""
+    engine, rooms, effectors, seen = obsolete_world(11)
+    engine.guard.limits = replace(engine.guard.limits, confirm_irreversible_actions_from=12)
+    await engine.reconcile_once()
+    assert rooms.deleted == []
+    assert rooms.blocked_changes == []
+    assert effectors.kicks == []
+    assert all(len(rooms.members[room]) == 2 for room in OBSOLETE[:11])  # nobody removed
+    [proposed] = [e for e in seen if e.signal is Signal.destructive_actions_suppressed]
+    reason = proposed.payload["reason"]
+    assert "11 room deletion(s) wait until the teardown of the same room may run" in reason
+
+    await engine.guard.confirm(proposed.payload["batch_id"], "@admin:company.org")
+    await engine.reconcile_once()
+    assert sorted(rooms.deleted) == sorted(OBSOLETE[:11])
+
+
+async def test_a_failed_teardown_skips_the_deletion_of_that_room() -> None:
+    engine, rooms, _effectors, _seen = obsolete_world(2)
+    failing = OBSOLETE[0]
+    original = rooms.room_set_blocked
+
+    async def room_set_blocked(room_id: str, *, blocked: bool) -> None:
+        if room_id == failing:
+            raise ApiError("PUT", "http://synapse/block", 500, {"errcode": "M_UNKNOWN"})
+        await original(room_id, blocked=blocked)
+
+    rooms.room_set_blocked = room_set_blocked  # type: ignore[method-assign]
+    await engine.reconcile_once()
+    assert rooms.deleted == [OBSOLETE[1]]
+    assert any(failing == r.room_id for r in engine.last_pass_report.rooms)
 
 
 # --- layer 2: more than the per-pass limit ----------------------------------------------------------

@@ -13,6 +13,10 @@ reconciler signal *and* a join event):
   message (G4.3). Already-sent messages are skipped; only new/changed ones go out.
 * **One force-join ever** — recorded as ``force_joined_at`` in that same state event, so a user who
   leaves the notice board is not re-joined on the next reconcile tick.
+* **Setup finishes eventually:** the notice board is created with its marker in ``initial_state``
+  (:mod:`onbot.rooms.provision`), saying ``setup_complete: false``. Space link, avatar and force-join
+  happen afterwards, and only then is the flag set. A failure or a restart in between leaves the flag
+  unset, so the next welcome of that user finishes the setup instead of skipping it forever (ONB-02).
 
 Those layers only hold if the bookkeeping is visible *before* the trigger it guards against fires.
 Force-joining the user lands a ``join`` membership event on the bot's own sync stream, which re-enters
@@ -51,6 +55,8 @@ from onbot.reconciler.state import (
     event_type_name,
     parse_room_state,
 )
+from onbot.rooms.identity import RoomIdentityResolver, RoomKey
+from onbot.rooms.provision import ManagedRoomSpec, create_managed_room
 
 log = get_logger(__name__)
 
@@ -92,8 +98,11 @@ class WelcomeService:
         *,
         admin: ApiClientSynapseAdmin | None = None,
         media: MediaUploader | None = None,
+        rooms: RoomIdentityResolver | None = None,
     ) -> None:
         self.client = client
+        # Finds the managed space by its marker (D20); without it, the space alias is trusted.
+        self.rooms = rooms
         self.config = config
         # Force-joining goes through the Synapse admin API; without it the bot can only invite.
         self.admin = admin
@@ -102,7 +111,8 @@ class WelcomeService:
         self.server_name = config.synapse_server.server_name
         self._direct_event_type = event_type_name(self.server_name, OnbotRoomType.direct_room)
         # G4.5: optionally gather onboarding DMs under the managed space (opt-in — 1:1 rooms in a
-        # space is a matter of taste). Resolved lazily from the configured space alias and cached.
+        # space is a matter of taste). Resolved lazily and cached: the space the reconciler found, or
+        # the room at the configured space alias once it is shown to be the bot's space.
         space_cfg = config.create_matrix_rooms_in_a_matrix_space
         self._place_in_space = config.place_onboarding_rooms_in_space and space_cfg.enabled
         self._space_alias = f"#{space_cfg.alias}:{self.server_name}"
@@ -134,13 +144,12 @@ class WelcomeService:
     async def _welcome_user(self, mxid: str, messages: list[str]) -> None:
         room_id, created = await self._ensure_direct_room(mxid)
         if created:
-            state = DirectRoomState(user_id=mxid, authentik_server=self.config.authentik_server.url)
-            if await self._force_join(room_id, mxid):
-                state.force_joined_at = int(datetime.now(UTC).timestamp())
-            await self._persist(room_id, state)
+            state = DirectRoomState(user_id=mxid, setup_complete=False)
         else:
             state = await self._load_direct_state(room_id, mxid)
             await self._heal_power_levels(room_id)
+        if not state.setup_complete:
+            await self._finish_setup(room_id, mxid, state)
 
         sent = 0
         for message in messages:
@@ -184,6 +193,20 @@ class WelcomeService:
             return None
         return substitute(message, {"user_id": mxid, **self._space_values})
 
+    async def _finish_setup(self, room_id: str, mxid: str, state: DirectRoomState) -> None:
+        """Space link, avatar and force-join of a new notice board; retried until all are done (ONB-02).
+
+        Each step is safe to repeat. A step that raises leaves ``setup_complete`` unset, so the next
+        welcome of this user runs the setup again, and no message is sent into a room the user may
+        only have been invited to.
+        """
+        await self._maybe_place_in_space(room_id)
+        await self._maybe_set_avatar(room_id)
+        if state.force_joined_at is None and await self._force_join(room_id, mxid):
+            state.force_joined_at = int(datetime.now(UTC).timestamp())
+        state.setup_complete = True
+        await self._persist(room_id, state)
+
     async def _persist(self, room_id: str, state: DirectRoomState) -> None:
         await self.client.put_room_state_event(room_id, self._direct_event_type, dump_room_state(state))
 
@@ -194,16 +217,28 @@ class WelcomeService:
         if existing:
             return str(existing[0]), False
 
-        room_id = await self.client.create_direct_message_room(
-            mxid,
-            name=self.config.onboarding_room_name,
-            topic=self.config.onboarding_room_topic,
-            power_level_content_override=notice_board_power_levels(),
+        # `private_chat`, not `trusted_private_chat`, which hands the invitee power level 100 and makes
+        # the room un-demotable forever; the power levels make it a notice board from the start. The
+        # invite stays even when the user is force-joined afterwards: it is the fallback when the
+        # force-join is disabled or fails.
+        room_id = await create_managed_room(
+            self.client,
+            ManagedRoomSpec(
+                marker=DirectRoomState(user_id=mxid, setup_complete=False),
+                name=self.config.onboarding_room_name,
+                topic=self.config.onboarding_room_topic,
+                is_direct=True,
+                invite=(mxid,),
+                room_params={
+                    "preset": "private_chat",
+                    "power_level_content_override": notice_board_power_levels(),
+                },
+                lock_marker=False,
+            ),
+            bot_id=self.bot_id,
         )
         direct.setdefault(mxid, []).append(room_id)
         await self.client.set_account_data(self.bot_id, M_DIRECT, direct)
-        await self._maybe_place_in_space(room_id)
-        await self._maybe_set_avatar(room_id)
         return room_id, True
 
     async def _force_join(self, room_id: str, mxid: str) -> bool:
@@ -263,16 +298,36 @@ class WelcomeService:
         if not self._place_in_space:
             return
         if self._space_id is None:
-            self._space_id = await self.client.resolve_room_alias(self._space_alias)
+            self._space_id = await self._find_space()
         if self._space_id is None:
-            log.warning("cannot place DM in space: alias %s does not resolve yet", self._space_alias)
+            log.warning("cannot place DM in space: the space %s is not known yet", self._space_alias)
             return
         await self.client.link_room_to_space(self._space_id, room_id)
+
+    async def _find_space(self) -> str | None:
+        """The bot's space: as the reconciler found it, or the room at its alias if that is the space."""
+        if self.rooms is None:
+            return await self.client.resolve_room_alias(self._space_alias)
+        if self.rooms.space_id is not None:
+            return self.rooms.space_id
+        candidate = await self.client.resolve_room_alias(self._space_alias)
+        if candidate is None:
+            return None
+        identity = await self.rooms.identify(candidate)
+        wanted = RoomKey(OnbotRoomType.space, name=self.config.create_matrix_rooms_in_a_matrix_space.alias)
+        if identity is None or not identity.trusted or identity.key != wanted:
+            log.warning(
+                "the space alias %s points at %s, which is not the bot's space; not placing DMs there",
+                self._space_alias,
+                candidate,
+            )
+            return None
+        return candidate
 
     async def _load_direct_state(self, room_id: str, mxid: str) -> DirectRoomState:
         content = await self.client.get_room_state_event(room_id, self._direct_event_type)
         if content is None:
-            return DirectRoomState(user_id=mxid, authentik_server=self.config.authentik_server.url)
+            return DirectRoomState(user_id=mxid)
         parsed = parse_room_state(OnbotRoomType.direct_room, content)
         assert isinstance(parsed, DirectRoomState)
         return parsed

@@ -604,7 +604,9 @@ sync_authentik_users_with_matrix_rooms:
     #              or deleted. Whether the profile is GDPR-erased as well is
     #              `gdpr_erase_on_delete`, whether uploaded media goes too is
     #              `include_user_media_on_delete`. `null` disables erasure entirely and leaves accounts
-    #              locked. The default is 365 days.
+    #              locked. The default is 365 days. From
+    #              `destructive_action_guard.confirm_irreversible_actions_from` irreversible actions in
+    #              one pass on, the erasures wait for an administrator's `!confirm <id>`.
     # Example No. 1:
     #  >delete_after_n_sec: 31536000
     # Example No. 2:
@@ -845,7 +847,10 @@ sync_matrix_rooms_based_on_authentik_groups:
   # Env-var:     'ONBOT_SYNC_MATRIX_ROOMS_BASED_ON_AUTHENTIK_GROUPS__DELETE_DISABLED_ROOMS'
   # Description: When a room is disabled (see `disable_rooms_when_mapped_authentik_group_disappears`)
   #              also delete it through the Synapse admin API, rather than only blocking it. This
-  #              destroys the room's history irreversibly — leave `false` unless you are sure.
+  #              destroys the room's history irreversibly: leave `false` unless you are sure. A room is
+  #              deleted only in a pass that also blocks it and kicks its members, and from
+  #              `destructive_action_guard.confirm_irreversible_actions_from` irreversible actions in
+  #              one pass on, the deletions wait for an administrator's `!confirm <id>`.
   delete_disabled_rooms: false
 
   # ## make_authentik_superusers_matrix_room_admin - Authentik superusers become room admins ###
@@ -1327,8 +1332,9 @@ destructive_action_guard:
   #              of groups mapped to rooms. If either dropped by more than this percentage, or came
   #              back empty, the bot treats the answer as implausible (an API token that lost its
   #              permissions, a broken filter). Fewer users pauses every destructive action of the
-  #              pass: kicks, power-level withdrawals, room teardowns, account locks and erasures.
-  #              Fewer groups pauses what happens in rooms (kicks, withdrawals, teardowns); locks and
+  #              pass: kicks, power-level withdrawals, room teardowns and deletions, account locks and
+  #              erasures. Fewer groups pauses what happens in rooms (kicks, withdrawals, teardowns,
+  #              deletions); locks and
   #              erasures do not depend on the groups. Rooms are still created and users still added
   #              and welcomed.
   #
@@ -1378,3 +1384,24 @@ destructive_action_guard:
   # Example:
   #  >confirmation_expiry_sec: 259200
   confirmation_expiry_sec: 259200
+
+  # ## confirm_irreversible_actions_from - Irreversible actions in one pass that need a confirmation ###
+  # YAML-path:   destructive_action_guard.confirm_irreversible_actions_from
+  # Type:        int
+  # Required:    False
+  # Default:     3
+  # Constraints: Ge(ge=1)
+  # Env-var:     'ONBOT_DESTRUCTIVE_ACTION_GUARD__CONFIRM_IRREVERSIBLE_ACTIONS_FROM'
+  # Description: From how many irreversible actions in one pass on the bot asks first: erasing
+  #              accounts (offboarding's `delete_after_n_sec`) and deleting rooms
+  #              (`delete_disabled_rooms`). A pass with this many or more pauses all of them and
+  #              reports them in the admin control room as a batch for an administrator to release with
+  #              `!confirm <id>`; fewer run on their own. Locking an account, kicking members and
+  #              closing a room are reversible and count under `max_reversible_actions_per_pass`
+  #              instead. The media deletion that continues an erasure over later passes needs no new
+  #              confirmation. `1` asks for every irreversible action.
+  # Example No. 1:
+  #  >confirm_irreversible_actions_from: 3
+  # Example No. 2:
+  #  >confirm_irreversible_actions_from: 1
+  confirm_irreversible_actions_from: 3

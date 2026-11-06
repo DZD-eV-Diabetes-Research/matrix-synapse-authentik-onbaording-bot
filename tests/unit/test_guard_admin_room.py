@@ -83,6 +83,43 @@ async def test_pending_lists_the_open_batches() -> None:
     assert "from 100 to 1" in body
 
 
+ERASURES = [DestructiveAction(kind=ActionKind.erase, target=f"@gone{n}:matrix.test") for n in range(3)]
+
+
+async def _guard_with_layer_3_batch() -> tuple[DestructiveActionGuard, str]:
+    guard = DestructiveActionGuard(
+        GuardLimits(),
+        MemoryGuardStore(GuardState(baseline=InputCounts(users_in_scope=100, mapped_groups=5))),
+        EventBus(),
+    )
+    decision = await guard.decide(InputCounts(users_in_scope=100, mapped_groups=5), ERASURES)
+    await guard.record(decision, ERASURES, complete=True)
+    [batch] = await guard.open_batches()
+    return guard, batch.id
+
+
+async def test_pending_says_that_a_layer_3_batch_is_irreversible() -> None:
+    guard, batch_id = await _guard_with_layer_3_batch()
+    client = _FakeClient()
+    await _run(_handler(client, guard, _Engine()), _message("!pending"))
+    body = client.sends[0][1]
+    assert f"Batch {batch_id} (pending, expires" in body
+    assert "erase 3 account(s) (irreversible)" in body
+    assert "3 irreversible actions in one pass" in body
+    assert "Irreversible: 3 of these action(s) cannot be undone" in body
+    assert "- erase account @gone0:matrix.test (irreversible)" in body
+
+
+async def test_confirm_of_a_layer_3_batch_names_the_irreversible_actions_and_releases_them() -> None:
+    guard, batch_id = await _guard_with_layer_3_batch()
+    client, engine = _FakeClient(), _Engine()
+    await _run(_handler(client, guard, engine), _message(f"!confirm {batch_id}"))
+    assert f"Batch {batch_id} confirmed (erase 3 account(s) (irreversible))" in client.sends[0][1]
+    assert engine.triggered == 1
+    decision = await guard.decide(InputCounts(users_in_scope=100, mapped_groups=5), ERASURES)
+    assert decision.permitted == {a.key for a in ERASURES}
+
+
 async def test_confirm_releases_the_batch_and_starts_a_pass() -> None:
     guard, batch_id = await _guard_with_batch()
     client, engine = _FakeClient(), _Engine()

@@ -1017,6 +1017,39 @@ class TestMediaDeletion:
         assert X not in store.ledger.entries
         assert len(admin.deactivated) == 1  # the irreversible half ran once
 
+    async def test_the_continuation_is_planned_as_media_cleanup_not_as_a_new_erasure(self) -> None:
+        """S5: the guard asks for erasures (layer 3), but never again for the media of one that ran."""
+        admin = FakeAdmin(media=100 * 60)
+        store = InMemoryLedgerStore(
+            LifecycleLedger(
+                entries={X: LifecycleEntry(marked_for_disabling_timestamp=1.0, disabled_user_timestamp=1.0)}
+            )
+        )
+        mgr = AccountLifecycleManager(
+            _config(dry_run=False, delete_after_n_sec=0, include_user_media_on_delete=True),
+            store,
+            _synapse_effectors(admin),
+            clock=Clock(DAY),
+        )
+        [planned] = await mgr.plan_accounts(ORPHAN_X)
+        assert planned.action is LifecycleAction.erase
+        [outcome] = await mgr.reconcile_accounts(ORPHAN_X)
+        assert outcome.action is LifecycleAction.erase
+
+        [planned] = await mgr.plan_accounts(ORPHAN_X)
+        assert planned.action is LifecycleAction.delete_media
+        asked: list[LifecycleAction] = []
+
+        def permit(mxid: str, action: LifecycleAction) -> bool:
+            asked.append(action)
+            return action is LifecycleAction.delete_media
+
+        [outcome] = await mgr.reconcile_accounts(ORPHAN_X, permit=permit)
+        assert outcome.action is LifecycleAction.delete_media
+        assert asked == [LifecycleAction.delete_media]
+        assert admin.media == 0 and X not in store.ledger.entries
+        assert len(admin.deactivated) == 1
+
 
 # --- MAS effectors (LIF-16, MNT-05, LIF-07, D7) ------------------------------------------------
 

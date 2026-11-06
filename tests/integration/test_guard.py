@@ -10,11 +10,13 @@ admin confirms it there, batch by batch.
 
 from __future__ import annotations
 
+import asyncio
 import re
-from collections.abc import AsyncIterator, Iterator
+import time
+from collections.abc import Iterator
+from urllib.parse import quote
 
 import pytest
-import pytest_asyncio
 from pydantic import SecretStr
 
 from onbot.admin.admins import AdminResolver
@@ -26,7 +28,6 @@ from onbot.clients.matrix import ApiClientMatrix
 from onbot.clients.synapse_admin import ApiClientSynapseAdmin
 from onbot.events import EventBus
 from onbot.guard import DestructiveActionGuard, GuardLimits, MatrixAccountDataGuardStore
-from onbot.lifecycle.accounts import known_users_account_data_type, lifecycle_account_data_type
 from onbot.reconciler.rooms import compute_room_attributes
 from tests.integration import stack_api as S
 
@@ -41,25 +42,6 @@ def groups(authentik_admin: S.AuthentikAdmin) -> Iterator[list[str]]:
     yield created
     for pk in created:
         authentik_admin.delete_group(pk)
-
-
-@pytest_asyncio.fixture
-async def own_offboarding_records(matrix_client: ApiClientMatrix) -> AsyncIterator[None]:
-    """Start from an empty known-users record and ledger, and put the shared ones back afterwards.
-
-    Every test shares the one bot, so its known-users record holds every user earlier tests mapped.
-    A narrowed token makes *all* of them look deleted, which would put locks of other tests' users
-    into this test's batches. With fresh records only this test's users are known.
-    """
-    types = [known_users_account_data_type(S.SERVER_NAME), lifecycle_account_data_type(S.SERVER_NAME)]
-    saved = {t: await matrix_client.get_account_data(S.BOT_USER_ID, t) for t in types}
-    for t in types:
-        await matrix_client.set_account_data(S.BOT_USER_ID, t, {})
-    try:
-        yield
-    finally:
-        for t, content in saved.items():
-            await matrix_client.set_account_data(S.BOT_USER_ID, t, content)
 
 
 async def _bot_messages(client: ApiClientMatrix, room_id: str) -> list[str]:
@@ -182,6 +164,91 @@ async def test_a_narrowed_token_pauses_everything_until_an_admin_confirms(
     reports = await _bot_messages(matrix_client, control_room)
     assert any(f"Batch {first} confirmed by {admin.mxid}: ran 4 action(s)" in r for r in reports)
     assert any(f"Batch {second} confirmed by {admin.mxid}: ran 2 action(s)" in r for r in reports)
+
+
+async def _synapse_deactivated(
+    admin_client: ApiClientSynapseAdmin, mxid: str, *, timeout: float = 60.0
+) -> bool:
+    """Whether Synapse reports ``mxid`` deactivated; MAS hands it over through a background job."""
+    deadline = time.monotonic() + timeout
+    while True:
+        user = await admin_client.get_json(f"v2/users/{quote(mxid, safe='@:')}")
+        if user.get("deactivated"):
+            return True
+        if time.monotonic() > deadline:
+            return False
+        await asyncio.sleep(1)
+
+
+async def test_three_erasures_wait_for_a_confirmation_in_the_admin_room(
+    make_config,
+    authentik_admin: S.AuthentikAdmin,
+    authentik_client: ApiClientAuthentik,
+    matrix_client: ApiClientMatrix,
+    admin_client: ApiClientSynapseAdmin,
+    own_offboarding_records: None,
+) -> None:
+    """S5 (D4 layer 3): three disabled users past the erase cooldown are erased only after !confirm."""
+    prefix = S.uniq("layer3")
+    scope = {"layer3scope": prefix}
+    gone = [S.provision(authentik_admin, S.uniq(f"layer3gone{n}"), attributes=scope) for n in range(3)]
+    admin_user, admin = S.provision(authentik_admin, S.uniq("layer3admin"), attributes=scope)
+    for _ in range(17):  # active users who stay, so three leaving is no implausible drop (layer 1)
+        authentik_admin.create_user(S.uniq("layer3anchor"), password=S.DEFAULT_PASSWORD, attributes=scope)
+
+    config = make_config()
+    config.sync_authentik_users_with_matrix_rooms.sync_only_users_with_authentik_attributes = scope
+    life = config.sync_authentik_users_with_matrix_rooms.deactivate_disabled_authentik_users_in_matrix
+    life.enabled, life.dry_run, life.deactivate_after_n_sec, life.delete_after_n_sec = True, False, 0, 0
+    config.admin_room.enabled = True
+    config.admin_room.alias = S.uniq("onbot-admin")
+    config.admin_room.admin_user_ids = [admin.mxid]
+
+    await run_reconcile_once(config)  # the normal pass: baseline and known users
+    for user, _login in gone:
+        authentik_admin.set_active(user["pk"], False)
+    await run_reconcile_once(config)  # marked
+    await run_reconcile_once(config)  # locked: three locks are below the layer-2 limit
+    for user, _login in gone:
+        assert S.mas_user(user["username"])["locked_at"] is not None
+    await run_reconcile_once(config)  # the erasures are due: three of them wait for an admin
+
+    for user, login in gone:
+        assert S.mas_user(user["username"]).get("deactivated_at") is None, "erased without a confirmation"
+        assert not (await admin_client.get_json(f"v2/users/{quote(login.mxid, safe='@:')}")).get(
+            "deactivated"
+        )
+    control_room = await matrix_client.resolve_room_alias(f"#{config.admin_room.alias}:{S.SERVER_NAME}")
+    assert control_room is not None
+    reports = await _bot_messages(matrix_client, control_room)
+    [batch_id] = _proposed_batches(reports)
+    report = next(r for r in reports if f"!confirm {batch_id}" in r)
+    assert "erase 3 account(s) (irreversible)" in report
+    assert "Irreversible: 3 of these action(s) cannot be undone" in report
+    assert all(f"erase account {login.mxid} (irreversible)" in report for _u, login in gone)
+
+    await admin_client.add_user_to_room(control_room, admin.mxid)
+    guard = DestructiveActionGuard(
+        GuardLimits.from_config(config),
+        MatrixAccountDataGuardStore(matrix_client, S.BOT_USER_ID, S.SERVER_NAME),
+        EventBus(),
+    )
+    handler = ControlRoomHandler(
+        matrix_client,
+        config,
+        BroadcastService(matrix_client, config),
+        AdminResolver(authentik_client, config, ttl_sec=0),
+        guard=guard,
+    )
+    await handler.start(control_room)
+    await _confirm(handler, matrix_client, admin.access_token, control_room, batch_id)
+    await run_reconcile_once(config)
+
+    for _user, login in gone:
+        assert await _synapse_deactivated(admin_client, login.mxid)
+    reports = await _bot_messages(matrix_client, control_room)
+    assert any(f"Batch {batch_id} confirmed by {admin.mxid}: ran 3 action(s)" in r for r in reports)
+    assert S.mas_user(admin_user["username"]).get("deactivated_at") is None
 
 
 async def test_reconcile_once_dry_run_changes_nothing(

@@ -97,7 +97,7 @@ async def test_dm_room_whose_response_was_lost_is_adopted_not_created_twice(
     client = _matrix(onbot_config, lossy)
     try:
         before = set(await matrix_client.joined_rooms())
-        room_id = await client.create_direct_message_room(target, name="S11 lost response")
+        room_id = await client.create_room(is_direct=True, invite=[target], name="S11 lost response")
     finally:
         await client.aclose()
     assert lossy.lost == ["POST /_matrix/client/v3/createRoom"]
@@ -110,8 +110,10 @@ async def test_dm_room_whose_response_was_lost_is_adopted_not_created_twice(
 async def test_aliased_room_whose_response_was_lost_is_adopted_and_linked(
     onbot_config: OnbotConfig, matrix_client: ApiClientMatrix
 ) -> None:
-    space_id = await matrix_client.create_space(
-        alias_localpart=S.uniq("s11space"), name="S11 space", topic="", params={}
+    space_id = await matrix_client.create_room(
+        alias_localpart=S.uniq("s11space"),
+        name="S11 space",
+        room_params={"creation_content": {"type": "m.space"}},
     )
     alias = S.uniq("s11room")
     lossy = _LoseResponse(_is_create_room)

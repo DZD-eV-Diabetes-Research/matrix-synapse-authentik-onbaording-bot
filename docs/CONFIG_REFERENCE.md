@@ -1036,7 +1036,9 @@ for good (irreversible). Counted from the lock, so erasure happens
 or deleted. Whether the profile is GDPR-erased as well is
 `gdpr_erase_on_delete`, whether uploaded media goes too is
 `include_user_media_on_delete`. `null` disables erasure entirely and leaves accounts
-locked. The default is 365 days.
+locked. The default is 365 days. From
+`destructive_action_guard.confirm_irreversible_actions_from` irreversible actions in
+one pass on, the erasures wait for an administrator's `!confirm <id>`.
 
 | Property | Value |
 |---|---|
@@ -1450,7 +1452,10 @@ loosening a filter therefore re-enables nothing: the room stays blocked.
 
 When a room is disabled (see `disable_rooms_when_mapped_authentik_group_disappears`)
 also delete it through the Synapse admin API, rather than only blocking it. This
-destroys the room's history irreversibly — leave `false` unless you are sure.
+destroys the room's history irreversibly: leave `false` unless you are sure. A room is
+deleted only in a pass that also blocks it and kicks its members, and from
+`destructive_action_guard.confirm_irreversible_actions_from` irreversible actions in
+one pass on, the deletions wait for an administrator's `!confirm <id>`.
 
 | Property | Value |
 |---|---|
@@ -2692,8 +2697,9 @@ last answer it trusted: the number of active users in the sync scope and the num
 of groups mapped to rooms. If either dropped by more than this percentage, or came
 back empty, the bot treats the answer as implausible (an API token that lost its
 permissions, a broken filter). Fewer users pauses every destructive action of the
-pass: kicks, power-level withdrawals, room teardowns, account locks and erasures.
-Fewer groups pauses what happens in rooms (kicks, withdrawals, teardowns); locks and
+pass: kicks, power-level withdrawals, room teardowns and deletions, account locks and
+erasures. Fewer groups pauses what happens in rooms (kicks, withdrawals, teardowns,
+deletions); locks and
 erasures do not depend on the groups. Rooms are still created and users still added
 and welcomed.
 
@@ -2785,6 +2791,43 @@ actions are then judged again. The default is 72 hours.
 
 ```yaml
 confirmation_expiry_sec: 259200
+```
+
+---
+
+### `destructive_action_guard.confirm_irreversible_actions_from`
+
+*Irreversible actions in one pass that need a confirmation*
+
+From how many irreversible actions in one pass on the bot asks first: erasing
+accounts (offboarding's `delete_after_n_sec`) and deleting rooms
+(`delete_disabled_rooms`). A pass with this many or more pauses all of them and
+reports them in the admin control room as a batch for an administrator to release with
+`!confirm <id>`; fewer run on their own. Locking an account, kicking members and
+closing a room are reversible and count under `max_reversible_actions_per_pass`
+instead. The media deletion that continues an erasure over later passes needs no new
+confirmation. `1` asks for every irreversible action.
+
+| Property | Value |
+|---|---|
+| Type | int |
+| Required | No |
+| Default | `3` |
+| Constraints | Ge(ge=1) |
+| Environment variable | `ONBOT_DESTRUCTIVE_ACTION_GUARD__CONFIRM_IRREVERSIBLE_ACTIONS_FROM` |
+
+**Examples:**
+
+*Example 1:*
+
+```yaml
+confirm_irreversible_actions_from: 3
+```
+
+*Example 2:*
+
+```yaml
+confirm_irreversible_actions_from: 1
 ```
 
 ---
