@@ -166,3 +166,22 @@ integration suite stays a required gate, but:
   with exit 2 and a specific message pointing to `bot_access_token` (compatibility token).
 - A paginated listing that stays inconsistent after one re-read fails the whole pass (fail closed);
   the next tick retries.
+
+## D19 Wave 2 decisions (S3, S4, decided 2026-11-06)
+
+- **Test stack versions:** the deployment (`infra-node-conf-com`, not productive yet) runs MAS and
+  Synapse as `:latest`, so the integration stack pins the current releases of both by digest instead
+  of MAS 0.14.1. Code still reads the MAS capabilities at runtime (S4) and degrades as below.
+- **Erase on a MAS without `skip_erase`** while `gdpr_erase_on_delete` is false: refused and logged as
+  FAILED with backoff (fail closed, never erase more than configured).
+- **LIF-09:** when the homeserver delegates logins to MAS but `mas_admin` is missing, offboarding is
+  refused (no lock, no erase through the Synapse fallback), reported in the admin room and log.
+  Onboarding and rooms run normally.
+- **Ledger retention:** lock records of deleted users with erase disabled are dropped after 90 days,
+  a constant (the MAS lock stays).
+- **Admin room on by default:** `admin_room.enabled` defaults to true so `!confirm` is available. An
+  enabled admin room needs at least one admin (`admin_user_ids` or
+  `authentik_group_pks_granting_bot_admin`), otherwise startup fails with a clear config error;
+  deployments without an admin room disable it explicitly and steer the guard through its limits.
+- **S5:** deleting a room (`delete_disabled_rooms`) counts as irreversible (layer 3, confirmation from
+  3 per pass); closing or detaching a room stays layer 2.
