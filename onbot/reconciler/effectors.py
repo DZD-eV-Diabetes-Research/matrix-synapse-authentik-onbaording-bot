@@ -92,8 +92,8 @@ class DryRunEffectors:
 
     async def create_managed_room(self, spec: ManagedRoomSpec) -> str:
         log.info(
-            "[dry-run] would create %s room alias=%s name=%r in space=%s",
-            spec.room_type.value,
+            "[dry-run] would create %s alias=%s name=%r in space=%s",
+            spec.room_type.value.replace("_", " "),
             spec.alias_localpart,
             spec.name,
             spec.parent_space_id,
