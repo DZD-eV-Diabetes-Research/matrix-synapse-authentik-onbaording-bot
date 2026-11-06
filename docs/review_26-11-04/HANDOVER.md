@@ -40,10 +40,21 @@ The first real CI run on GitHub (old 771cdaa) was fully green, 23 minutes.
 reuse of a green CI run, full-history secret scan. Verified with actionlint and against real API
 data of a finished run; the reuse path itself runs for the first time at the next release.
 
-**Wave 2 running** (started 2026-11-06 from 6b6be50): S3 on `review/s3-guards` (instance 1), S4 on
-`review/s4-offboarding` (instance 2), S11 on `review/s11-http` (instance 3), each in its own
-worktree under `.claude/worktrees/`. Merge order suggestion: S3 first (release blocker), then S4
-(both touch `onbot/lifecycle/`), then S11.
+**Wave 2 merged** (2026-11-06): S11 (HTTP layer, `synapse_server.oauth2` removed, D18), S3 (guard
+with `!confirm <id>` batches, admin-room notifier, `reconcile-once --dry-run`), S4 (sessions ended on
+lock, D7 `gdpr_erase_on_delete`, paged media deletion, robust ledger). Merge order S11, S3, S4; the
+S4 merge needed manual resolution in `onbot/lifecycle/accounts.py` (both sides kept; `plan_accounts`
+also skips quarantined entries), `onbot/app.py` and `onbot/events.py`. After the merges (990eaef):
+1036 unit and contract tests green, all hooks green, config docs regenerated. The release blocker
+note in CHANGELOG is gone (S3 closes it).
+
+**Running when this was written:** full integration run on main (instance 0, log
+`scratchpad/orch-itest-main-wave2.log`), session W2F on `review/w2f-fixups` (instance 1: D19 items:
+test stack to current MAS and Synapse, offboarding refused under MAS without `mas_admin`, admin room
+on by default with at least one admin), and a cold wave 2 review of `6b6be50..990eaef`.
+
+**Next:** merge W2F (CHANGELOG, regenerate config docs), act on the wave 2 review, full integration
+run, then wave 3 (S5, S6, S12). S5 brief has the S3 handover and D19 (room deletion is layer 3).
 
 ## Where things stand (2026-11-04)
 
