@@ -7,7 +7,7 @@ import pytest
 import respx
 
 from onbot.clients.base import ApiError
-from onbot.clients.synapse_admin import ApiClientSynapseAdmin, RoomDeletionFailed
+from onbot.clients.synapse_admin import ApiClientSynapseAdmin, RoomBlock, RoomDeletionFailed
 
 
 def _client() -> ApiClientSynapseAdmin:
@@ -199,6 +199,22 @@ async def test_a_deletion_still_running_after_the_wait_is_left_to_synapse() -> N
     finally:
         await client.aclose()
     assert result["status"] == "active"
+
+
+@respx.mock
+async def test_get_room_block_says_who_blocked_the_room() -> None:
+    respx.get("https://matrix.test/_synapse/admin/v1/rooms/!r:x/block").mock(
+        side_effect=[
+            httpx.Response(200, json={"block": True, "user_id": "@admin:x"}),
+            httpx.Response(200, json={"block": False}),
+        ]
+    )
+    client = _client()
+    try:
+        assert await client.get_room_block("!r:x") == RoomBlock(blocked=True, by="@admin:x")
+        assert await client.get_room_block("!r:x") == RoomBlock(blocked=False)
+    finally:
+        await client.aclose()
 
 
 @respx.mock

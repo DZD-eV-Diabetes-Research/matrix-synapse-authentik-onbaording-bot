@@ -152,6 +152,47 @@ async def test_get_room_state_event_returns_none_on_404() -> None:
 
 
 @respx.mock
+async def test_get_room_state_event_with_sender_asks_for_the_whole_event() -> None:
+    route = respx.get("https://matrix.test/_matrix/client/v3/rooms/!r:x/state/m.room.join_rules").mock(
+        return_value=httpx.Response(
+            200, json={"sender": "@mod:x", "event_id": "$e", "content": {"join_rule": "invite"}}
+        )
+    )
+    client = _client()
+    try:
+        event = await client.get_room_state_event_with_sender("!r:x", "m.room.join_rules")
+    finally:
+        await client.aclose()
+    assert event is not None and event["sender"] == "@mod:x"
+    assert route.calls[0].request.url.params.get("format") == "event"
+
+
+@respx.mock
+async def test_get_room_state_event_with_sender_returns_none_on_404() -> None:
+    respx.get("https://matrix.test/_matrix/client/v3/rooms/!s:x/state/m.space.child/!r:x").mock(
+        return_value=httpx.Response(404, json={"errcode": "M_NOT_FOUND"})
+    )
+    client = _client()
+    try:
+        assert await client.get_room_state_event_with_sender("!s:x", "m.space.child", "!r:x") is None
+    finally:
+        await client.aclose()
+
+
+@respx.mock
+async def test_set_room_alias_puts_the_directory_entry() -> None:
+    route = respx.put(url__regex=r".*/v3/directory/room/%23team%3Amatrix\.test$").mock(
+        return_value=httpx.Response(200, json={})
+    )
+    client = _client()
+    try:
+        await client.set_room_alias("#team:matrix.test", "!r:x")
+    finally:
+        await client.aclose()
+    assert json.loads(route.calls[0].request.content) == {"room_id": "!r:x"}
+
+
+@respx.mock
 async def test_send_text_message_uses_unique_txn() -> None:
     route = respx.put(url__regex=r".*/v3/rooms/%21r%3Ax/send/m\.room\.message/.+").mock(
         return_value=httpx.Response(200, json={"event_id": "$msg"})
@@ -501,8 +542,19 @@ class _RecordingMatrixClient:
     async def set_room_topic(self, room_id: str, topic: str) -> None:
         self.calls.append(("set_room_topic", (room_id, topic), {}))
 
-    async def put_room_state_event(self, room_id: str, event_type: str, content: dict[str, object]) -> None:
-        self.calls.append(("put_room_state_event", (room_id, event_type, content), {}))
+    async def put_room_state_event(
+        self, room_id: str, event_type: str, content: dict[str, object], state_key: str = ""
+    ) -> None:
+        self.calls.append(("put_room_state_event", (room_id, event_type, content, state_key), {}))
+
+    async def get_room_state_event_with_sender(
+        self, room_id: str, event_type: str, state_key: str = ""
+    ) -> dict[str, object]:
+        self.calls.append(("get_room_state_event_with_sender", (room_id, event_type, state_key), {}))
+        return {"sender": "@bot:matrix.test", "content": {}}
+
+    async def set_room_alias(self, alias: str, room_id: str) -> None:
+        self.calls.append(("set_room_alias", (alias, room_id), {}))
 
 
 async def test_cs_api_effectors_delegate_to_client() -> None:
@@ -518,6 +570,9 @@ async def test_cs_api_effectors_delegate_to_client() -> None:
     await effectors.set_room_name("!r:x", "Team")
     await effectors.set_room_topic("!r:x", "topic")
     await effectors.put_room_state(["!r:x"][0], "org.onbot.state", {"v": 1})
+    await effectors.put_room_state("!s:x", "m.space.child", {"via": ["x"]}, state_key="!r:x")
+    await effectors.get_room_state_event("!r:x", "m.room.join_rules")
+    await effectors.set_room_alias("#team:matrix.test", "!r:x")
 
     names = [c[0] for c in client.calls]
     assert names == [
@@ -531,7 +586,11 @@ async def test_cs_api_effectors_delegate_to_client() -> None:
         "set_room_name",
         "set_room_topic",
         "put_room_state_event",
+        "put_room_state_event",
+        "get_room_state_event_with_sender",
+        "set_room_alias",
     ]
+    assert client.calls[-3][1] == ("!s:x", "m.space.child", {"via": ["x"]}, "!r:x")
     create_kwargs = client.calls[0][2]
     assert create_kwargs["alias_localpart"] == "team"
     assert create_kwargs["parent_space_id"] == "!s:x"

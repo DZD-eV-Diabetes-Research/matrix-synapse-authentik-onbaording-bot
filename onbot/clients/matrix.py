@@ -405,6 +405,33 @@ class ApiClientMatrix(BaseApiClient):
             raise
         return content
 
+    async def get_room_state_event_with_sender(
+        self, room_id: str, event_type: str, state_key: str = ""
+    ) -> dict[str, Any] | None:
+        """The whole current state event (``sender``, ``event_id``, ``content``), or ``None`` (404).
+
+        The spec'd endpoint returns only the content; Synapse returns the event with ``format=event``.
+        The bot needs the sender to tell its own writes from a human's (its onbot markers, a lobby's
+        join rule, D16).
+        """
+        path = f"v3/rooms/{path_segment(room_id)}/state/{path_segment(event_type)}"
+        if state_key:
+            path = f"{path}/{path_segment(state_key)}"
+        try:
+            event: dict[str, Any] = await self.get_json(path, params={"format": "event"})
+        except ApiError as exc:
+            if exc.status_code == 404:
+                return None
+            raise
+        return event
+
+    async def set_room_alias(self, alias: str, room_id: str) -> None:
+        """Point the local alias ``alias`` (``#name:server``) at ``room_id`` in the room directory.
+
+        https://spec.matrix.org/latest/client-server-api/#put_matrixclientv3directoryroomroomalias
+        """
+        await self.put_json(f"v3/directory/room/{path_segment(alias)}", json_body={"room_id": room_id})
+
     async def put_room_state_event(
         self, room_id: str, event_type: str, content: Mapping[str, Any], state_key: str = ""
     ) -> None:
@@ -679,8 +706,18 @@ class CSApiEffectors:
     ) -> dict[str, Any] | None:
         return await self.client.get_room_state_event(room_id, event_type, state_key)
 
-    async def put_room_state(self, room_id: str, event_type: str, content: dict[str, Any]) -> None:
-        await self.client.put_room_state_event(room_id, event_type, content)
+    async def get_room_state_event(
+        self, room_id: str, event_type: str, state_key: str = ""
+    ) -> dict[str, Any] | None:
+        return await self.client.get_room_state_event_with_sender(room_id, event_type, state_key)
+
+    async def put_room_state(
+        self, room_id: str, event_type: str, content: dict[str, Any], state_key: str = ""
+    ) -> None:
+        await self.client.put_room_state_event(room_id, event_type, content, state_key)
+
+    async def set_room_alias(self, alias: str, room_id: str) -> None:
+        await self.client.set_room_alias(alias, room_id)
 
     async def get_room_account_data(
         self, user_id: str, room_id: str, data_type: str
