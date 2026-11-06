@@ -105,6 +105,13 @@ rooms would be affected). An allowlisted admin releases exactly that batch with 
 release each other. A batch expires after 72 hours and is proposed again on a later pass if it still
 applies. After a confirmed drop the new counts become the last known good.
 
+- Ids are 6 characters from an alphabet without look-alikes (no `0`/`O`, `1`/`l`/`I`).
+- Confirmation re-checks against the current state: only actions that still apply are executed (a
+  user who is active again is skipped). If the set of actions grew, the confirmation does not cover
+  the new part; a new batch is proposed. A confirmation never covers more than the admin saw.
+- `!reject <id>` closes a batch explicitly: no execution, no reminders, not proposed again for the
+  same incident (for example a broken token that has since been replaced).
+
 Defaults (configurable):
 
 - Layer 1: a drop of more than 20 % in users in scope or in mapped groups against the last known good

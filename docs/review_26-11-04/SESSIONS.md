@@ -210,8 +210,9 @@ entry 2 (MNT-04 part).
 
 **Decisions from 2026-11-06 (D13):** a tripped guard does not just block. It pauses the destructive
 part, stores a pending batch with its own id, reports in the admin room, and `!confirm <id>` releases
-exactly that batch (`!pending` lists them, 72 h expiry, no `!confirm` without an id). This session
-builds the batch store and both commands; S5 only adds layer 3. Defaults: layer 1 at more than 20 %
+exactly that batch (`!pending` lists them, `!reject <id>` closes one, 72 h expiry, no `!confirm`
+without an id, re-check against the current state on confirm; details in D13). This session builds
+the batch store and the three commands; S5 only adds layer 3. Defaults: layer 1 at more than 20 %
 drop (users in scope or mapped groups, baseline moves with every normal pass), layer 2 at more than 10
 reversible actions per pass.
 
