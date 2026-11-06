@@ -7,12 +7,16 @@ name: Release
 #                PEP 440 release, normalises it (0.1.0-beta.1 becomes 0.1.0b1), checks that the
 #                release's "pre-release" checkbox agrees with it, and that the tagged commit is on
 #                main. Both artifacts get exactly this version (review finding SUP-06).
-#   2. ci        runs the complete CI workflow (lint, types, unit, secret scan, image smoke test,
-#                integration suite) on the tagged commit. Nothing is published unless it passes
-#                (SUP-02).
-#   3. build-dist builds sdist and wheel without any secret in reach and checks their names and
+#   2. ci-reuse  looks for a green CI run of exactly the tagged commit (a push to main in which all
+#                four jobs, the integration suite included, passed; scripts/ci_gate.py). If there is
+#                one, its result is reused and step 3 is skipped (review decision D17, saves about
+#                20 minutes). Any doubt (no such run, an API error) means no reuse.
+#   3. ci        otherwise runs the complete CI workflow (lint, types, unit, secret scan, image smoke
+#                test, integration suite) on the tagged commit. Nothing is published unless step 2
+#                or step 3 vouches for the commit (SUP-02).
+#   4. build-dist builds sdist and wheel without any secret in reach and checks their names and
 #                that the sdist ships no test fixtures.
-#   4. publish-pypi and publish-image run in the `release` environment, the only place that holds the
+#   5. publish-pypi and publish-image run in the `release` environment, the only place that holds the
 #                publish credentials (maintainer action: protect it with a required reviewer).
 #
 # Channels, by version (the checkbox must match):
@@ -88,16 +92,58 @@ jobs:
           --image "$IMAGE_NAME"
           --github-output "$GITHUB_OUTPUT"
 
+  ci-reuse:
+    name: reuse the CI result of the tagged commit
+    needs: version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read  # list the CI runs and their jobs
+    outputs:
+      reuse: ${{ steps.check.outputs.reuse }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # A push run on main of the same commit tested the same tree with the same ci.yml. It may
+      # have used the Actions cache, which on main only holds what main runs wrote.
+      - name: Look for a green CI run of this commit on main
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          reuse=false
+          if gh api "repos/${REPO}/actions/workflows/ci.yml/runs?head_sha=${GITHUB_SHA}&event=push&branch=main&status=success&per_page=50" > "$RUNNER_TEMP/runs.json"; then
+            run_id="$(python3 scripts/ci_gate.py pick-run "$RUNNER_TEMP/runs.json" "$GITHUB_SHA")"
+            if [ -n "$run_id" ] && gh api "repos/${REPO}/actions/runs/${run_id}/jobs?per_page=50" > "$RUNNER_TEMP/jobs.json"; then
+              reuse="$(python3 scripts/ci_gate.py reuse "$RUNNER_TEMP/runs.json" "$RUNNER_TEMP/jobs.json" "$GITHUB_SHA")"
+            fi
+          fi
+          if [ "$reuse" = "true" ]; then
+            msg="Reusing CI run ${run_id} of ${GITHUB_SHA}: ${GITHUB_SERVER_URL}/${REPO}/actions/runs/${run_id}"
+          else
+            msg="No reusable CI run of ${GITHUB_SHA}; running the full CI."
+          fi
+          echo "$msg"
+          echo "$msg" >> "$GITHUB_STEP_SUMMARY"
+          echo "reuse=${reuse}" >> "$GITHUB_OUTPUT"
+
   ci:
     name: ci
-    needs: version
+    needs: [version, ci-reuse]
+    # Also runs when ci-reuse itself failed: no reuse then, the full CI decides.
+    if: ${{ !cancelled() && needs.version.result == 'success' && needs.ci-reuse.outputs.reuse != 'true' }}
     permissions:
       contents: read
     uses: ./.github/workflows/ci.yml
 
   build-dist:
     name: build sdist + wheel
-    needs: [version, ci]
+    needs: [version, ci-reuse, ci]
+    # The gate: the full CI passed, or a green CI run of this commit was reused.
+    if: ${{ !cancelled() && needs.version.result == 'success' && (needs.ci.result == 'success' || (needs.ci.result == 'skipped' && needs.ci-reuse.outputs.reuse == 'true')) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -136,7 +182,9 @@ jobs:
 
   publish-pypi:
     name: publish (PyPI)
-    needs: [version, ci, build-dist]
+    needs: [version, ci-reuse, ci, build-dist]
+    # build-dist only succeeds behind the gate.
+    if: ${{ !cancelled() && needs.build-dist.result == 'success' }}
     runs-on: ubuntu-latest
     environment:
       name: release
@@ -160,7 +208,8 @@ jobs:
 
   publish-image:
     name: publish image (Docker Hub)
-    needs: [version, ci]
+    needs: [version, ci-reuse, ci]
+    if: ${{ !cancelled() && needs.version.result == 'success' && (needs.ci.result == 'success' || (needs.ci.result == 'skipped' && needs.ci-reuse.outputs.reuse == 'true')) }}
     runs-on: ubuntu-latest
     environment:
       name: release
