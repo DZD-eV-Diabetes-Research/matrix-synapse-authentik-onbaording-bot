@@ -7,6 +7,8 @@ back only through a real re-enable (review S1, live check 1).
 
 from __future__ import annotations
 
+import asyncio
+import time
 from urllib.parse import quote
 
 import pytest
@@ -79,6 +81,17 @@ async def _deactivated(admin_client, mxid: str) -> bool:
     """
     user = await admin_client.get_json(f"v2/users/{quote(mxid, safe='@:')}")
     return bool(user.get("deactivated"))
+
+
+async def _wait_deactivated(admin_client, mxid: str, *, timeout: float = 60.0) -> bool:
+    """Poll :func:`_deactivated`: MAS hands the deactivation to Synapse through a background job."""
+    deadline = time.monotonic() + timeout
+    while True:
+        if await _deactivated(admin_client, mxid):
+            return True
+        if time.monotonic() > deadline:
+            return False
+        await asyncio.sleep(1)
 
 
 async def test_locked_user_deleted_in_authentik_stays_locked_and_is_erased(
@@ -209,4 +222,4 @@ async def test_known_user_disabled_and_moved_out_of_scope_is_offboarded(
 
     life.delete_after_n_sec = 0
     await run_reconcile_once(config)
-    assert await _deactivated(admin_client, login.mxid)
+    assert await _wait_deactivated(admin_client, login.mxid)
