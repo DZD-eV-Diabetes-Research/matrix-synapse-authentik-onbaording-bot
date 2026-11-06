@@ -199,6 +199,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   user it is bound to is present, active and in scope. Previously deleting a locked user in Authentik,
   stripping a scope attribute, an ignore-list edit or an empty API answer unlocked the account in MAS
   and revived its old sessions.
-- ⚠️ **Unresolved release blocker:** the Phase 1 maintainer security items (rotate leaked
-  credentials, scrub git history) remain open. No image/release should be published until they are
-  done.
+- **Leaked tokens in git history (SUP-01):** both old `syt_` tokens were already invalid (review
+  decision D1); the history was scrubbed and force-pushed on 2026-11-06 (S16), so every commit SHA
+  changed. Re-clone instead of pulling.
+- ⚠️ **Unresolved release blocker:** since review S1 a known user who vanishes from Authentik is
+  offboarded. Until the drop guard of review S3 is merged, a token that suddenly sees only some users
+  would lock the others after the cooldown. Do not release before S3.
