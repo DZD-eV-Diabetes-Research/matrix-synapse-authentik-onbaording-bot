@@ -75,10 +75,7 @@ matrix:
   endpoint: "http://synapse:8008"
 
 clients:
-  # The homeserver itself — Synapse introspects tokens against MAS using these credentials.
-  - client_id: "0000000000000000000SYNAPSE"
-    client_auth_method: client_secret_basic
-    client_secret: "7ad6a9abfd83a14c730e376e7e2627424194aef6212e8cc07328199ed708aebd"
+  # Synapse needs no client of its own: it introspects tokens with the shared `matrix.secret` above.
   # The integration test's OIDC client — drives a real authorization-code login to provision a user.
   - client_id: "0000000000000000000000TEST"
     client_auth_method: client_secret_post

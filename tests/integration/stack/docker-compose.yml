@@ -7,8 +7,8 @@
 # Container ports and in-network URLs (`mas:8080`, `authentik-server:9000`, `synapse:8008`) never
 # change, so the issuer strings in mas/config.yaml and synapse/homeserver.yaml stay valid for every
 # instance; the host-side login helper rewrites those hostnames to localhost:<host port> on browser
-# hops. Two values in synapse/homeserver.yaml (public_baseurl, account_management_url) name the
-# instance 0 host ports; Synapse only advertises them to clients and the harness never follows them.
+# hops. One value in synapse/homeserver.yaml (public_baseurl) names the instance 0 host port; Synapse
+# only advertises it to clients and the harness never follows it.
 #
 # Every published port binds to 127.0.0.1 only (review finding SUP-15). The stack runs with fixed,
 # public admin credentials (Authentik bootstrap password and token, MAS admin client secret), and
@@ -109,7 +109,7 @@ services:
     # synapse/homeserver.yaml) so the integration suite exercises the v12 world the bot now runs in:
     # creator absent from power_levels, domainless room IDs.
     image: ghcr.io/element-hq/synapse@sha256:f0df87cff259872637b4b5e5174b9977e5e3046dd421505407803b5e45c5f842
-    # Wait for MAS (auth is delegated to it via MSC3861), generate the signing key, then run.
+    # Wait for MAS (auth is delegated to it), generate the signing key, then run.
     entrypoint: ["/bin/bash", "-c"]
     command:
       - >

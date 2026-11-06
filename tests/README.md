@@ -80,9 +80,8 @@ file interpolates the same `ONBOT_ITEST_*` names, with instance 0 values as defa
 per instance. Container ports and the in-network URLs (`mas:8080`, `authentik-server:9000`,
 `synapse:8008`) are identical in every instance, so the MAS issuer, the Authentik upstream issuer and
 the redirect URIs in the stack configs stay valid; the login helper rewrites the in-network hostnames
-to `localhost:<host port>` on each browser hop. Synapse's `public_baseurl` and
-`account_management_url` still name the instance 0 ports: Synapse only advertises them to clients,
-and the harness never follows them.
+to `localhost:<host port>` on each browser hop. Synapse's `public_baseurl` still names the instance 0
+port: Synapse only advertises it to clients, and the harness never follows it.
 
 Each instance boots six containers (Authentik server and worker, Postgres, Redis, MAS, Synapse), so
 plan for roughly 2 to 3 GB of RAM per running instance.
