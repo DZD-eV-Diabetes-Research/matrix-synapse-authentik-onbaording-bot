@@ -11,6 +11,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **`mas_admin.upstream_subject_attribute` (default `uid`) and `mas_admin.upstream_provider_id`** for
+  resolving users through MAS upstream links (review S9, D8).
 - **`gdpr_erase_on_delete` offboarding option (review S4, D7, default `false`)**, applied identically
   through MAS (`skip_erase`) and the Synapse admin API (`erase`).
 - **"Offboarding check" startup step (LIF-09):** logs the offboarding setup and what the configured
@@ -58,6 +60,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   This `CHANGELOG.md`.
 
 ### Changed
+- **Users are resolved through MAS (upstream link by subject) when `mas_admin` is set, else through the
+  `authentik pk -> MXID` binding recorded at first sight (review S9, D8, SEC-07);** the mapping
+  attribute only applies to users never seen. A renamed user, or a changed
+  `authentik_username_mapping_attribute`, no longer causes kicks, demotions, locks or new welcomes; the
+  change is reported in the admin room.
+- **Several Authentik users resolving to one Matrix account (D21):** a user linked to it through MAS
+  keeps it and those who only name it by the mapping attribute are skipped. Otherwise (two MAS links,
+  two recorded bindings, a MAS link against another user's binding, a binding against an attribute
+  guess) none of them is joined, kicked, re-levelled, locked or erased. Either way it is reported in
+  the admin room.
+- **An unreadable `known_users` record pauses membership and power-level management** (and
+  offboarding, as before) until repaired.
+- **A `global_room_admins` entry whose account is on `matrix_user_ignore_list` is no longer granted PL
+  100** (MNT-13).
+- **Tests: the integration stack's Authentik provider sends the hashed user ID as `sub`.**
 - **Obsolete-room teardown only acts on bot-created rooms whose locked marker names a vanished group**
   (review S6), and waits while any bot room is unreadable. Unadopted legacy rooms are never torn
   down. Groups with colliding aliases get no new room (REC-13); rooms upgraded by a human are
@@ -234,6 +251,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   model forbids unknown keys, so remove these two settings if present.
 
 ### Security
+- **Every URL path segment in the Synapse, MAS and Matrix clients is percent-encoded (review S9,
+  SEC-08),** so a localpart such as `x/../victim` can no longer redirect a MAS lock to another account;
+  absolute URLs are only followed to the client's own origin.
 - **Rooms are recognised by creator plus a protected onbot marker, no longer by canonical alias
   (review S6, REC-04, SEC-02, D20):** a room another user created at a group's alias is never adopted;
   the group is skipped and reported, nobody is force-joined into it, no second room is built. A

@@ -456,6 +456,67 @@ client_secret: ONLY_AN_EXAMPLE_SECRET_pMv1kZ8sQ0
 
 ---
 
+### `mas_admin.upstream_subject_attribute`
+
+*Authentik attribute MAS links users by*
+
+Where the subject (`sub` claim) that Authentik sends to MAS is found on the
+Authentik user object, as a dotted path. With it onbot asks MAS which Matrix account
+is linked to each Authentik user, so a user renamed in Authentik keeps their account
+(D8). It must match the subject mode of the Authentik OAuth2 provider MAS uses:
+`uid` for "Based on the User's hashed ID" (Authentik's default), `pk` for "Based on
+the User's ID", `username` for "Based on the User's username", `email` for "Based on
+the User's Email". Only the hashed ID and the ID survive a rename. `null` turns the
+lookup off; users are then resolved from onbot's recorded bindings and the mapping
+attribute.
+
+| Property | Value |
+|---|---|
+| Type | str |
+| Required | No |
+| Default | `"uid"` |
+| Environment variable | `ONBOT_MAS_ADMIN__UPSTREAM_SUBJECT_ATTRIBUTE` |
+
+**Examples:**
+
+*Example 1:*
+
+```yaml
+upstream_subject_attribute: uid
+```
+
+*Example 2:*
+
+```yaml
+upstream_subject_attribute: pk
+```
+
+---
+
+### `mas_admin.upstream_provider_id`
+
+*MAS upstream provider id of Authentik*
+
+The id (a ULID) of the Authentik provider in the MAS `upstream_oauth2` config.
+Only links of this provider are used. Leave unset when MAS has a single upstream
+provider; with several, an Authentik subject that is linked to different Matrix
+accounts by different providers is treated as a conflict.
+
+| Property | Value |
+|---|---|
+| Type | str |
+| Required | No |
+| Default | `null` |
+| Environment variable | `ONBOT_MAS_ADMIN__UPSTREAM_PROVIDER_ID` |
+
+**Examples:**
+
+```yaml
+upstream_provider_id: 01HFS67GJ145HCM9ZASYS9DC3J
+```
+
+---
+
 ## `welcome_new_users_messages`
 
 *Welcome messages*
@@ -818,7 +879,10 @@ Source of the localpart of the Matrix ID (`@<localpart>:server`). A dotted path
 into the Authentik user object, e.g. `username` or `attributes.matrix_name`. On a
 homeserver fronted by the Matrix Authentication Service this MUST agree with the
 localpart template MAS derives from the upstream claim, or provisioned users will
-never match the accounts they own.
+never match the accounts they own. It is only asked for users onbot has never seen:
+with `mas_admin` MAS says which account a user owns, and once a user was seen with
+an account onbot records that binding and keeps it when the attribute changes (a
+rename). Such a change is reported in the admin room.
 
 | Property | Value |
 |---|---|

@@ -42,7 +42,7 @@ Start a session by pointing Claude at this file and the session ID, for example:
 | 8 | S6 | Room identity (marker plus creator) and unified room provisioning | L | S2 | done (merged in wave 3) |
 | 9 | S7 | Room repair: space link, lobbies, blocks | M | S6 | open |
 | 10 | S8 | Onboarding correctness | M | S6 | open |
-| 11 | S9 | User identity across renames | M | S1, S3 | open |
+| 11 | S9 | User identity across renames | M | S1, S3 | done (merged in wave 3) |
 | 12 | S10 | Runtime lifecycle: startup, sync recovery, shutdown, liveness | M | S0 | done (merged in wave 1a) |
 | 13 | S11 | HTTP layer: retries, idempotency, token provider | M | S10 | done (merged in wave 2) |
 | 14 | S12 | Broadcast and admin room | S | S8 | open |
