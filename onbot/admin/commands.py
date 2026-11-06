@@ -18,8 +18,12 @@ COMMAND_PREFIX = "!"
 ANNOUNCE = "announce"
 HELP = "help"
 STATUS = "status"
+# The destructive-action guard (D13): list, release or close paused batches.
+PENDING = "pending"
+CONFIRM = "confirm"
+REJECT = "reject"
 
-KNOWN_COMMANDS = frozenset({ANNOUNCE, HELP, STATUS})
+KNOWN_COMMANDS = frozenset({ANNOUNCE, HELP, STATUS, PENDING, CONFIRM, REJECT})
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +70,9 @@ def help_text() -> str:
             "",
             f"{COMMAND_PREFIX}{ANNOUNCE} <message>  send <message> to every user's onboarding room",
             f"{COMMAND_PREFIX}{STATUS}             bot version, last reconcile, managed rooms",
+            f"{COMMAND_PREFIX}{PENDING}            destructive actions paused by the guard, by batch",
+            f"{COMMAND_PREFIX}{CONFIRM} <id>       carry out exactly that batch (what still applies)",
+            f"{COMMAND_PREFIX}{REJECT} <id>        discard that batch; it is not proposed again",
             f"{COMMAND_PREFIX}{HELP}               this message",
             "",
             "Only users on the bot's admin allowlist may run commands.",

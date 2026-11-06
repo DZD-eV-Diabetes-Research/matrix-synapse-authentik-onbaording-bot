@@ -63,7 +63,15 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     run = sub.add_parser("run", parents=[common], help="Run the bot service (reconcile loop + onboarding).")
     run.add_argument("--heartbeat-file", default=None, help=_HEARTBEAT_HELP)
-    sub.add_parser("reconcile-once", parents=[common], help="Run a single reconcile pass and exit.")
+    once = sub.add_parser("reconcile-once", parents=[common], help="Run a single reconcile pass and exit.")
+    once.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "Read Authentik and Matrix and log every change the pass would make (prefixed [dry-run]), "
+            "including what the destructive-action guard would pause, without changing anything."
+        ),
+    )
     bcast = sub.add_parser(
         "broadcast",
         parents=[common],
@@ -219,7 +227,7 @@ def _main(argv: Sequence[str] | None) -> int:
             app.run_service(config, heartbeat_path=resolve_heartbeat_path(args.heartbeat_file))
         )
     if args.command == "reconcile-once":
-        return asyncio.run(app.run_interruptible(app.run_reconcile_once(config)))
+        return asyncio.run(app.run_interruptible(app.run_reconcile_once(config, dry_run=args.dry_run)))
     if args.command == "broadcast":
         return asyncio.run(app.run_interruptible(app.run_broadcast(config, args.message)))
 

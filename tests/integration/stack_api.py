@@ -172,6 +172,50 @@ class AuthentikAdmin:
         r = self._http.post(f"/core/groups/{group_pk}/remove_user/", json={"pk": user_pk})
         r.raise_for_status()
 
+    def narrowed_api_token(self, visible_user_pks: list[int]) -> str:
+        """An API token that sees every group but only the given users (REC-01, 08 live check 3).
+
+        A service account with a role that holds the global ``view_group`` permission and the
+        object-level ``view_user`` permission on each listed user. Authentik answers its user list
+        with ``200`` and only those users: the realistic way an RBAC change collapses the directory.
+        """
+
+        def ok(r: httpx.Response) -> httpx.Response:
+            r.raise_for_status()
+            return r
+
+        name = uniq("narrowsvc")
+        user = ok(
+            self._http.post(
+                "/core/users/",
+                json={"username": name, "name": name, "is_active": True, "path": "users", "type": "internal"},
+            )
+        ).json()
+        identifier = uniq("narrowtok")
+        ok(
+            self._http.post(
+                "/core/tokens/",
+                json={"identifier": identifier, "intent": "api", "user": user["pk"], "expiring": False},
+            )
+        )
+        key: str = ok(self._http.get(f"/core/tokens/{identifier}/view_key/")).json()["key"]
+        role = ok(self._http.post("/rbac/roles/", json={"name": uniq("narrowrole")})).json()["pk"]
+        ok(self._http.patch(f"/core/users/{user['pk']}/", json={"roles": [role]}))
+        assign = f"/rbac/permissions/assigned_by_roles/{role}/assign/"
+        ok(self._http.post(assign, json={"permissions": ["authentik_core.view_group"]}))
+        for pk in visible_user_pks:
+            ok(
+                self._http.post(
+                    assign,
+                    json={
+                        "permissions": ["authentik_core.view_user"],
+                        "model": "authentik_core.user",
+                        "object_pk": str(pk),
+                    },
+                )
+            )
+        return key
+
 
 def _new_executor_url(flow_slug: str, query: str) -> str:
     return f"{AUTHENTIK_URL}/api/v3/flows/executor/{flow_slug}/?query={quote(query, safe='')}"

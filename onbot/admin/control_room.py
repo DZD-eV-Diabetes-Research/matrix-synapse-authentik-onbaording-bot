@@ -35,9 +35,19 @@ from typing import Any
 from onbot import __version__
 from onbot.admin.admins import AdminResolver
 from onbot.admin.broadcast import BroadcastService
-from onbot.admin.commands import ANNOUNCE, STATUS, Command, help_text, parse_command
+from onbot.admin.commands import (
+    ANNOUNCE,
+    CONFIRM,
+    PENDING,
+    REJECT,
+    STATUS,
+    Command,
+    help_text,
+    parse_command,
+)
 from onbot.clients.matrix import ApiClientMatrix, SyncResult
 from onbot.config import OnbotConfig
+from onbot.guard import DestructiveActionGuard, describe_batch
 from onbot.logging import get_logger
 from onbot.reconciler.engine import ReconcilerEngine
 from onbot.reconciler.state import event_type_name
@@ -64,6 +74,7 @@ class ControlRoomHandler:
         admins: AdminResolver,
         *,
         engine: ReconcilerEngine | None = None,
+        guard: DestructiveActionGuard | None = None,
         started_at_ms: int | None = None,
         remembered_events: int = MAX_REMEMBERED_EVENTS,
     ) -> None:
@@ -72,6 +83,7 @@ class ControlRoomHandler:
         self.broadcast = broadcast
         self.admins = admins
         self.engine = engine
+        self.guard = guard
         self.bot_id = config.synapse_server.bot_user_id
         self.room_id: str | None = None
         self._started_at_ms = started_at_ms if started_at_ms is not None else int(time.time() * 1000)
@@ -147,6 +159,10 @@ class ControlRoomHandler:
             await self._announce(command.argument)
         elif command.name == STATUS:
             await self._reply(await self._status())
+        elif command.name == PENDING:
+            await self._reply(await self._pending())
+        elif command.name in (CONFIRM, REJECT):
+            await self._decide_batch(command, sender)
         else:
             # !help, and anything unrecognised: answering is friendlier than silence, which reads
             # as the bot being down.
@@ -159,7 +175,44 @@ class ControlRoomHandler:
         result = await self.broadcast.broadcast(message)
         await self._reply(result.summary())
 
+    async def _pending(self) -> str:
+        if self.guard is None:
+            return "The destructive-action guard is not available in this process."
+        batches = await self.guard.open_batches()
+        if not batches:
+            return "No destructive actions are waiting for a confirmation."
+        return "\n\n".join(describe_batch(b) for b in batches)
+
+    async def _decide_batch(self, command: Command, sender: str) -> None:
+        """``!confirm <id>`` / ``!reject <id>``: exactly one batch, never all of them (D13)."""
+        batch_id = command.argument.split()[0] if command.argument.split() else ""
+        if not batch_id:
+            await self._reply(
+                f"Usage: !{command.name} <batch id>. There is no {command.name} without an id; "
+                "!pending lists the open batches."
+            )
+            return
+        if self.guard is None:
+            await self._reply("The destructive-action guard is not available in this process.")
+            return
+        if command.name == CONFIRM:
+            done, reply = await self.guard.confirm(batch_id, sender)
+        else:
+            done, reply = await self.guard.reject(batch_id, sender)
+        await self._reply(reply)
+        if done and command.name == CONFIRM and self.engine is not None:
+            self.engine.trigger()  # run it now, not a whole tick later
+
     async def _status(self) -> str:
+        status = await self._status_line()
+        if self.guard is not None:
+            waiting = len(await self.guard.open_batches())
+            status += f"; destructive actions paused in {waiting} batch(es)" + (
+                ", see !pending" if waiting else ""
+            )
+        return status
+
+    async def _status_line(self) -> str:
         rooms = await self.broadcast.target_rooms()
         if self.engine is None or self.engine.last_reconcile_at is None:
             last = "not yet"

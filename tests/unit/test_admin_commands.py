@@ -50,7 +50,7 @@ def test_unknown_verbs_parse_so_the_caller_can_answer_them() -> None:
     assert not command.is_known
 
 
-@pytest.mark.parametrize("verb", ["announce", "help", "status"])
+@pytest.mark.parametrize("verb", ["announce", "help", "status", "pending", "confirm", "reject"])
 def test_the_supported_verbs_are_known_and_documented(verb: str) -> None:
     assert parse_command(f"!{verb}").is_known
     assert f"!{verb}" in help_text()

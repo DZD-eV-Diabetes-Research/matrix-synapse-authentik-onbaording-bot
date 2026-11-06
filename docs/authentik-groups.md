@@ -374,7 +374,14 @@ naming your group is in the log.
 
 ## Checking your work
 
-Attributes take effect on the next reconcile. To see the result immediately:
+Attributes take effect on the next reconcile. To see what the next pass would do, without changing
+anything:
+
+```bash
+onbot reconcile-once --dry-run
+```
+
+To apply it immediately (stop the service first, see [deployment.md](deployment.md#cli-commands)):
 
 ```bash
 onbot reconcile-once --log-level DEBUG

@@ -443,7 +443,10 @@ class FakeLifecycle:
         self.calls: list[DirectorySnapshot] = []
         self.outcomes = outcomes or []
 
-    async def reconcile_accounts(self, snapshot: DirectorySnapshot) -> list[Any]:
+    async def plan_accounts(self, snapshot: DirectorySnapshot) -> list[Any]:
+        return []
+
+    async def reconcile_accounts(self, snapshot: DirectorySnapshot, *, permit: Any = None) -> list[Any]:
         self.calls.append(snapshot)
         return self.outcomes
 

@@ -39,7 +39,8 @@ class PassReport:
         entry = self._rooms.get(key)
         if entry is None:
             entry = self._rooms[key] = RoomProblems(room_kind=room_kind, room_id=room_id, group_pk=group_pk)
-        entry.problems.append(problem)
+        if problem not in entry.problems:  # a step re-run after the guard may report it again
+            entry.problems.append(problem)
 
     def extend(
         self, *, room_kind: str, room_id: str | None, group_pk: str | None, problems: list[str]

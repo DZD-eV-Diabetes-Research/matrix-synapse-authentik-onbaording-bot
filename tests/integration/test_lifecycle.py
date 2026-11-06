@@ -64,6 +64,14 @@ async def test_cooldown_then_session_revoked(make_config, authentik_admin: S.Aut
 # and immediate, and poll the token only where the token is the property under test.
 
 
+def _scope_anchors(authentik_admin: S.AuthentikAdmin, count: int, **kwargs) -> list[dict]:
+    """Active Authentik users who stay in a narrow sync scope (no Matrix account needed)."""
+    return [
+        authentik_admin.create_user(S.uniq("anchor"), password=S.DEFAULT_PASSWORD, **kwargs)
+        for _ in range(count)
+    ]
+
+
 def _live_lifecycle(config, *, delete_after: int | None = None):
     life = _lifecycle(config)
     life.enabled = True
@@ -172,6 +180,9 @@ async def test_locked_user_who_leaves_the_scope_is_frozen(
     username = S.uniq("lifescope")
     user, login = S.provision(authentik_admin, username, attributes={"chat": True})
     authentik_admin.set_active(user["pk"], False)
+    # Somebody active stays in the scope: a scope with nobody active in it is an implausible answer
+    # that the destructive-action guard pauses (D13).
+    _scope_anchors(authentik_admin, 1, attributes={"chat": True})
 
     config = make_config()
     config.sync_authentik_users_with_matrix_rooms.sync_only_users_with_authentik_attributes = {"chat": True}
@@ -198,14 +209,19 @@ async def test_known_user_disabled_and_moved_out_of_scope_is_offboarded(
     user, login = S.provision(authentik_admin, username)
     config = make_config()
     sync = config.sync_authentik_users_with_matrix_rooms
+    # Four colleagues stay in the scope, so one person leaving it is a 20 % drop: plausible input for
+    # the destructive-action guard (D13), not a collapsed answer.
     if variant == "path":
         staff = f"staff-{username}"
         authentik_admin.set_path(user["pk"], staff)
         sync.sync_only_users_in_authentik_pathes = [staff]
+        for anchor in _scope_anchors(authentik_admin, 4):
+            authentik_admin.set_path(anchor["pk"], staff)
     else:
         group = authentik_admin.create_group(f"{username}-staff")
         authentik_admin.add_user_to_group(group["pk"], user["pk"])
         sync.sync_only_users_of_groups_with_id = [str(group["pk"])]
+        _scope_anchors(authentik_admin, 4, groups=[group["pk"]])
     life = _live_lifecycle(config)
     await run_reconcile_once(config)  # active, in scope and mapped: recorded as a known user
     assert S.mas_user(username)["locked_at"] is None

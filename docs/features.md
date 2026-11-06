@@ -34,6 +34,8 @@ roles become power levels. You manage people in Authentik; the chat follows.
   everyone, from a room or the command line.
 - **[Cleaning up orphaned rooms](#cleaning-up-orphaned-rooms)** — when a group disappears, its room is
   closed.
+- **[Guard against mass removals](#guard-against-mass-removals)**: when a pass would remove far more
+  than usual, the removals wait for an administrator's confirmation.
 
 ---
 
@@ -190,10 +192,11 @@ follows.
 - **Switching user sync off stops membership management.** With
   `sync_authentik_users_with_matrix_rooms.enabled: false` Onbot adds nobody, removes nobody and leaves
   power levels alone; it only keeps the rooms themselves (name, topic, lobby join rule) in step.
-- **An empty answer never empties the rooms.** If, in one pass, not a single managed group room has a
-  single member who should be in it (an Authentik token that suddenly sees nobody, a user filter that
-  matches nobody), Onbot skips every removal for that pass and logs
-  `reconcile: guard: skipping every kick this pass`. Additions still happen.
+- **An implausible answer never empties the rooms.** Removals go through the
+  [guard against mass removals](#guard-against-mass-removals): when Authentik suddenly returns far
+  fewer users or groups than before, or a pass would remove more than a handful of members at once,
+  the removals wait for an administrator's `!confirm` in the admin control room. Additions still
+  happen.
 - **Matrix-only accounts are protected.** `matrix_user_ignore_list` shields server admins, other
   bots and bridge users from a sync that would otherwise see them as unknown to Authentik: they are
   never removed from a group room. The bot's own account is always protected.
@@ -488,10 +491,17 @@ within.
   deletion, a removed attribute, a mapping change or an empty answer from Authentik never unlocks
   anybody. If Authentik suddenly returns no users at all, the offboarding step is skipped for that
   pass (`lifecycle step aborted` in the log).
+- **Locks and erasures go through the guard.** A token that suddenly sees only some users makes
+  everyone else look deleted; the [guard against mass removals](#guard-against-mass-removals)
+  catches that drop and pauses every lock and erasure until an administrator confirms. It also
+  limits how many accounts one pass may lock, which matters most when you switch `dry_run` off after
+  a long dry run: everybody marked in the meantime would otherwise be locked in the first live pass.
+  To see that pass before it happens, set `dry_run: false` and run `onbot reconcile-once --dry-run`
+  first: it lists the locks and what the guard would pause, and changes nothing.
 - **Leaving the scope freezes.** A user who is being offboarded (marked or locked) but leaves the sync
   scope while active (or was never known to Onbot as active), lands on an ignore list, or whose
-  Matrix ID another active Authentik user now maps to, is *frozen*: no unlock and no further step. Onbot writes one `FROZEN` line to the audit log and emits
-  a `lifecycle_attention` event (meant for the admin room). An admin decides by hand: bring the user
+  Matrix ID another active Authentik user now maps to, is *frozen*: no unlock and no further step. Onbot writes one `FROZEN` line to the audit log and posts
+  it in the admin control room (when it is enabled). An admin decides by hand: bring the user
   back into scope (active means the lock is lifted, disabled means offboarding continues), or lock
   or deactivate the account in MAS directly.
 - **A failing user does not hold up the rest.** If a step fails for one user (for example MAS does
@@ -500,7 +510,8 @@ within.
   records the account deactivation and the media deletion separately, so a retry resumes and never
   repeats the deactivation.
 - **Dry-run touches nothing**, not even to unlock: every action, including lifting a lock, is only
-  written to the audit log while `dry_run` is `true`.
+  written to the audit log while `dry_run` is `true`. Each `DRY-RUN: would ...` line is written once
+  when a user reaches that step, not again on every pass (again after a restart).
 
 **Settings:** the fields under
 [`deactivate_disabled_authentik_users_in_matrix`](CONFIG_REFERENCE.md) (inside
@@ -526,8 +537,13 @@ to a shell.
 
 - **As an ordinary user:** an announcement simply appears in your welcome / notice-board room.
 - **As an administrator:** you are invited to the control room. Typing `!announce <message>`,
-  `!status` or `!help` does something; any message *without* a `!` prefix is ignored, so admins can
-  discuss an incident in the room without a stray sentence paging the whole company.
+  `!status`, `!pending`, `!confirm <id>`, `!reject <id>` or `!help` does something; any message
+  *without* a `!` prefix is ignored, so admins can discuss an incident in the room without a stray
+  sentence paging the whole company.
+- The bot also reports into the room: destructive actions it paused (see
+  [guard against mass removals](#guard-against-mass-removals)), offboarding that needs a decision
+  (a frozen user, a failing step) and rooms it could not fully bring in line. A report is not
+  repeated while nothing about it changes.
 
 ### What an admin should know
 
@@ -586,7 +602,66 @@ that nobody owns.
   Leave it off unless you are sure.
 - A group's [visitor lobby](#visitor-lobby) is torn down together with its group room, so a blocked
   room is never left beside a still-open lobby.
+- **Teardowns go through the guard.** If Authentik suddenly returns no groups, or far fewer than
+  before, no room is closed until an administrator confirms (see
+  [guard against mass removals](#guard-against-mass-removals)).
 
 **Settings:** `disable_rooms_when_mapped_authentik_group_disappears` and `delete_disabled_rooms` under
 [`sync_matrix_rooms_based_on_authentik_groups`](CONFIG_REFERENCE.md).
+
+---
+
+## Guard against mass removals
+
+**In one sentence:** when a pass looks like it would remove far more than usual, Onbot pauses the
+removals and asks an administrator in the admin control room instead of carrying them out.
+
+### The problem it solves
+
+Onbot mirrors Authentik, so a wrong answer from Authentik is mirrored too. An API token whose role was
+narrowed answers with only some users and no error; a mapping attribute renamed by mistake makes every
+user unmappable; a filter edited to match nobody empties the scope. Without a guard, one pass would
+kick everybody from every group room, take away every moderator level and, after the grace period,
+lock every account that now looks deleted.
+
+### What a user sees
+
+- Nothing, as long as Authentik answers plausibly.
+- When the guard trips, nobody is removed: people stay in their rooms, keep their levels and keep
+  their accounts until an administrator has looked at it.
+
+### What an admin should know
+
+- **Two checks, before anything is removed.** Each pass first works out everything it would remove:
+  kicks, withdrawals of power levels Onbot granted, teardowns of rooms whose group disappeared,
+  account locks and erasures. Then:
+  - *Plausibility:* the number of active users in the sync scope and the number of groups mapped to
+    rooms are compared with the last answer Onbot trusted. An empty answer, or a drop of more than
+    `max_drop_percent` (20 % by default), pauses removals: fewer users pauses *every* removal of the
+    pass, fewer groups pauses what happens in rooms (kicks, withdrawals, teardowns) but not account
+    locks, which do not depend on groups. Each number moves with every pass in which it looked
+    normal, so removing people a few at a time never trips it.
+  - *Volume:* more than `max_reversible_actions_per_pass` (10 by default) kicks, locks, teardowns and
+    withdrawals in one pass pauses all of them.
+- **Everything else goes on.** Rooms are still created and named, users still added and welcomed,
+  locked users who come back still unlocked.
+- **Paused actions become a batch with a short id**, for example `k7m3qp`, posted in the admin control
+  room with what dropped (from how many to how many) and who or what would be affected. In the room:
+  - `!pending` lists the open batches;
+  - `!confirm <id>` releases exactly that batch. It runs at once, and only what still applies is done:
+    somebody who is back in Authentik meanwhile is left alone. A confirmation never covers more than
+    the batch showed; actions that came up later get a batch of their own. After a confirmed drop the
+    new numbers count as normal;
+  - `!reject <id>` discards the batch. Nothing in it runs, and it is not proposed again while the
+    situation lasts (for example a broken token that you are about to replace).
+- **A batch expires** after `confirmation_expiry_sec` (72 hours by default). Its actions stay paused
+  meanwhile; if they still apply afterwards, a later pass proposes them again under a new id.
+- **Without the admin control room** nobody can confirm. Paused actions are then only logged
+  (`guard: paused ...` at warning level, each action at debug level) and stay paused; raise the limits
+  if a large change is intended.
+- **Preview a pass** with `onbot reconcile-once --dry-run`: it reads Authentik and Matrix, logs every
+  change it would make (prefixed `[dry-run]`), including what the guard would pause, and changes
+  nothing. See [deployment.md](deployment.md#cli-commands).
+
+**Settings:** the fields under [`destructive_action_guard`](CONFIG_REFERENCE.md).
 </content>
