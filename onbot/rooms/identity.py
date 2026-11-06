@@ -1,11 +1,16 @@
 """Which room is which: room identity by creator and marker, not by alias (D20, REC-04, SEC-02).
 
 A room is a group's room (or its visitor lobby, the space, or the admin control room) when **the bot
-created it** and it carries the **onbot marker** of that type, naming that group. The marker is
-trusted only once it is **locked**: its event types need a power level no human has
-(:func:`onbot.rooms.provision.markers_locked`). The bot locks the marker when it creates a room, so a
+created it** and it carries the **onbot marker** of that type, naming that group, **written by the
+bot**. The marker is trusted only once it is **locked**: its event types need a power level no human
+has (:func:`onbot.rooms.provision.markers_locked`). The bot locks the marker when it creates a room, so a
 room moderator can never rewrite ``group_id`` and move the room to another group. There is no stored
 mapping (the bot keeps no database, AD-1); the rooms themselves are the record.
+
+The sender check covers what the lock cannot: a legacy room from before the lock, where a moderator
+could rewrite the marker, and a room older than version 12, where a human at the bot's own level can
+rewrite even a locked one. A marker written by anybody but the bot is reported and never a claim: the
+room is not trusted, not adopted and not torn down.
 
 The alias is presentation only. It is read in exactly two places, both before the bot would create a
 room for a role nobody holds yet:
@@ -139,12 +144,24 @@ def classify_room(
     )
 
     markers: list[tuple[OnbotRoomType, str, dict[str, Any]]] = []
+    foreign: list[str] = []
     for room_type in MANAGED_ROOM_TYPES:
         event_type = event_type_name(server_name, room_type)
-        content = (by_type.get(event_type) or {}).get("content")
-        if content:  # an empty content is a removed state event
-            markers.append((room_type, event_type, dict(content)))
+        event = by_type.get(event_type) or {}
+        content = event.get("content")
+        if not content:  # an empty content is a removed state event
+            continue
+        markers.append((room_type, event_type, dict(content)))
+        if event.get("sender") != bot_id:
+            foreign.append(f"{room_type.value} marker written by {event.get('sender')}")
     if not markers:
+        return identity
+    if foreign:
+        # The bot writes every marker itself (in createRoom's initial_state, whose events Synapse
+        # sends as the creator, on adoption and when following an upgrade). One written by anybody
+        # else (a moderator in an unlocked legacy room, a human at the bot's level in a room older
+        # than version 12) is never a claim: not trusted, not adopted, never torn down.
+        identity.problem = "carries an onbot " + ", ".join(foreign) + ", not by the bot"
         return identity
     if len(markers) > 1:
         identity.problem = (

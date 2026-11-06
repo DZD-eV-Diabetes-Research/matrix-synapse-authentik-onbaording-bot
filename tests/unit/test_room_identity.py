@@ -12,7 +12,7 @@ import pytest
 
 from onbot.clients.base import ApiError
 from onbot.reconciler.state import DirectRoomState, GroupRoomState, OnbotRoomType
-from onbot.rooms.identity import RoomIdentityResolver, RoomKey, classify_room
+from onbot.rooms.identity import RoomIdentityResolver, RoomKey, classify_room, stray_claims
 from onbot.rooms.provision import (
     PRIVILEGED_LOCK_LEVEL,
     ManagedRoomSpec,
@@ -26,6 +26,7 @@ from tests.unit.room_fakes import BOT, SERVER, room_state
 G1 = RoomKey(OnbotRoomType.group_room, "g1")
 G1_ALIAS = "#g1:company.org"
 MARKER = "org.company.onbot.group_room"
+MOD = "@mod:company.org"
 
 
 class FakeServer:
@@ -453,3 +454,52 @@ async def test_a_successor_with_another_role_does_not_take_over() -> None:
     resolution = await rooms.resolve(await rooms.scan(), G1, G1_ALIAS)
     assert resolution.room is None and resolution.problem is not None
     assert server.state_writes == []
+
+
+# --- wave 3 review: who wrote the marker, followed upgrades, a failed lock -------------------------
+
+
+def _rewritten_by(state: list[dict[str, Any]], sender: str, **content: Any) -> list[dict[str, Any]]:
+    """``state`` after ``sender`` rewrote its group marker (Matrix records the writer as sender)."""
+    for event in state:
+        if event["type"] == MARKER:
+            event["sender"] = sender
+            event["content"] = {**event["content"], **content}
+    return state
+
+
+def test_a_marker_written_by_somebody_else_is_never_a_claim() -> None:
+    state = _rewritten_by(room_state(OnbotRoomType.group_room, "g1"), MOD)
+    identity = classify_room("!r", state, bot_id=BOT, server_name=SERVER)
+    assert identity is not None and not identity.trusted and identity.key is None
+    assert identity.problem is not None and MOD in identity.problem
+
+
+async def test_a_stray_legacy_room_rewritten_by_a_moderator_is_not_adopted() -> None:
+    """A never-adopted (unlocked) legacy room: a moderator points its marker at group g2 and gives it
+    g2's alias. The bot neither adopts nor locks it, and does not create a second room beside it."""
+    server = FakeServer()
+    legacy = room_state(OnbotRoomType.group_room, "g1", locked=False)
+    server.add("!stray", _rewritten_by(legacy, MOD, group_id="g2"), alias="#g2:company.org")
+    rooms = _resolver(server)
+    index = await rooms.scan()
+    g2 = RoomKey(OnbotRoomType.group_room, "g2")
+    resolution = await rooms.resolve(index, g2, "#g2:company.org")
+    assert resolution.room is None and not resolution.may_create
+    assert resolution.problem is not None and MOD in resolution.problem
+    assert server.power_writes == [] and server.state_writes == []
+    assert [i.room_id for i in stray_claims(index)] == ["!stray"]  # reported
+
+
+@pytest.mark.parametrize("version", ["10", "12"])
+async def test_a_locked_marker_rewritten_by_a_human_is_no_teardown_candidate(version: str) -> None:
+    """Before version 12 a human at the bot's level can rewrite even a locked marker, for example to
+    a group that is gone, which would have the room torn down and deleted."""
+    server = FakeServer()
+    state = room_state(OnbotRoomType.group_room, "g1", room_version=version, users={MOD: 100})
+    server.add("!r", _rewritten_by(state, MOD, group_id="vanished"))
+    rooms = _resolver(server)
+    index = await rooms.scan()
+    assert index.trusted() == []
+    resolution = await rooms.resolve(index, RoomKey(OnbotRoomType.group_room, "vanished"), None)
+    assert resolution.room is None
