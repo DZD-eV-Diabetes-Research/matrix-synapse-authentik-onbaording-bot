@@ -111,6 +111,13 @@ applies. After a confirmed drop the new counts become the last known good.
   the new part; a new batch is proposed. A confirmation never covers more than the admin saw.
 - `!reject <id>` closes a batch explicitly: no execution, no reminders, not proposed again for the
   same incident (for example a broken token that has since been replaced).
+- A rejected batch ends when the condition that created it is gone (layer 1: the metric is no longer
+  tripped; layer 2: the pass no longer exceeds the limit with those actions), at the latest at its
+  expiry. Its remaining actions are then judged fresh, so a single genuinely departed user is
+  offboarded normally. `!pending` lists rejected batches too (added 2026-11-06 after the wave 2
+  review, which found a rejected batch could hold a valid lock forever).
+- An unreadable guard state fails closed: destructive actions are held and the problem is reported;
+  it never starts over empty (wave 2 review).
 
 Defaults (configurable):
 
