@@ -94,6 +94,18 @@ arrangement, so a visitor is never confused about where they have landed, and it
 - **The group's members are seeded into the lobby** by default, so it is not a ghost town. If you run
   a large group and would rather staff an empty lobby deliberately, turn
   `visitor_lobby_inject_group_members` off.
+- **Switching a lobby off closes it.** When a group no longer wants a lobby (the group attribute set
+  to `false`, or `visitor_lobby_enabled` turned off), Onbot sets the lobby's join rule to invite-only
+  and takes it out of the space. Nobody is kicked; the people in it can stay and talk. Closing counts
+  as a removal for the [guard](#guard-against-mass-removals), so many lobbies closing at once wait for
+  a confirmation. Turn the lobby on again and Onbot reopens it and puts it back into the space.
+- **A lobby somebody closed by hand stays closed.** If a room admin of the lobby changes its join rule
+  to invite-only (or knock, or private), Onbot leaves it that way, logs a warning and reports it once
+  in the admin control room. To hand the lobby back to Onbot, an admin types
+  `!lobby reopen <group>` there (the group's Authentik pk; the lobby's room id or alias work too):
+  Onbot opens the lobby to the space again and manages it from the configuration from then on.
+  Onbot tells its own changes from a person's by who sent the join rule, so this survives restarts.
+  A lobby somebody opened further (to `public`) is set back to the space-only rule.
 - **One honest limitation.** The lobby hides the group room's *contents*, not the bare fact that it
   exists. A determined person can learn that a room with that ID exists (though they still cannot
   join it, read it, or see its members). If even the existence must be secret, the answer is a second
@@ -148,7 +160,9 @@ in, so your identity directory and your chat rooms need not be the same list.
   anybody but Onbot (possible in rooms from older versions, or for somebody at Onbot's own level in a
   room older than version 12) is reported, and the room is neither adopted nor torn down. The alias
   is only the room's address: a moderator who changes or removes it changes nothing for Onbot, and
-  Onbot does not build a second room.
+  Onbot does not build a second room. A removed alias is put back when it is still free, and so is an
+  empty main address; when another room took the alias meanwhile, Onbot reports it once and leaves
+  it there.
 - **A room somebody else created at a group's alias is never taken over.** Any user can claim a free
   alias, so a user could create a room at the alias a group is about to get. Onbot then skips that
   group, reports it in the log and the admin control room, and creates nothing: it neither joins the
@@ -157,8 +171,20 @@ in, so your identity directory and your chat rooms need not be the same list.
   the same alias (for example `team-a` and `teama` after the dashes are stripped): neither gets a new
   room until the attributes differ.
 - **Changing the alias settings later keeps the existing rooms.** A group keeps its room when
-  `alias_prefix` or the alias attribute changes; the room keeps its old alias. (Before this version a
-  changed alias stranded the old room and built a new, empty one.)
+  `alias_prefix` or the alias attribute changes; the room keeps its old alias as its main address and
+  also gets the new one, if that is free. (Before this version a changed alias stranded the old room
+  and built a new, empty one.)
+- **Rooms are repaired, not only created.** On every pass Onbot checks, reading first and writing only
+  on a difference, that each of its rooms is still linked into the space (and, for a lobby, suggested
+  there), still carries its marker as Onbot wrote it, and that the marker is still protected. A room
+  whose creation was cut off halfway, a room from before the space existed, or the rooms of a space
+  that was recreated are linked in again. A marker somebody at Onbot's own level removed or rewrote,
+  or whose protection they lowered, is restored from what Onbot already knows about the room, and
+  reported once; Onbot never takes over what such a marker claims.
+- **A room a server admin blocked stays blocked.** Synapse records who blocked a room. Onbot unblocks
+  only rooms it blocked itself (when their group disappeared and came back). A group room or lobby a
+  server admin blocked (for moderation, a legal hold) is left blocked, and Onbot does not manage it
+  while it is: no joins, kicks, levels or renames. It is reported once in the admin control room.
 - **Rooms upgraded by a human are left alone.** When somebody other than Onbot upgrades a group room to
   a new room version (only possible when `chatroom_params` lowered the upgrade permission), Onbot
   reports it and skips that group until an admin decides; it does not follow the upgrade.
@@ -645,13 +671,16 @@ to a shell.
 
 - **As an ordinary user:** an announcement simply appears in your welcome / notice-board room.
 - **As an administrator:** you are invited to the control room. Typing `!announce <message>`,
-  `!status`, `!pending`, `!confirm <id>`, `!reject <id>`, `!guard reset` or `!help` does something;
+  `!status`, `!pending`, `!confirm <id>`, `!reject <id>`, `!guard reset`, `!lobby reopen <group>` or
+  `!help` does something;
   any message *without* a `!` prefix is ignored, so admins can discuss an incident in the room
   without a stray sentence paging the whole company.
 - The bot also reports into the room: destructive actions it paused (see
   [guard against mass removals](#guard-against-mass-removals)), offboarding that needs a decision
-  (a frozen user, a failing step) and rooms it could not fully bring in line. A report is not
-  repeated while nothing about it changes.
+  (a frozen user, a failing step), rooms it could not fully bring in line, and rooms a person changed
+  in a way Onbot now leaves alone or had to repair (a room a server admin blocked, a lobby closed by
+  hand, an alias another room took, a restored marker). A report is not repeated while nothing about
+  it changes.
 
 ### What an admin should know
 
@@ -709,7 +738,8 @@ that nobody owns.
 
 - A room you were in becomes closed to new activity, and you are removed with a short message saying
   the group behind it is no longer synced from the central directory.
-- If that group later comes back, the room is reopened and managed again.
+- If that group later comes back, the room is reopened and managed again (unless a server admin
+  blocked it in the meantime: Onbot only lifts its own blocks).
 
 ### What an admin should know
 
@@ -725,7 +755,13 @@ that nobody owns.
   Leave it off unless you are sure. From three deletions in one pass on, they wait for an
   administrator's `!confirm` (see [guard against mass removals](#guard-against-mass-removals)).
 - A group's [visitor lobby](#visitor-lobby) is torn down together with its group room, so a blocked
-  room is never left beside a still-open lobby.
+  room is never left beside a still-open lobby. When the group comes back, both are unblocked.
+- **A closed room is closed once.** A room Onbot has blocked and emptied is not closed again on later
+  passes, so rooms closed long ago never count against the guard's limit. With
+  `delete_disabled_rooms` switched on later, such a room is still deleted (under the guard).
+- **A block a server admin set is kept.** Closing a room that a server admin has blocked already
+  kicks its members but leaves the block as theirs, so the room is not unblocked later when its group
+  returns.
 - **Teardowns go through the guard.** If Authentik suddenly returns no groups, or far fewer than
   before, no room is closed until an administrator confirms (see
   [guard against mass removals](#guard-against-mass-removals)).
@@ -766,8 +802,9 @@ lock every account that now looks deleted.
     pass, fewer groups pauses what happens in rooms (kicks, lowered levels, teardowns) but not account
     locks, which do not depend on groups. Each number moves with every pass in which it looked
     normal, so removing people a few at a time never trips it.
-  - *Volume:* more than `max_reversible_actions_per_pass` (10 by default) kicks, locks, teardowns and
-    lowered or withdrawn power levels in one pass pauses all of them.
+  - *Volume:* more than `max_reversible_actions_per_pass` (10 by default) kicks, locks, teardowns,
+    closings of lobbies that were switched off, and lowered or withdrawn power levels in one pass
+    pauses all of them.
   - *Irreversible actions:* `confirm_irreversible_actions_from` (3 by default) or more account
     erasures and room deletions in one pass pause all of them; one or two run on their own. The batch
     report marks them as irreversible. Once an erasure ran, the deletion of the account's media that

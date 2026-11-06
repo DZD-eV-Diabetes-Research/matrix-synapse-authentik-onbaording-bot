@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -43,6 +44,14 @@ DELETE_WAIT_SEC = 600.0
 # shutting_down and purging).
 _DELETE_DONE = "complete"
 _DELETE_FAILED = "failed"
+
+
+@dataclass(frozen=True, slots=True)
+class RoomBlock:
+    """A room's block status: ``by`` is the account that set the block (``None`` when unknown)."""
+
+    blocked: bool
+    by: str | None = None
 
 
 class RoomDeletionFailed(RuntimeError):
@@ -200,9 +209,19 @@ class ApiClientSynapseAdmin(BaseApiClient):
         )
 
     async def room_is_blocked(self, room_id: str) -> bool:
-        # https://element-hq.github.io/synapse/latest/admin_api/rooms.html#get-block-status
+        return (await self.get_room_block(room_id)).blocked
+
+    async def get_room_block(self, room_id: str) -> RoomBlock:
+        """Whether ``room_id`` is blocked, and by whom (REC-11).
+
+        Synapse records the account that set the block and returns it as ``user_id``; the bot uses it
+        to tell its own blocks (teardown) from a server admin's.
+        https://element-hq.github.io/synapse/latest/admin_api/rooms.html#get-block-status
+        """
         result = await self.get_json(f"v1/rooms/{path_segment(room_id)}/block")
-        return bool(result.get("block"))
+        blocked = bool(result.get("block"))
+        by = result.get("user_id")
+        return RoomBlock(blocked=blocked, by=by if blocked and isinstance(by, str) else None)
 
     async def room_set_blocked(self, room_id: str, *, blocked: bool) -> None:
         # https://element-hq.github.io/synapse/latest/admin_api/rooms.html#block-or-unblock-a-room

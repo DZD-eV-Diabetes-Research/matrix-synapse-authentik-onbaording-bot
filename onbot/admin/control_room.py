@@ -40,6 +40,8 @@ from onbot.admin.commands import (
     CONFIRM,
     GUARD,
     GUARD_RESET,
+    LOBBY,
+    LOBBY_REOPEN,
     PENDING,
     REJECT,
     STATUS,
@@ -167,6 +169,8 @@ class ControlRoomHandler:
             await self._decide_batch(command, sender)
         elif command.name == GUARD:
             await self._guard_command(command, sender)
+        elif command.name == LOBBY:
+            await self._lobby_command(command, sender)
         else:
             # !help, and anything unrecognised: answering is friendlier than silence, which reads
             # as the bot being down.
@@ -205,6 +209,22 @@ class ControlRoomHandler:
         await self._reply(reply)
         if done and self.engine is not None:
             self.engine.trigger()  # re-judge what was paused now, not a whole tick later
+
+    async def _lobby_command(self, command: Command, sender: str) -> None:
+        """``!lobby reopen <group, room id or alias>``: hand a lobby closed by hand back to the bot (D16)."""
+        verb, _, target = command.argument.strip().partition(" ")
+        if verb.lower() != LOBBY_REOPEN or not target.strip():
+            await self._reply(
+                f"Usage: !{LOBBY} {LOBBY_REOPEN} <group pk, lobby room id or lobby alias>. It reopens a "
+                "visitor lobby somebody closed by hand; afterwards the bot manages it from the "
+                "configuration again."
+            )
+            return
+        if self.engine is None:
+            await self._reply("The reconciler is not available in this process.")
+            return
+        log.info("admin %s asked to reopen the visitor lobby %s", sender, target.strip())
+        await self._reply(await self.engine.reopen_lobby(target))
 
     async def _decide_batch(self, command: Command, sender: str) -> None:
         """``!confirm <id>`` / ``!reject <id>``: exactly one batch, never all of them (D13)."""

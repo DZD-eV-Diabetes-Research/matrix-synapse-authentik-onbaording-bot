@@ -1281,7 +1281,8 @@ class DestructiveActionGuard(_StrictModel):
             description=inspect.cleandoc(
                 """How many reversible destructive actions one pass may carry out on its own: kicks
                 from group rooms, account locks (offboarding), teardowns of rooms whose group
-                disappeared, and withdrawals of power levels the bot granted. A pass that would do
+                disappeared, closing visitor lobbies that were switched off, and withdrawals of power
+                levels the bot granted. A pass that would do
                 more pauses all of them and reports them in the admin control room as a batch for an
                 administrator to release with `!confirm <id>`. This also covers switching
                 offboarding's `dry_run` off after a long dry run, when every user marked meanwhile

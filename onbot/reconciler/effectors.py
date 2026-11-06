@@ -21,6 +21,7 @@ from __future__ import annotations
 import uuid
 from typing import Any, Protocol, runtime_checkable
 
+from onbot.clients.synapse_admin import RoomBlock
 from onbot.logging import get_logger
 from onbot.rooms.provision import ManagedRoomSpec
 
@@ -55,7 +56,19 @@ class MatrixEffectors(Protocol):
         self, room_id: str, event_type: str, state_key: str = ""
     ) -> dict[str, Any] | None: ...
 
-    async def put_room_state(self, room_id: str, event_type: str, content: dict[str, Any]) -> None: ...
+    async def get_room_state_event(
+        self, room_id: str, event_type: str, state_key: str = ""
+    ) -> dict[str, Any] | None:
+        """The whole state event, with its ``sender``, or ``None`` when it is not set."""
+        ...
+
+    async def put_room_state(
+        self, room_id: str, event_type: str, content: dict[str, Any], state_key: str = ""
+    ) -> None: ...
+
+    async def set_room_alias(self, alias: str, room_id: str) -> None:
+        """Point the local ``alias`` at ``room_id`` in the room directory."""
+        ...
 
     async def get_room_account_data(
         self, user_id: str, room_id: str, data_type: str
@@ -132,8 +145,20 @@ class DryRunEffectors:
         live = self._live(room_id)
         return None if live is None else await live.get_room_state(room_id, event_type, state_key)
 
-    async def put_room_state(self, room_id: str, event_type: str, content: dict[str, Any]) -> None:
-        log.info("[dry-run] would set state %s on %s", event_type, room_id)
+    async def get_room_state_event(
+        self, room_id: str, event_type: str, state_key: str = ""
+    ) -> dict[str, Any] | None:
+        live = self._live(room_id)
+        return None if live is None else await live.get_room_state_event(room_id, event_type, state_key)
+
+    async def put_room_state(
+        self, room_id: str, event_type: str, content: dict[str, Any], state_key: str = ""
+    ) -> None:
+        target = f"{event_type}/{state_key}" if state_key else event_type
+        log.info("[dry-run] would set state %s on %s", target, room_id)
+
+    async def set_room_alias(self, alias: str, room_id: str) -> None:
+        log.info("[dry-run] would point alias %s at %s", alias, room_id)
 
     async def get_room_account_data(
         self, user_id: str, room_id: str, data_type: str
@@ -173,6 +198,12 @@ class DryRunSynapseAdmin:
         if is_synthetic_room(room_id):
             return False
         return bool(await self._inner.room_is_blocked(room_id))
+
+    async def get_room_block(self, room_id: str) -> RoomBlock:
+        if is_synthetic_room(room_id):
+            return RoomBlock(blocked=False)
+        block: RoomBlock = await self._inner.get_room_block(room_id)
+        return block
 
     async def add_user_to_room(self, room_id: str, user_id: str) -> None:
         log.info("[dry-run] would join %s to %s", user_id, room_id)

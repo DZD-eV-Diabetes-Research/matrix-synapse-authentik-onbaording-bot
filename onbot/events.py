@@ -56,6 +56,11 @@ class Signal(StrEnum):
     # of them are skipped), or MAS or the binding record cannot be read. Payload: ``text``. Each
     # finding is emitted once per process, not on every pass.
     identity_attention = "identity_attention"
+    # A managed room needs a human, or a human changed it and the bot now leaves it alone (S7): a room
+    # a server admin blocked (REC-11), a visitor lobby closed by hand (D16), a room's alias taken by
+    # another room, an onbot marker or its lock that somebody else removed or rewrote (restored).
+    # Payload: ``text``. Each finding is emitted once per process, not on every pass.
+    room_attention = "room_attention"
 
 
 @dataclass(frozen=True, slots=True)

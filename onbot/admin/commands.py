@@ -25,8 +25,11 @@ REJECT = "reject"
 # ``!guard reset``: replace a guard state the bot cannot read (the copy is kept).
 GUARD = "guard"
 GUARD_RESET = "reset"
+# ``!lobby reopen <group>``: withdraw the manual close of a visitor lobby (D16).
+LOBBY = "lobby"
+LOBBY_REOPEN = "reopen"
 
-KNOWN_COMMANDS = frozenset({ANNOUNCE, HELP, STATUS, PENDING, CONFIRM, REJECT, GUARD})
+KNOWN_COMMANDS = frozenset({ANNOUNCE, HELP, STATUS, PENDING, CONFIRM, REJECT, GUARD, LOBBY})
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +80,7 @@ def help_text() -> str:
             f"{COMMAND_PREFIX}{CONFIRM} <id>       carry out exactly that batch (what still applies)",
             f"{COMMAND_PREFIX}{REJECT} <id>        keep that batch paused while its cause lasts",
             f"{COMMAND_PREFIX}{GUARD} {GUARD_RESET}        replace a guard state the bot cannot read",
+            f"{COMMAND_PREFIX}{LOBBY} {LOBBY_REOPEN} <group>  reopen a visitor lobby somebody closed by hand",
             f"{COMMAND_PREFIX}{HELP}               this message",
             "",
             "Only users on the bot's admin allowlist may run commands.",
