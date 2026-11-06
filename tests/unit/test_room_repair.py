@@ -471,3 +471,53 @@ async def test_room_findings_are_posted_in_the_admin_room() -> None:
     await notifier.bind("!control:company.org")
     await bus.emit(Signal.room_attention, text="the visitor lobby !l of group g1 was closed by @mod")
     assert sends == [("!control:company.org", "Rooms: the visitor lobby !l of group g1 was closed by @mod")]
+
+
+# --- a room the bot closed already is not torn down again ------------------------------------------
+
+
+class ClosedOrphanAdmin(OrphanAdmin):
+    """The orphan room as a teardown left it: blocked by the bot, nobody but the bot in it."""
+
+    async def list_room_members(self, room_id: str) -> list[str]:
+        if room_id == ORPHAN and room_id in self.blocks:
+            return [BOT]
+        return await super().list_room_members(room_id)
+
+
+def _closed_orphan(
+    *, delete: bool = False, limit: int = 10
+) -> tuple[ReconcilerEngine, Any, RecordingEffectors]:
+    config = OnbotConfig.model_validate(
+        {**_BASE, "destructive_action_guard": {"max_reversible_actions_per_pass": limit}}
+    )
+    rooms = config.sync_matrix_rooms_based_on_authentik_groups
+    rooms.disable_rooms_when_mapped_authentik_group_disappears = True
+    rooms.delete_disabled_rooms = delete
+    admin = ClosedOrphanAdmin()
+    admin.room_state_events = {ORPHAN: room_state(OnbotRoomType.group_room, "g-gone")}
+    admin.blocks[ORPHAN] = BOT
+    engine, admin, effectors, _attention = _engine(admin, config=config)
+    return engine, admin, effectors
+
+
+async def test_closed_rooms_do_not_count_against_the_limit_on_every_pass() -> None:
+    """Every room ever closed used to be torn down again on every pass. From eleven of them on,
+    every kick and teardown of every pass waited for a confirmation, for good."""
+    engine, admin, effectors = _closed_orphan(limit=1)
+
+    await engine.reconcile_once()
+
+    assert admin.blocked_changes == []  # not blocked again
+    # The one kick in the live room is within the limit of 1; with the closed room's teardown
+    # planned again it made two actions, and both were paused.
+    assert effectors.kicks == [(ROOM1, "@stale:company.org")]
+
+
+async def test_a_closed_room_is_still_deleted_once_deletion_is_switched_on() -> None:
+    engine, admin, _effectors = _closed_orphan(delete=True)
+
+    await engine.reconcile_once()
+
+    assert admin.deleted == [ORPHAN]
+    assert admin.blocked_changes == []

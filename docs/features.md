@@ -706,6 +706,9 @@ that nobody owns.
   administrator's `!confirm` (see [guard against mass removals](#guard-against-mass-removals)).
 - A group's [visitor lobby](#visitor-lobby) is torn down together with its group room, so a blocked
   room is never left beside a still-open lobby. When the group comes back, both are unblocked.
+- **A closed room is closed once.** A room Onbot has blocked and emptied is not closed again on later
+  passes, so rooms closed long ago never count against the guard's limit. With
+  `delete_disabled_rooms` switched on later, such a room is still deleted (under the guard).
 - **A block a server admin set is kept.** Closing a room that a server admin has blocked already
   kicks its members but leaves the block as theirs, so the room is not unblocked later when its group
   returns.

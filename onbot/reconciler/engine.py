@@ -1094,7 +1094,43 @@ class ReconcilerEngine:
             if identity.key.group_id in live_group_pks:
                 continue
             room = index.rooms.get(identity.room_id) or MatrixRoom(room_id=identity.room_id)
-            self._defer_teardown(room, identity.key.group_id, settings, report, identity.key.kind, plan)
+            await self._guarded(
+                report,
+                room_kind=identity.key.kind,
+                room_id=room.room_id,
+                group_pk=identity.key.group_id,
+                step="teardown",
+                work=self._plan_teardown(
+                    room, identity.key.group_id, settings, report, identity.key.kind, plan
+                ),
+            )
+
+    async def _closed_by_the_bot(self, room: MatrixRoom) -> bool:
+        """Whether an obsolete room is torn down already: blocked by the bot, nobody but the bot in it.
+
+        Such a room needs no teardown again. Planning one on every pass made every room ever closed
+        count against the guard's layer 2 limit forever, so from eleven closed rooms on every kick and
+        teardown of every pass waited for a confirmation.
+        """
+        block = await self.admin.get_room_block(room.room_id)
+        bot_id = self.config.synapse_server.bot_user_id
+        if not block.blocked or block.by != bot_id:
+            return False
+        return all(member == bot_id for member in await self.admin.list_room_members(room.room_id))
+
+    async def _plan_teardown(
+        self,
+        room: MatrixRoom,
+        group_id: str,
+        settings: SyncMatrixRoomsBasedOnAuthentikGroups,
+        report: PassReport,
+        room_type: OnbotRoomType,
+        plan: PassPlan,
+    ) -> None:
+        closed = await self._closed_by_the_bot(room)
+        if closed and not settings.delete_disabled_rooms:
+            return
+        self._defer_teardown(room, group_id, settings, report, room_type, plan, closed=closed)
 
     def _defer_teardown(
         self,
@@ -1104,13 +1140,16 @@ class ReconcilerEngine:
         report: PassReport,
         room_type: OnbotRoomType,
         plan: PassPlan,
+        *,
+        closed: bool = False,
     ) -> None:
         """Record the teardown of an obsolete room, and its deletion when configured.
 
         The teardown (block, kick) is reversible (guard layer 2), the deletion is not (layer 3, D19).
         They run once the guard permits them, the teardown first; the guard never permits the
         deletion in a pass whose teardown of the same room it holds, and a teardown that fails skips
-        the deletion as well, so a room is never deleted with its members still in it unguarded.
+        the deletion as well, so a room is never deleted with its members still in it unguarded. A
+        room the bot ``closed`` in an earlier pass (blocked, empty) gets only the deletion.
         """
         teardown = DestructiveAction(
             kind=ActionKind.room_teardown, target=room.room_id, room_id=room.room_id, group_pk=group_id
@@ -1119,18 +1158,23 @@ class ReconcilerEngine:
             kind=ActionKind.room_delete, target=room.room_id, room_id=room.room_id, group_pk=group_id
         )
         actions = [teardown, deletion] if settings.delete_disabled_rooms else [teardown]
+        if closed:
+            actions = [deletion]
 
         async def run(allowed: frozenset[str]) -> None:
-            if teardown.key not in allowed:
+            if closed:
+                torn_down = True
+            elif teardown.key not in allowed:
                 return  # (the guard holds the deletion as well)
-            torn_down = await self._guarded(
-                report,
-                room_kind=room_type,
-                room_id=room.room_id,
-                group_pk=group_id,
-                step="teardown",
-                work=self._disable_room(room, group_id, report, room_type),
-            )
+            else:
+                torn_down = await self._guarded(
+                    report,
+                    room_kind=room_type,
+                    room_id=room.room_id,
+                    group_pk=group_id,
+                    step="teardown",
+                    work=self._disable_room(room, group_id, report, room_type),
+                )
             if torn_down and deletion.key in allowed:
                 await self._guarded(
                     report,
