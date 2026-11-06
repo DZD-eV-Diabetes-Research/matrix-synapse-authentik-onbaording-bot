@@ -144,8 +144,11 @@ in, so your identity directory and your chat rooms need not be the same list.
 - **Onbot recognises its rooms by who created them, not by their alias.** A room belongs to a group
   only when Onbot itself created it and it carries Onbot's marker naming that group. The marker is
   part of the room from its creation, and only Onbot can change it (a room moderator cannot), so
-  nobody can move a room to another group. The alias is only the room's address: a moderator who
-  changes or removes it changes nothing for Onbot, and Onbot does not build a second room.
+  nobody can move a room to another group. Onbot also checks who wrote the marker: one written by
+  anybody but Onbot (possible in rooms from older versions, or for somebody at Onbot's own level in a
+  room older than version 12) is reported, and the room is neither adopted nor torn down. The alias
+  is only the room's address: a moderator who changes or removes it changes nothing for Onbot, and
+  Onbot does not build a second room.
 - **A room somebody else created at a group's alias is never taken over.** Any user can claim a free
   alias, so a user could create a room at the alias a group is about to get. Onbot then skips that
   group, reports it in the log and the admin control room, and creates nothing: it neither joins the
