@@ -484,17 +484,89 @@ async def test_room_of_live_group_survives_an_alias_change() -> None:
     assert all(room != _ORPHAN for room, _ in effectors.kicks)
 
 
-async def test_reconcile_emits_user_synced_events() -> None:
+async def test_reconcile_tells_onboarding_once_who_it_mapped() -> None:
     bus = EventBus()
-    seen: list[str] = []
+    seen: list[dict[str, Any]] = []
 
     async def handler(event: Any) -> None:
-        seen.append(event.payload["mxid"])
+        seen.append(event.payload)
 
-    bus.subscribe(Signal.user_synced, handler)
+    bus.subscribe(Signal.users_mapped, handler)
     engine, _, _ = _engine(events=bus)
     await engine.reconcile_once()
-    assert set(seen) == {"@alice:company.org", "@bob:company.org", "@carol:company.org"}
+    assert len(seen) == 1
+    assert seen[0]["mxids"] == {"@alice:company.org", "@bob:company.org", "@carol:company.org"}
+    assert seen[0]["accounts"] == {"@alice:company.org", "@bob:company.org", "@carol:company.org"}
+
+
+async def test_the_mapped_set_leaves_out_unmapped_accounts_the_bot_and_ignored_users() -> None:
+    """SEC-06: only the accounts of synced Authentik users get a notice board."""
+
+    class MoreAccounts(FakeAdmin):
+        async def list_users(self) -> list[dict[str, Any]]:
+            names = ("alice", "bob", "carol", "outsider", "bot", "ignored")
+            return [{"name": f"@{u}:company.org"} for u in names]
+
+    config = OnbotConfig.model_validate({**_BASE, "matrix_user_ignore_list": ["@ignored:company.org"]})
+    bus = EventBus()
+    seen: list[frozenset[str]] = []
+
+    async def handler(event: Any) -> None:
+        seen.append(event.payload["mxids"])
+
+    bus.subscribe(Signal.users_mapped, handler)
+    engine = ReconcilerEngine(config, FakeAuthentik(), MoreAccounts(), RecordingEffectors(), bus)  # type: ignore[arg-type]
+    await engine.reconcile_once()
+    assert seen == [frozenset({"@alice:company.org", "@bob:company.org", "@carol:company.org"})]
+
+
+async def test_without_user_sync_nobody_is_reported_as_mapped() -> None:
+    config = OnbotConfig.model_validate(
+        {**_BASE, "sync_authentik_users_with_matrix_rooms": {"enabled": False}}
+    )
+    bus = EventBus()
+    seen: list[Any] = []
+
+    async def handler(event: Any) -> None:
+        seen.append(event)
+
+    bus.subscribe(Signal.users_mapped, handler)
+    engine = ReconcilerEngine(config, FakeAuthentik(), FakeAdmin(), RecordingEffectors(), bus)  # type: ignore[arg-type]
+    await engine.reconcile_once()
+    assert seen == []
+    assert await engine.mapped_mxids() is None
+
+
+async def test_mapped_mxids_answers_like_a_pass_without_recording_bindings() -> None:
+    """For `onbot broadcast` (SEC-06): the same accounts as a pass, and nothing written."""
+    from onbot.identity import IdentityResolver
+    from onbot.lifecycle.accounts import KnownUsers
+
+    class Store:
+        def __init__(self) -> None:
+            self.saved: list[KnownUsers] = []
+
+        async def load_known_users(self) -> KnownUsers:
+            return KnownUsers()
+
+        async def save_known_users(self, known: KnownUsers) -> None:
+            self.saved.append(known)
+
+    store = Store()
+    config = OnbotConfig.model_validate(_BASE)
+    identity = IdentityResolver(config, store=store)
+    engine = ReconcilerEngine(
+        config,
+        FakeAuthentik(),  # type: ignore[arg-type]
+        FakeAdmin(),  # type: ignore[arg-type]
+        RecordingEffectors(),
+        identity=identity,
+    )
+    assert await engine.mapped_mxids() == {"@alice:company.org", "@bob:company.org", "@carol:company.org"}
+    assert store.saved == []
+
+    await engine.reconcile_once()  # a pass does record the first sight
+    assert store.saved
 
 
 async def test_reconcile_emits_reconcile_completed_once_the_pass_is_done() -> None:

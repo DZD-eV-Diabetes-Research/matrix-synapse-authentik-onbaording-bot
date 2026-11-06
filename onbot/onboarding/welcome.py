@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+from collections.abc import Collection
 from datetime import UTC, datetime
 from urllib.parse import quote
 
@@ -129,6 +130,10 @@ def matrix_to_link(alias: str) -> str:
     as raw text. https://spec.matrix.org/latest/appendices/#matrixto-navigation
     """
     return f"https://matrix.to/#/{quote(alias, safe=':')}"
+
+
+class NoticeBoardUnreadable(RuntimeError):
+    """A user's notice board carries bookkeeping the bot cannot parse; retrying cannot help (ONB-08)."""
 
 
 class WelcomeService:
@@ -313,6 +318,42 @@ class WelcomeService:
             if room_id not in rooms:
                 rooms.append(room_id)
             await self.client.set_account_data(self.bot_id, M_DIRECT, direct)
+
+    async def prune_direct(self, accounts: Collection[str]) -> list[str]:
+        """Drop the ``m.direct`` entries of accounts that are gone; returns the MXIDs dropped.
+
+        ``accounts`` are the active local accounts Synapse listed in the last pass. An entry outside
+        them is dropped only on positive evidence: the account is on another server (the bot no
+        longer welcomes anybody there, SEC-06), or Synapse reports it deactivated (offboarding erased
+        it, ONB-07). An account merely missing from the list (MAS-locked users are not listed, for
+        example) keeps its notice board, so a user who returns finds the same room. The room itself is
+        left alone: the entry only decides who broadcasts reach and which room the next welcome uses.
+        """
+        direct = await self.client.get_account_data(self.bot_id, M_DIRECT)
+        known = set(accounts)
+        gone: list[str] = []
+        for mxid in sorted(direct):
+            if mxid in known:
+                continue
+            if not mxid.endswith(f":{self.server_name}"):
+                gone.append(mxid)
+            elif self.admin is not None:
+                account = await self.admin.get_user(mxid)
+                if account is not None and account.get("deactivated"):
+                    gone.append(mxid)
+        if not gone:
+            return []
+        async with self._direct_lock:
+            direct = await self.client.get_account_data(self.bot_id, M_DIRECT)
+            for mxid in gone:
+                direct.pop(mxid, None)
+            await self.client.set_account_data(self.bot_id, M_DIRECT, direct)
+        log.info(
+            "dropped the notice boards of %d departed or foreign account(s) from m.direct: %s",
+            len(gone),
+            ", ".join(gone),
+        )
+        return gone
 
     async def _force_join(self, room_id: str, mxid: str) -> bool:
         """Join ``mxid`` into their notice board via the admin API. ``False`` leaves the invite standing.

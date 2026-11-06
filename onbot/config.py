@@ -639,7 +639,8 @@ class SyncAuthentikUsersWithMatrix(_StrictModel):
                 With `false` the bot does not manage membership at all: it maps no users, so it
                 joins nobody, kicks nobody (also with
                 `kick_matrix_room_members_not_in_mapped_authentik_group_anymore`), leaves power
-                levels and the space's membership alone, and a pass triggers no welcome messages.
+                levels and the space's membership alone, and no welcome messages are sent (only
+                mapped users are welcomed, and broadcasts reach only them).
                 Turning it off never empties a room. The rooms themselves still converge (created,
                 named, topic, lobby join rule, avatars), and offboarding
                 (`deactivate_disabled_authentik_users_in_matrix`) runs on its own switch, with the

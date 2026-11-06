@@ -90,6 +90,19 @@ class ApiClientSynapseAdmin(BaseApiClient):
             item_key=lambda user: user["name"],
         )
 
+    async def get_user(self, user_id: str) -> dict[str, Any] | None:
+        """One account (``deactivated``, ``locked``, ...), ``None`` when Synapse does not know it.
+
+        https://element-hq.github.io/synapse/latest/admin_api/user_admin_api.html#query-user-account
+        """
+        try:
+            user: dict[str, Any] = await self.get_json(f"v2/users/{path_segment(user_id)}")
+        except ApiError as exc:
+            if exc.status_code == 404:
+                return None
+            raise
+        return user
+
     async def list_rooms(self, *, search_term: str | None = None) -> list[dict[str, Any]]:
         # https://element-hq.github.io/synapse/latest/admin_api/rooms.html#list-room-api
         return await self.paginate_collect(

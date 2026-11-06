@@ -362,6 +362,15 @@ hand.
 
 ### What an admin should know
 
+- **Only mapped users get a notice board.** A user is welcomed once a reconcile pass has mapped them:
+  an active Authentik user in the sync scope with a Matrix account, not ignored and not part of an
+  identity conflict. Somebody who merely joins a room the bot is in (a guest from another homeserver
+  invited into a group room, a local account that is not in Authentik, a break-glass admin entering
+  the control room) gets nothing, and neither do broadcasts reach them. With
+  `sync_authentik_users_with_matrix_rooms.enabled: false` nobody is mapped, so nobody is welcomed.
+- **Welcomes do not slow down the pass.** The pass hands the mapped users to a small queue and goes
+  on converging rooms; a few welcomes are delivered at a time beside it. A user who joins a room is
+  welcomed right away if the last pass mapped them, otherwise with the pass that maps them.
 - **The messages are yours to write.** `welcome_new_users_messages` is the list, sent in order;
   `null` or an empty list disables the welcome room entirely. Each message is sent at most once per
   user. A plain entry is matched by its text, so editing it re-sends *that* message to everyone

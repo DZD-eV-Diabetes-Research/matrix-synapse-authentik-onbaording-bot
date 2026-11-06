@@ -460,22 +460,56 @@ class ReconcilerEngine:
         self, matrix_users: list[dict[str, Any]]
     ) -> tuple[list[MappedUser], int | None]:
         """The synced users with a Matrix account, and how many active users in the sync scope map to
-        a Matrix ID at all (the guard's ``users_in_scope``; ``None`` while user sync is off)."""
-        cfg = self.config.sync_authentik_users_with_matrix_rooms
+        a Matrix ID at all (the guard's ``users_in_scope``; ``None`` while user sync is off).
+
+        Tells onboarding who they are (:attr:`Signal.users_mapped`): the welcome flow and the
+        broadcast reach exactly these accounts and nobody else (SEC-06). Not emitted when nobody can
+        be mapped this pass, so onboarding keeps the set of the last pass that could.
+        """
         self._held_mxids = frozenset()
+        mapping = await self._map_users(matrix_users, bind=True)
+        if mapping is None:
+            return [], None
+        mapped, in_scope, held = mapping
+        self._held_mxids = held
+        await self.events.emit(
+            Signal.users_mapped,
+            mxids=frozenset(u.mxid for u in mapped),
+            accounts=frozenset(u["name"] for u in matrix_users),
+        )
+        return mapped, in_scope
+
+    async def mapped_mxids(self) -> frozenset[str] | None:
+        """The Matrix accounts a pass would map now, read without changing anything.
+
+        For a one-shot ``onbot broadcast``, which runs no pass but must reach the same accounts as one
+        (SEC-06). No binding is recorded. ``None`` when user sync is off or nobody can be resolved.
+        """
+        matrix_users = await self.admin.list_users()
+        await self.identity.refresh()
+        mapping = await self._map_users(matrix_users, bind=False)
+        return None if mapping is None else frozenset(u.mxid for u in mapping[0])
+
+    async def _map_users(
+        self, matrix_users: list[dict[str, Any]], *, bind: bool
+    ) -> tuple[list[MappedUser], int, frozenset[str]] | None:
+        """The mapped users, the guard's ``users_in_scope`` and the held MXIDs; ``None`` if nobody can
+        be mapped this pass. ``bind`` records a first sight as the user's binding."""
+        cfg = self.config.sync_authentik_users_with_matrix_rooms
         if not cfg.enabled or self.identity.unavailable is not None:
             # Off, or nobody can be resolved (an unreadable binding record): membership and power
             # levels are left alone this pass, never projected from an empty or guessed user list.
-            return [], None
+            return None
         scoped = [
             u for u in await self._list_scoped_users(filter_is_active=True) if not is_ignored(u, self.config)
         ]
         # Every one of them is active, in scope and not ignored: a first sight is recorded as their
         # binding, which keeps them on that account across renames (D8).
         resolution = await self.identity.resolve(
-            scoped, bind=[str(u["pk"]) for u in scoped], matrix_mxids={u["name"] for u in matrix_users}
+            scoped,
+            bind=[str(u["pk"]) for u in scoped] if bind else (),
+            matrix_mxids={u["name"] for u in matrix_users},
         )
-        self._held_mxids = resolution.held_mxids
         by_mxid: dict[str, dict[str, Any]] = {}
         for user in scoped:
             mxid = resolution.mxid(user["pk"])
@@ -493,8 +527,7 @@ class ReconcilerEngine:
             authentik_user = by_mxid.get(mxid)
             if authentik_user is not None:
                 mapped.append(MappedUser(authentik_obj=authentik_user, mxid=mxid, matrix_obj=matrix_user))
-                await self.events.emit(Signal.user_synced, mxid=mxid)
-        return mapped, len(by_mxid)
+        return mapped, len(by_mxid), resolution.held_mxids
 
     async def _list_scoped_users(self, *, filter_is_active: bool | None) -> list[dict[str, Any]]:
         """Authentik users inside the sync scope (paths, attributes, groups), each once.

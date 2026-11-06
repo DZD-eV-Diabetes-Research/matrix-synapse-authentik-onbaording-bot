@@ -35,6 +35,22 @@ async def test_list_users_follows_next_token() -> None:
 
 
 @respx.mock
+async def test_get_user_returns_the_account_or_none_when_unknown() -> None:
+    respx.get("https://matrix.test/_synapse/admin/v2/users/%40gone%3Ax").mock(
+        return_value=httpx.Response(200, json={"name": "@gone:x", "deactivated": True})
+    )
+    respx.get("https://matrix.test/_synapse/admin/v2/users/%40nobody%3Ax").mock(
+        return_value=httpx.Response(404, json={"errcode": "M_NOT_FOUND"})
+    )
+    client = _client()
+    try:
+        assert (await client.get_user("@gone:x")) == {"name": "@gone:x", "deactivated": True}
+        assert await client.get_user("@nobody:x") is None
+    finally:
+        await client.aclose()
+
+
+@respx.mock
 async def test_list_rooms_follows_next_batch_and_excludes_spaces() -> None:
     respx.get("https://matrix.test/_synapse/admin/v1/rooms").mock(
         side_effect=[

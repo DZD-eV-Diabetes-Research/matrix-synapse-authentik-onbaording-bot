@@ -34,9 +34,13 @@ class FakeSynapseAdmin:
     def __init__(self, *, fail_with: int | None = None) -> None:
         self.joined: list[tuple[str, str]] = []
         self.fail_with = fail_with
+        self.accounts: dict[str, dict[str, Any]] = {}
         # Called after a successful join, to stand in for the membership event the real force-join
         # puts on the bot's sync stream.
         self.on_join: Callable[[], None] | None = None
+
+    async def get_user(self, user_id: str) -> dict[str, Any] | None:
+        return self.accounts.get(user_id)
 
     async def add_user_to_room(self, room_id: str, user_id: str) -> None:
         if self.fail_with is not None:
@@ -634,3 +638,49 @@ async def test_a_new_id_sends_the_message_again() -> None:
     await WelcomeService(client, config).welcome_user(ALICE)  # type: ignore[arg-type]
 
     assert [body for _, body in client.sent] == ["hi", "hi, again"]
+
+
+# --- SEC-06 / ONB-07: notice boards of accounts that are gone leave m.direct ---
+
+
+async def test_prune_drops_foreign_and_deactivated_accounts_and_keeps_the_rest() -> None:
+    client = FakeMatrixClient()
+    admin = FakeSynapseAdmin()
+    admin.accounts = {
+        "@erased:matrix.test": {"name": "@erased:matrix.test", "deactivated": True},
+        "@locked:matrix.test": {"name": "@locked:matrix.test", "deactivated": False, "locked": True},
+    }
+    client.account_data[(BOT, "m.direct")] = {
+        ALICE: ["!a"],
+        "@guest:partner.org": ["!g"],
+        "@erased:matrix.test": ["!e"],
+        "@locked:matrix.test": ["!l"],
+        "@unknown:matrix.test": ["!u"],
+    }
+    svc = WelcomeService(client, _config(["hi"]), admin=admin)  # type: ignore[arg-type]
+
+    gone = await svc.prune_direct({ALICE})
+
+    assert gone == ["@erased:matrix.test", "@guest:partner.org"]
+    assert sorted(client.account_data[(BOT, "m.direct")]) == [
+        ALICE,
+        "@locked:matrix.test",  # MAS-locked users are not listed; they keep their room for their return
+        "@unknown:matrix.test",  # no evidence that it is gone
+    ]
+
+
+async def test_prune_writes_nothing_when_nothing_is_gone() -> None:
+    client = FakeMatrixClient()
+    client.account_data[(BOT, "m.direct")] = {ALICE: ["!a"]}
+    writes: list[object] = []
+    original = client.set_account_data
+
+    async def spy(user_id: str, data_type: str, content: dict[str, Any]) -> None:
+        writes.append(content)
+        await original(user_id, data_type, content)
+
+    client.set_account_data = spy  # type: ignore[method-assign]
+    svc = WelcomeService(client, _config(["hi"]), admin=FakeSynapseAdmin())  # type: ignore[arg-type]
+
+    assert await svc.prune_direct({ALICE}) == []
+    assert writes == []

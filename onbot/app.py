@@ -18,6 +18,9 @@ Process lifecycle (review findings RUN-02, RUN-09, RUN-12, RUN-13):
 * **Onboarding opens only after device registration.** Under MAS a message send fails until the
   bot's device is registered, so the welcome flow is subscribed once that step is done, and the
   engine is then asked for a pass, so nobody waits a whole tick for a welcome.
+* **Welcomes run beside the pass, not inside it** (RUN-08). The pass hands the mapped users to the
+  onboarding queue and goes on; the queue's workers are a loop of their own, stopped like the others.
+  ``reconcile-once`` delivers the queue after its pass.
 * **Signals are handled from the first moment** (:class:`~onbot.runtime.Shutdown`), not only once
   the reconcile loop runs. On SIGTERM or SIGINT the loops are asked to stop, the read-only ones are
   cancelled at once, and the rest get ``SHUTDOWN_GRACE_SEC`` (6 s) to finish what they are doing
@@ -513,6 +516,8 @@ async def _supervise(
         "reconcile": asyncio.create_task(app.engine.run(on_pass=on_pass), name="onbot-reconcile"),
         "sync": asyncio.create_task(app.pump.run(), name="onbot-sync"),
         "discovery": asyncio.create_task(app.discovery.run(), name="onbot-discovery"),
+        # Welcomes are delivered here, beside the pass, never inside it (RUN-08).
+        "onboarding": asyncio.create_task(app.listener.run(), name="onbot-onboarding"),
     }
     names: dict[asyncio.Future[Any], str] = {task: name for name, task in tasks.items()}
     exit_code = 0
@@ -553,6 +558,7 @@ async def _stop_loops(
     app.engine.request_stop()
     app.pump.request_stop()  # abandons a long-poll in flight; a slice being handled is finished
     app.discovery.request_stop()
+    app.listener.request_stop()  # the user in hand is finished, the rest of the queue waits
     supervisor.request_stop()
     # The discovery poll only reads Authentik; nothing is lost by cutting it off.
     tasks["discovery"].cancel()
@@ -583,6 +589,8 @@ async def run_reconcile_once(config: OnbotConfig, *, dry_run: bool = False) -> N
     async with build_app(config, dry_run=dry_run) as app:
         await StartupSupervisor(app.reconcile_once_steps()).run_once()
         await app.engine.reconcile_once()
+        # The pass only queued its welcomes (RUN-08); deliver them before the process ends.
+        await app.listener.process_queued()
 
 
 async def run_broadcast(config: OnbotConfig, message: str) -> int:
