@@ -11,6 +11,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **`gdpr_erase_on_delete` offboarding option (review S4, D7, default `false`)**, applied identically
+  through MAS (`skip_erase`) and the Synapse admin API (`erase`).
+- **"Offboarding check" startup step (LIF-09):** logs the offboarding setup and what the configured
+  MAS can do, and reports a MAS-backed homeserver without `mas_admin`.
 - **Admin commands for paused destructive actions (review S3, D13):** `!pending`, `!confirm <id>` and
   `!reject <id>`; `!status` shows the number of paused batches. The admin room reports paused and
   closed batches, offboarding attention (frozen, failed, aborted users) and rooms that did not
@@ -54,6 +58,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   This `CHANGELOG.md`.
 
 ### Changed
+- **Erasure no longer GDPR-erases unless `gdpr_erase_on_delete: true` (review S4, D7).** Before, MAS
+  always erased, and the Synapse path tied erasure to `include_user_media_on_delete`. On a MAS that
+  always erases (0.14), an erase with `gdpr_erase_on_delete: false` is refused and logged as FAILED.
+- **Offboarding audit lines say exactly what each effector did** (LIF-09).
 - **Switching offboarding `dry_run` off goes through the per-pass limit** of the guard, and dry-run
   audit lines are written once per stage instead of every tick (LIF-08).
 - **httpx and httpcore request lines are logged only at `log_level: DEBUG`** (RUN-15).
@@ -130,6 +138,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   troubleshooting.
 
 ### Fixed
+- **Media deletion removes all of a user's uploads** over several passes, not just the first 100
+  (review S4, LIF-12).
+- **A freeze from `authentik_user_ignore_list` no longer ends when the user is deleted in Authentik.**
+- **The offboarding ledger is robust (LIF-14):** a corrupt entry is quarantined instead of stopping
+  offboarding for everyone, an unreadable ledger stops the step without overwriting it, a missing
+  ledger while MAS has locked users raises an alert, and lock records of deleted users with erase
+  disabled are dropped after 90 days (the MAS lock stays).
+- **Config descriptions and ADR-0005 match the offboarding code** (LIF-15).
 - **Retries never duplicate effects (review S11, RUN-05):** non-idempotent requests (createRoom, kick,
   force-join) are no longer blindly resent after a timeout or 5xx. A room created despite a lost
   response is found by a creation marker and reused instead of being created twice; kick and join
@@ -187,6 +203,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   model forbids unknown keys, so remove these two settings if present.
 
 ### Security
+- **An offboarding lock ends all of the user's MAS sessions (review S4, LIF-07):** compat, OAuth 2.0 and
+  browser sessions; an unlock ends any left first, so re-enabling a user no longer revives pre-lock
+  sessions. Needs a MAS with the session finish admin endpoints; on older MAS the audit line says the
+  sessions are only suspended. Synapse may accept an ended token for about two more minutes (LIV-03).
 - **The avatar fetch guard refuses to start if httpx changes the internals it relies on;** `httpcore` is a
   declared dependency (review S11).
 - **Releases are gated (review S15, SUP-02):** the release workflow runs the full CI on the tagged

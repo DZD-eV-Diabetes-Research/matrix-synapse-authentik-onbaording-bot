@@ -35,7 +35,7 @@ Start a session by pointing Claude at this file and the session ID, for example:
 | 3b | CI1 | CI duration: integration path filter, release reuses the CI result (D17) | S | S15, S16 | done (merged before wave 2) |
 | 4 | S3 | Guard layers 1 and 2, reconciler dry-run | M | S2 | done (merged in wave 2) |
 | 5 | S16 | Git history scrub | S | S0, no open branches | done (force-pushed 2026-11-06, new main 89afecf) |
-| 6 | S4 | Offboarding completeness | M | S1 | open |
+| 6 | S4 | Offboarding completeness | M | S1 | done (merged in wave 2) |
 | 7 | S5 | Guard layer 3: `!confirm` for irreversible actions | M | S3, S4 | open |
 | 8 | S6 | Room identity mapping and unified room provisioning | L | S2 | open |
 | 9 | S7 | Room repair: space link, lobbies, blocks | M | S6 | open |
