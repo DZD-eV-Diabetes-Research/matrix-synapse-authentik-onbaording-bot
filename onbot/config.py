@@ -197,6 +197,37 @@ class MasAdmin(_StrictModel):
             examples=["ONLY_AN_EXAMPLE_SECRET_pMv1kZ8sQ0"],
         ),
     ]
+    upstream_subject_attribute: Annotated[
+        str | None,
+        Field(
+            title="Authentik attribute MAS links users by",
+            description=inspect.cleandoc(
+                """Where the subject (`sub` claim) that Authentik sends to MAS is found on the
+                Authentik user object, as a dotted path. With it onbot asks MAS which Matrix account
+                is linked to each Authentik user, so a user renamed in Authentik keeps their account
+                (D8). It must match the subject mode of the Authentik OAuth2 provider MAS uses:
+                `uid` for "Based on the User's hashed ID" (Authentik's default), `pk` for "Based on
+                the User's ID", `username` for "Based on the User's username", `email` for "Based on
+                the User's Email". Only the hashed ID and the ID survive a rename. `null` turns the
+                lookup off; users are then resolved from onbot's recorded bindings and the mapping
+                attribute."""
+            ),
+            examples=["uid", "pk"],
+        ),
+    ] = "uid"
+    upstream_provider_id: Annotated[
+        str | None,
+        Field(
+            title="MAS upstream provider id of Authentik",
+            description=inspect.cleandoc(
+                """The id (a ULID) of the Authentik provider in the MAS `upstream_oauth2` config.
+                Only links of this provider are used. Leave unset when MAS has a single upstream
+                provider; with several, an Authentik subject that is linked to different Matrix
+                accounts by different providers is treated as a conflict."""
+            ),
+            examples=["01HFS67GJ145HCM9ZASYS9DC3J"],
+        ),
+    ] = None
 
     @field_validator("url")
     @classmethod
