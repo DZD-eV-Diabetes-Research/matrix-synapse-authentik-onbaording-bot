@@ -28,6 +28,12 @@ Process lifecycle (review findings RUN-02, RUN-09, RUN-12, RUN-13):
   deployment never runs the service and still needs all of them, and then one pass. ``broadcast``
   builds only the Matrix clients, registers the device and lifts the rate limit. Neither starts the
   sync stream, and neither writes the heartbeat file.
+* **``reconcile-once --dry-run`` changes nothing** (MNT-09). It reads the real state and logs every
+  change the pass would make, including what the destructive-action guard would pause, but every
+  write goes to a recording wrapper, offboarding runs in its own dry-run mode, and no bookkeeping
+  (ledger, guard state) is saved. Only version negotiation runs as a startup step.
+* **Reports reach the admin room.** With the control room enabled, an :class:`AdminRoomNotifier`
+  posts the guard's paused batches, offboarding that needs a human and rooms that did not converge.
 """
 
 from __future__ import annotations
@@ -37,11 +43,12 @@ from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from onbot.admin.admins import AdminResolver
 from onbot.admin.broadcast import BroadcastService
 from onbot.admin.control_room import ControlRoomHandler
+from onbot.admin.notifier import AdminRoomNotifier
 from onbot.auth.token_provider import (
     OAuth2ClientCredentialsTokenProvider,
     StaticTokenProvider,
@@ -55,11 +62,21 @@ from onbot.clients.synapse_admin import ApiClientSynapseAdmin
 from onbot.config import OnbotConfig, SynapseServer
 from onbot.discovery import DiscoveryPoller
 from onbot.events import EventBus, Signal
+from onbot.guard import (
+    DestructiveActionGuard,
+    GuardLimits,
+    GuardStore,
+    MatrixAccountDataGuardStore,
+    ReadOnlyGuardStore,
+)
 from onbot.heartbeat import RECONCILE, SYNC, SYNC_MAX_AGE_SEC, Heartbeat, reconcile_max_age_sec
 from onbot.lifecycle.accounts import (
     AccountLifecycleManager,
     AdminApiLifecycleEffectors,
+    KnownUsers,
     LifecycleEffectors,
+    LifecycleLedger,
+    LifecycleLedgerStore,
     MasLifecycleEffectors,
     MatrixAccountDataLedgerStore,
 )
@@ -67,6 +84,7 @@ from onbot.logging import get_logger
 from onbot.media import MediaUploader
 from onbot.onboarding.listener import OnboardingListener
 from onbot.onboarding.welcome import WelcomeService
+from onbot.reconciler.effectors import DryRunEffectors, DryRunSynapseAdmin, MatrixEffectors
 from onbot.reconciler.engine import ReconcilerEngine
 from onbot.rooms.admin import AdminRoomProvisioner
 from onbot.runtime import (
@@ -129,6 +147,25 @@ async def _relax_bot_ratelimit(admin: ApiClientSynapseAdmin, config: OnbotConfig
     log.info("lifted Synapse send rate limit for %s", config.synapse_server.bot_user_id)
 
 
+class _ReadOnlyLedgerStore:
+    """Reads the lifecycle ledger, never writes it (``reconcile-once --dry-run``)."""
+
+    def __init__(self, inner: LifecycleLedgerStore) -> None:
+        self.inner = inner
+
+    async def load(self) -> LifecycleLedger:
+        return await self.inner.load()
+
+    async def save(self, ledger: LifecycleLedger) -> None:
+        log.info("[dry-run] would save the offboarding ledger (%d entries)", len(ledger.entries))
+
+    async def load_known_users(self) -> KnownUsers:
+        return await self.inner.load_known_users()
+
+    async def save_known_users(self, known: KnownUsers) -> None:
+        log.info("[dry-run] would save the known users record (%d users)", len(known.users))
+
+
 # --- wiring -----------------------------------------------------------------------------------
 
 
@@ -147,7 +184,10 @@ class App:
     pump: SyncPump
     discovery: DiscoveryPoller
     admins: AdminResolver
+    guard: DestructiveActionGuard
     control_room: ControlRoomHandler | None = None
+    notifier: AdminRoomNotifier | None = None
+    dry_run: bool = False
     _onboarding_open: bool = False
     _control_room_subscribed: bool = False
 
@@ -203,6 +243,8 @@ class App:
         except Exception:
             handler.room_id = None  # never route commands without the restored replay cursor
             raise
+        if self.notifier is not None:
+            await self.notifier.bind(room_id)
         if not self._control_room_subscribed:
             # Re-invite on every reconcile, so somebody added to the Authentik admin group gets into
             # the room on the same tick that grants them the right to command the bot.
@@ -235,8 +277,11 @@ class App:
         A cron-driven ``reconcile-once`` deployment never runs the service, so it needs all of them: a
         registered device for the welcome sends a pass may trigger, the lifted rate limit (a pass
         creates rooms and sends messages just like the service), the bot avatar, and the admin room,
-        whose re-invite of new admins rides on the pass's ``reconcile_completed`` signal.
+        whose re-invite of new admins rides on the pass's ``reconcile_completed`` signal. A dry run
+        only negotiates versions: every other step writes.
         """
+        if self.dry_run:
+            return [StartupStep("version negotiation", self.negotiate_versions)]
         return self.service_steps()
 
 
@@ -263,11 +308,20 @@ def _matrix_clients(
 
 
 @asynccontextmanager
-async def build_app(config: OnbotConfig, *, heartbeat: Heartbeat | None = None) -> AsyncIterator[App]:
+async def build_app(
+    config: OnbotConfig, *, heartbeat: Heartbeat | None = None, dry_run: bool = False
+) -> AsyncIterator[App]:
     """Construct the reconciler + onboarding with their clients, closing them on exit.
 
     No network I/O happens here; see :class:`StartupSupervisor` for what runs against the servers.
+    ``dry_run`` wires the pass for ``reconcile-once --dry-run``: writes are logged, not sent.
     """
+    if dry_run:
+        config = config.model_copy(deep=True)
+        lifecycle_cfg = (
+            config.sync_authentik_users_with_matrix_rooms.deactivate_disabled_authentik_users_in_matrix
+        )
+        lifecycle_cfg.dry_run = True  # offboarding has its own dry run: it calls no effector at all
     async with AsyncExitStack() as stack:
         authentik = ApiClientAuthentik(
             url=config.authentik_server.url,
@@ -300,17 +354,32 @@ async def build_app(config: OnbotConfig, *, heartbeat: Heartbeat | None = None) 
             lifecycle_effectors = MasLifecycleEffectors(mas_admin, synapse_admin=admin)
         else:
             lifecycle_effectors = AdminApiLifecycleEffectors(admin)
-        lifecycle = AccountLifecycleManager(
-            config,
-            store=MatrixAccountDataLedgerStore(
-                matrix, config.synapse_server.bot_user_id, config.synapse_server.server_name
-            ),
-            effectors=lifecycle_effectors,
-        )
-        effectors = CSApiEffectors(matrix, media=media)
-        stack.push_async_callback(effectors.aclose)
+        bot_id, server_name = config.synapse_server.bot_user_id, config.synapse_server.server_name
+        ledger_store: LifecycleLedgerStore = MatrixAccountDataLedgerStore(matrix, bot_id, server_name)
+        guard_store: GuardStore = MatrixAccountDataGuardStore(matrix, bot_id, server_name)
+        if dry_run:
+            ledger_store = _ReadOnlyLedgerStore(ledger_store)
+            guard_store = ReadOnlyGuardStore(guard_store)
+        lifecycle = AccountLifecycleManager(config, store=ledger_store, effectors=lifecycle_effectors)
+        # One guard for the engine (decides, records) and the control room (!confirm, !reject): its
+        # state is reloaded under one lock for every operation (D13).
+        guard = DestructiveActionGuard(GuardLimits.from_config(config), guard_store, events)
+        live_effectors = CSApiEffectors(matrix, media=media)
+        stack.push_async_callback(live_effectors.aclose)
+        effectors: MatrixEffectors = live_effectors
+        engine_admin = admin
+        if dry_run:
+            effectors = DryRunEffectors(reads=live_effectors)
+            engine_admin = cast(ApiClientSynapseAdmin, DryRunSynapseAdmin(admin))
         engine = ReconcilerEngine(
-            config, authentik, admin, effectors=effectors, events=events, lifecycle=lifecycle
+            config,
+            authentik,
+            engine_admin,
+            effectors=effectors,
+            events=events,
+            lifecycle=lifecycle,
+            guard=guard,
+            dry_run=dry_run,
         )
         welcome = WelcomeService(matrix, config, admin=admin, media=media)
         # Not started here: the welcome flow is subscribed by the "onboarding" startup step.
@@ -323,11 +392,15 @@ async def build_app(config: OnbotConfig, *, heartbeat: Heartbeat | None = None) 
         discovery = DiscoveryPoller(authentik, config, engine.trigger)
         admins = AdminResolver(authentik, config)
         control_room: ControlRoomHandler | None = None
-        if config.admin_room.enabled:
+        notifier: AdminRoomNotifier | None = None
+        if config.admin_room.enabled and not dry_run:
             # Registered now, bound to its room by the "admin control room" startup step; until then
             # it ignores every slice.
-            control_room = ControlRoomHandler(matrix, config, broadcast, admins, engine=engine)
+            control_room = ControlRoomHandler(matrix, config, broadcast, admins, engine=engine, guard=guard)
             pump.register(control_room)
+            # Reports raised before the room is bound are queued and posted once it is.
+            notifier = AdminRoomNotifier(matrix)
+            notifier.subscribe(events)
         yield App(
             config=config,
             matrix=matrix,
@@ -340,7 +413,10 @@ async def build_app(config: OnbotConfig, *, heartbeat: Heartbeat | None = None) 
             pump=pump,
             discovery=discovery,
             admins=admins,
+            guard=guard,
             control_room=control_room,
+            notifier=notifier,
+            dry_run=dry_run,
         )
 
 
@@ -446,14 +522,17 @@ async def _stop_loops(
             task.exception()
 
 
-async def run_reconcile_once(config: OnbotConfig) -> None:
+async def run_reconcile_once(config: OnbotConfig, *, dry_run: bool = False) -> None:
     """Run a single reconcile pass and exit (``onbot reconcile-once``).
 
     Runs the service's startup steps once each (device, rate-limit override, bot avatar, admin room),
     then the pass. Onboarding still fires for users discovered this pass, but the long-running sync
-    stream is not started, so admin room commands are not read.
+    stream is not started, so admin room commands (``!confirm`` among them) are not read; the guard's
+    reports are still posted to the admin room.
+
+    ``dry_run`` reads everything and changes nothing: see the module docstring.
     """
-    async with build_app(config) as app:
+    async with build_app(config, dry_run=dry_run) as app:
         await StartupSupervisor(app.reconcile_once_steps()).run_once()
         await app.engine.reconcile_once()
 

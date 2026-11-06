@@ -1,13 +1,19 @@
-"""Matrix-side effectors — the write seam between the reconciler and the Matrix CS API.
+"""Matrix-side effectors: the write seam between the reconciler and the Matrix CS API.
 
 The reconciler decides *what* should change (pure logic in the sibling modules); these effectors
 perform the Matrix Client-Server operations that the Synapse admin API cannot do (room/space
-creation, kicks, power levels, room name/topic, custom state events).
+creation, kicks, power levels, room name/topic, custom state events). The production implementation
+is :class:`onbot.clients.matrix.CSApiEffectors`.
 
-The concrete CS-API implementation lands in Phase 4 (clients/matrix.py) once the Matrix-library
-decision is made (AD / Phase 6). For Phase 3 we ship the :class:`MatrixEffectors` protocol plus a
-:class:`DryRunEffectors` that logs intended actions — so ``reconcile-once`` runs end-to-end against
-real read APIs without mutating anything (the dry-run-by-default safety principle, Q6).
+``onbot reconcile-once --dry-run`` (review finding MNT-09) swaps in the two recording wrappers below:
+:class:`DryRunEffectors` with the live effectors as its ``reads``, and :class:`DryRunSynapseAdmin`
+around the Synapse admin client, whose joins, blocks and deletions would otherwise bypass this seam.
+Reads go to the live servers, so the pass computes the real plan; every write is logged with a
+``[dry-run]`` prefix and none is sent. Rooms the pass would create get a synthetic id, and reads of
+those answer as an empty room would.
+
+Without ``reads``, :class:`DryRunEffectors` answers every read as if nothing existed, which is what the
+unit tests build on.
 """
 
 from __future__ import annotations
@@ -67,11 +73,27 @@ class MatrixEffectors(Protocol):
     ) -> None: ...
 
 
+SYNTHETIC_ROOM_PREFIX = "!dryrun-"
+
+
+def is_synthetic_room(room_id: str) -> bool:
+    """A room only a dry run believes in: it would have been created by this pass."""
+    return room_id.startswith(SYNTHETIC_ROOM_PREFIX)
+
+
 class DryRunEffectors:
-    """Logs every intended write and mutates nothing. Default until Phase 4 wires the CS client."""
+    """Logs every intended write and mutates nothing; reads go to ``reads`` when given."""
+
+    _reads: MatrixEffectors | None = None
+
+    def __init__(self, reads: MatrixEffectors | None = None) -> None:
+        self._reads = reads
+
+    def _live(self, room_id: str) -> MatrixEffectors | None:
+        return None if self._reads is None or is_synthetic_room(room_id) else self._reads
 
     def _synthetic_room_id(self, server_name: str = "dry-run") -> str:
-        return f"!dryrun-{uuid.uuid4().hex[:12]}:{server_name}"
+        return f"{SYNTHETIC_ROOM_PREFIX}{uuid.uuid4().hex[:12]}:{server_name}"
 
     async def create_group_room(self, attrs: RoomCreateAttributes, parent_space_id: str | None) -> str:
         log.info(
@@ -102,7 +124,8 @@ class DryRunEffectors:
         log.info("[dry-run] would kick %s from %s (%s)", user_id, room_id, reason)
 
     async def get_room_power_levels(self, room_id: str) -> dict[str, Any]:
-        return {}
+        live = self._live(room_id)
+        return {} if live is None else await live.get_room_power_levels(room_id)
 
     async def set_room_power_levels(self, room_id: str, power_levels: dict[str, Any]) -> None:
         log.info("[dry-run] would set power levels in %s -> %s", room_id, power_levels)
@@ -123,7 +146,8 @@ class DryRunEffectors:
     async def get_room_state(
         self, room_id: str, event_type: str, state_key: str = ""
     ) -> dict[str, Any] | None:
-        return None
+        live = self._live(room_id)
+        return None if live is None else await live.get_room_state(room_id, event_type, state_key)
 
     async def put_room_state(self, room_id: str, event_type: str, content: dict[str, Any]) -> None:
         log.info("[dry-run] would set state %s on %s", event_type, room_id)
@@ -131,9 +155,48 @@ class DryRunEffectors:
     async def get_room_account_data(
         self, user_id: str, room_id: str, data_type: str
     ) -> dict[str, Any] | None:
-        return None
+        live = self._live(room_id)
+        return None if live is None else await live.get_room_account_data(user_id, room_id, data_type)
 
     async def put_room_account_data(
         self, user_id: str, room_id: str, data_type: str, content: dict[str, Any]
     ) -> None:
         log.info("[dry-run] would set account data %s for %s in %s", data_type, user_id, room_id)
+
+
+class DryRunSynapseAdmin:
+    """The Synapse admin client for a dry run: reads go through, writes are only logged."""
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+
+    def __getattr__(self, name: str) -> Any:
+        # Everything not overridden below is a read (listing users, rooms, spaces, media).
+        return getattr(self._inner, name)
+
+    async def list_room_members(self, room_id: str) -> list[str]:
+        if is_synthetic_room(room_id):
+            return []
+        members: list[str] = await self._inner.list_room_members(room_id)
+        return members
+
+    async def get_room_details(self, room_id: str) -> dict[str, Any]:
+        if is_synthetic_room(room_id):
+            return {}
+        details: dict[str, Any] = await self._inner.get_room_details(room_id)
+        return details
+
+    async def room_is_blocked(self, room_id: str) -> bool:
+        if is_synthetic_room(room_id):
+            return False
+        return bool(await self._inner.room_is_blocked(room_id))
+
+    async def add_user_to_room(self, room_id: str, user_id: str) -> None:
+        log.info("[dry-run] would join %s to %s", user_id, room_id)
+
+    async def room_set_blocked(self, room_id: str, *, blocked: bool) -> None:
+        log.info("[dry-run] would %s room %s", "block" if blocked else "unblock", room_id)
+
+    async def delete_room(self, room_id: str, **kwargs: Any) -> dict[str, Any]:
+        log.info("[dry-run] would delete room %s (%s)", room_id, kwargs)
+        return {}
