@@ -58,6 +58,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   This `CHANGELOG.md`.
 
 ### Changed
+- **`admin_room.enabled` now defaults to `true` (breaking for configs without admins, review W2F,
+  D19):** the admin room and `!confirm` are available out of the box. An enabled admin room needs at
+  least one admin in `admin_room.admin_user_ids` or `admin_room.authentik_group_pks_granting_bot_admin`,
+  otherwise onbot refuses to start (exit 2). Configs without admins must add one or set
+  `admin_room.enabled: false`.
+- **Tests run against MAS 1.28.0 and Synapse 1.164.2**, pinned by digest, with Synapse's stable
+  `matrix_authentication_service` config. The lifecycle integration tests assert and exercise ending
+  sessions and deactivating without GDPR erasure.
 - **Erasure no longer GDPR-erases unless `gdpr_erase_on_delete: true` (review S4, D7).** Before, MAS
   always erased, and the Synapse path tied erasure to `include_user_media_on_delete`. On a MAS that
   always erases (0.14), an erase with `gdpr_erase_on_delete: false` is refused and logged as FAILED.
@@ -203,6 +211,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   model forbids unknown keys, so remove these two settings if present.
 
 ### Security
+- **No fake offboarding on a MAS-backed homeserver without `mas_admin` (review W2F, LIF-09, D19):**
+  onbot used to "lock" users through the Synapse admin API there, which left every MAS session valid.
+  It now refuses to lock or erase, logs it at ERROR and reports it once in the admin room. Disabled
+  users are still marked, so the locks follow once `mas_admin` is configured. Until the homeserver
+  has said whether it uses MAS, the Synapse fallback locks nobody. Onboarding and rooms are not
+  affected.
 - **An offboarding lock ends all of the user's MAS sessions (review S4, LIF-07):** compat, OAuth 2.0 and
   browser sessions; an unlock ends any left first, so re-enabling a user no longer revives pre-lock
   sessions. Needs a MAS with the session finish admin endpoints; on older MAS the audit line says the

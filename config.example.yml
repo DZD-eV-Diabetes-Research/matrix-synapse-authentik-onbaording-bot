@@ -213,8 +213,10 @@ authentik_server:
 #              Synapse admin API cannot end it. Ending sessions and erasing without GDPR erasure
 #              need a MAS whose admin API offers them (0.14 does not); the startup log lists what
 #              the configured MAS can do. Leave unset (`null`) on homeservers that do not use MAS:
-#              the bot then enforces offboarding through the Synapse admin API alone, and logs an
-#              error at startup if the homeserver turns out to delegate logins to MAS.
+#              the bot then enforces offboarding through the Synapse admin API alone. If the
+#              homeserver turns out to delegate logins to MAS, the bot refuses to lock or erase
+#              anybody (the Synapse admin API would leave every MAS session valid), logs that at
+#              ERROR and reports it in the admin room; onboarding and rooms keep working.
 mas_admin:
 
 # ## welcome_new_users_messages - Welcome messages ###
@@ -320,21 +322,27 @@ force_join_onboarding_room: true
 # Type:        Object (AdminRoom)
 # Required:    False
 # Env-var:     'ONBOT_ADMIN_ROOM'
-# Description: A Matrix room in which listed administrators can command the bot — most notably
-#              announcing a message to every user. Disabled by default.
+# Description: A Matrix room in which listed administrators command the bot (confirm paused
+#              removals, announce a message to every user) and read its reports. Enabled by default;
+#              it needs at least one administrator, or `enabled: false`.
 admin_room:
 
   # ## enabled - Enable the admin control room ###
   # YAML-path:   admin_room.enabled
   # Type:        bool
   # Required:    False
-  # Default:     false
+  # Default:     true
   # Env-var:     'ONBOT_ADMIN_ROOM__ENABLED'
-  # Description: Create and listen in a control room where administrators can command the bot. Off
-  #              by default: the room lets anyone on the bot's admin allowlist send a message to every
-  #              user on the server, so it should be turned on deliberately. The `onbot broadcast`
-  #              command-line tool does the same job without a room.
-  enabled: false
+  # Description: Create and listen in a control room where administrators can command the bot. On
+  #              by default, because it is where the bot reports what needs a human (paused mass
+  #              removals, offboarding problems) and where an administrator releases paused removals
+  #              with `!confirm <id>`. It also lets everyone on the admin allowlist send a message to
+  #              every user on the server (`!announce`). An enabled room needs at least one
+  #              administrator in `admin_user_ids` or `authentik_group_pks_granting_bot_admin`, or the
+  #              bot refuses to start. Set this to `false` to run without the room; the bot then only
+  #              logs its reports, the destructive-action guard's pauses can only be lifted by raising
+  #              its limits, and `onbot broadcast` sends announcements from the command line.
+  enabled: true
 
   # ## alias - Control room alias localpart ###
   # YAML-path:   admin_room.alias
@@ -414,8 +422,8 @@ admin_room:
   #              option to make them so: people are made superusers to administer an identity
   #              provider, not to page the whole company, and a capability that reaches every user on
   #              the server must not widen silently because somebody was granted an unrelated role
-  #              upstream. Create a group, put people in it, and name it here. An empty list, together
-  #              with an empty `admin_user_ids`, means nobody may command the bot.
+  #              upstream. Create a group, put people in it, and name it here. While the admin room is
+  #              enabled, this list or `admin_user_ids` must not be empty.
   # Example:
   #  >authentik_group_pks_granting_bot_admin:
   #  >- 1120a6e1124f309bbe96c8be5fb09eab
