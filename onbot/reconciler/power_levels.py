@@ -22,8 +22,8 @@ The bot itself is never written (ADR-0011, REC-12).
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from collections.abc import Collection, Iterable, Mapping
+from dataclasses import dataclass, replace
 from typing import Any
 
 from onbot.models import MappedUser
@@ -236,6 +236,8 @@ class PowerLevelPlan:
     """Users whose level should change but cannot, with the reason. Reported, never retried in-pass."""
     released: tuple[str, ...]
     """Users whose bot-granted entry a human changed: dropped from the record, left alone."""
+    held: tuple[str, ...] = ()
+    """Users whose withdrawal is paused for the destructive-action guard (see :func:`hold_withdrawals`)."""
 
 
 def plan_power_levels(
@@ -306,3 +308,30 @@ def plan_power_levels(
         blocked=blocked,
         released=tuple(released),
     )
+
+
+def hold_withdrawals(
+    plan: PowerLevelPlan,
+    current_users: Mapping[str, Any],
+    recorded: Mapping[str, int | None],
+    withdraw: Collection[str],
+    *,
+    users_default: int,
+) -> PowerLevelPlan:
+    """Keep every withdrawal in ``plan`` except those in ``withdraw`` (D13).
+
+    A withdrawal is a destructive action the guard decides on, so the plan is first made without
+    them: each held user keeps their current entry and stays in the bot's record (an entry that
+    predates the record is recorded at its current level), so it can still be withdrawn once the guard
+    permits it. The held MXIDs are listed in :attr:`PowerLevelPlan.held`.
+    """
+    held = sorted(m for m in current_users if m not in plan.users and m not in withdraw)
+    if not held:
+        return plan
+    users = dict(plan.users)
+    granted = dict(plan.granted)
+    for mxid in held:
+        users[mxid] = current_users[mxid]
+        level = recorded.get(mxid)
+        granted[mxid] = level if level is not None else _as_level(current_users[mxid], users_default)
+    return replace(plan, users=users, granted=granted, held=tuple(held))

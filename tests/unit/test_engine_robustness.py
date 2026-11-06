@@ -357,6 +357,7 @@ class NobodyActiveAuthentik(TwoGroupAuthentik):
 
 
 async def test_an_empty_desired_set_in_every_room_kicks_nobody() -> None:
+    """An empty answer always needs a confirmation: nothing is kicked, one batch is proposed (D13)."""
     engine, _, effectors, bus = _engine(authentik=NobodyActiveAuthentik())
     suppressed = _collect(bus, Signal.destructive_actions_suppressed)
     await engine.reconcile_once()
@@ -375,7 +376,8 @@ class OnlyCarolAuthentik(TwoGroupAuthentik):
 
 
 async def test_kicks_still_run_when_some_room_has_desired_members() -> None:
-    """The minimal guard is about a collapsed answer, not about one legitimately emptied group."""
+    """One legitimately emptied group still kicks: without a baseline (the first pass) only an empty
+    answer trips the guard. A partial answer against a baseline is in ``test_engine_guard.py``."""
     engine, _, effectors, bus = _engine(authentik=OnlyCarolAuthentik())
     suppressed = _collect(bus, Signal.destructive_actions_suppressed)
     await engine.reconcile_once()

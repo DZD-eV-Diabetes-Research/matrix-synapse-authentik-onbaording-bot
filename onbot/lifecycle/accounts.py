@@ -499,6 +499,22 @@ class LifecycleOutcome(BaseModel):
         return self.failed or self.action is LifecycleAction.freeze
 
 
+@dataclass(frozen=True, slots=True)
+class PlannedAccountAction:
+    """A destructive step the next :meth:`AccountLifecycleManager.reconcile_accounts` would take."""
+
+    mxid: str
+    action: LifecycleAction  # logout or erase
+    reason: str
+
+
+# The steps the destructive-action guard (onbot.guard) decides on. Only taken in live mode.
+GUARDED_ACTIONS = frozenset({LifecycleAction.logout, LifecycleAction.erase})
+
+# Whether the guard lets one destructive step run this pass.
+Permit = Callable[[str, LifecycleAction], bool]
+
+
 EMPTY_DIRECTORY_MESSAGE = (
     "lifecycle step aborted: Authentik returned no users at all; refusing to judge any account on an "
     "empty answer (check the API token's permissions)"
@@ -526,8 +542,63 @@ class AccountLifecycleManager:
         self.clock = clock
         self._effector_name = type(effectors).__name__
         self._reported_warnings: set[str] = set()
+        # The step whose "DRY-RUN: would ..." or "HELD" line was last logged per account, so the audit
+        # channel gets one line per stage transition instead of one per tick (LIF-08).
+        self._noted: dict[str, str] = {}
 
-    async def reconcile_accounts(self, snapshot: DirectorySnapshot) -> list[LifecycleOutcome]:
+    async def plan_accounts(self, snapshot: DirectorySnapshot) -> list[PlannedAccountAction]:
+        """The destructive steps (lock, erase) a pass over ``snapshot`` would take now; acts on nothing.
+
+        The reconciler hands these to the destructive-action guard before the real pass, which then
+        only takes the steps the guard permits. Dry-run plans nothing: it destroys nothing either.
+        """
+        if not self.cfg.enabled or self.cfg.dry_run or not snapshot.users:
+            return []
+        ledger = await self.store.load()
+        known = await self.store.load_known_users()
+        now = self.clock()
+        update_known_users(known, snapshot, ledger, now)  # in memory only, as the pass will see it
+        planned: list[PlannedAccountAction] = []
+        for mxid, classification in sorted(classify_accounts(snapshot, known, ledger).items()):
+            entry = ledger.entries.get(mxid)
+            if (
+                entry is not None
+                and entry.retry_after_timestamp is not None
+                and now < entry.retry_after_timestamp
+            ):
+                continue
+            action = self._decide(entry, classification, now)
+            if action in GUARDED_ACTIONS:
+                planned.append(PlannedAccountAction(mxid=mxid, action=action, reason=classification.reason))
+        return planned
+
+    def _decide(
+        self, entry: LifecycleEntry | None, classification: Classification, now: float
+    ) -> LifecycleAction:
+        return decide_account_action(
+            status=classification.status,
+            marked_ts=entry.marked_for_disabling_timestamp if entry else None,
+            disabled_ts=entry.disabled_user_timestamp if entry else None,
+            now=now,
+            deactivate_after_n_sec=self.cfg.deactivate_after_n_sec,
+            delete_after_n_sec=self.cfg.delete_after_n_sec,
+        )
+
+    def _note_once(self, mxid: str, what: str) -> bool:
+        """True the first time ``what`` is noted for ``mxid`` in a row (one audit line per transition)."""
+        if self._noted.get(mxid) == what:
+            return False
+        self._noted[mxid] = what
+        return True
+
+    async def reconcile_accounts(
+        self, snapshot: DirectorySnapshot, *, permit: Permit | None = None
+    ) -> list[LifecycleOutcome]:
+        """Classify, decide and act for every tracked account.
+
+        ``permit`` is the destructive-action guard's verdict: a lock or erase it does not permit is
+        held (logged once, no state change) and decided again on the next pass. ``None`` permits all.
+        """
         if not self.cfg.enabled:
             return []
         if not snapshot.users:
@@ -549,7 +620,7 @@ class AccountLifecycleManager:
         outcomes: list[LifecycleOutcome] = []
         erased: list[str] = []
         for mxid, classification in sorted(classify_accounts(snapshot, known, ledger).items()):
-            outcome = await self._reconcile_one(ledger, mxid, classification, now)
+            outcome = await self._reconcile_one(ledger, mxid, classification, now, permit)
             if outcome is None:
                 continue
             outcomes.append(outcome)
@@ -564,7 +635,12 @@ class AccountLifecycleManager:
         return outcomes
 
     async def _reconcile_one(
-        self, ledger: LifecycleLedger, mxid: str, classification: Classification, now: float
+        self,
+        ledger: LifecycleLedger,
+        mxid: str,
+        classification: Classification,
+        now: float,
+        permit: Permit | None = None,
     ) -> LifecycleOutcome | None:
         entry = ledger.entries.get(mxid)
         if (
@@ -592,15 +668,25 @@ class AccountLifecycleManager:
             entry.authentik_pk = classification.pk
             await self.store.save(ledger)
 
-        action = decide_account_action(
-            status=classification.status,
-            marked_ts=entry.marked_for_disabling_timestamp if entry else None,
-            disabled_ts=entry.disabled_user_timestamp if entry else None,
-            now=now,
-            deactivate_after_n_sec=self.cfg.deactivate_after_n_sec,
-            delete_after_n_sec=self.cfg.delete_after_n_sec,
-        )
+        action = self._decide(entry, classification, now)
+        noted = self._noted.get(mxid)
+        if noted is not None and not noted.endswith(f":{action.value}"):
+            del self._noted[mxid]  # moved on to another step: its next line is news again
         if action is LifecycleAction.none or action is LifecycleAction.wait:
+            return None
+        if (
+            permit is not None
+            and action in GUARDED_ACTIONS
+            and not self.cfg.dry_run
+            and not permit(mxid, action)
+        ):
+            if self._note_once(mxid, f"held:{action.value}"):
+                audit.warning(
+                    "HELD %s of %s (%s): paused by the destructive-action guard until an admin confirms",
+                    action.value,
+                    mxid,
+                    classification.reason,
+                )
             return None
         if action is LifecycleAction.freeze:
             return await self._freeze(ledger, mxid, classification.reason)
@@ -685,7 +771,8 @@ class AccountLifecycleManager:
 
         if action is LifecycleAction.logout:
             if self.cfg.dry_run:
-                audit.warning("DRY-RUN: would lock out %s (%s)", mxid, reason)
+                if self._note_once(mxid, f"dry-run:{action.value}"):
+                    audit.warning("DRY-RUN: would lock out %s (%s)", mxid, reason)
                 return False
             await self.effectors.logout(mxid)
             entry = ledger.entries.setdefault(mxid, LifecycleEntry())
@@ -716,7 +803,8 @@ class AccountLifecycleManager:
             audit.info("cleared pending offboarding of %s (%s); nothing was locked", mxid, reason)
             return True
         if self.cfg.dry_run:
-            audit.warning("DRY-RUN: would unlock %s (%s)", mxid, reason)
+            if self._note_once(mxid, f"dry-run:{LifecycleAction.reenable.value}"):
+                audit.warning("DRY-RUN: would unlock %s (%s)", mxid, reason)
             return False
         await self.effectors.reenable(mxid)
         ledger.entries.pop(mxid)
@@ -726,7 +814,10 @@ class AccountLifecycleManager:
     async def _erase(self, ledger: LifecycleLedger, mxid: str, now: float) -> bool:
         delete_media = self.cfg.include_user_media_on_delete
         if self.cfg.dry_run:
-            audit.warning("DRY-RUN: would erase %s (deactivate account, delete_media=%s)", mxid, delete_media)
+            if self._note_once(mxid, f"dry-run:{LifecycleAction.erase.value}"):
+                audit.warning(
+                    "DRY-RUN: would erase %s (deactivate account, delete_media=%s)", mxid, delete_media
+                )
             return False
         entry = ledger.entries.setdefault(mxid, LifecycleEntry())
         if entry.deactivated_timestamp is None:

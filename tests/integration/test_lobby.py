@@ -113,8 +113,7 @@ async def test_removed_from_group_keeps_the_lobby_seat(
     config = _lobby_config(make_config, prefix, S.uniq("keepspace"))
     group = authentik_admin.create_group(f"{prefix}-team", attributes={"is_chatroom": True})
     member, member_login = S.provision(authentik_admin, S.uniq("leaver"), groups=[group["pk"]])
-    # Somebody stays in the group: a pass in which no group room has a single desired member skips
-    # every kick (the minimal guard against a collapsed Authentik answer, REC-02 / MNT-01).
+    # Somebody stays in the group, so the group room is not emptied.
     S.provision(authentik_admin, S.uniq("stayer"), groups=[group["pk"]])
 
     await run_reconcile_once(config)

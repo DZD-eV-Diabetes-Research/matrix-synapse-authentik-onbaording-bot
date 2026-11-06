@@ -9,6 +9,7 @@ import pytest
 from onbot.reconciler.power_levels import (
     RoomAuthority,
     creators_are_privileged,
+    hold_withdrawals,
     plan_power_levels,
     room_authority,
 )
@@ -166,3 +167,25 @@ def test_a_wanted_level_is_enforced_over_a_human_edit() -> None:
     plan = _plan({ALICE: 75}, {ALICE: 50}, recorded={ALICE: 50}, authority=V12)
     assert plan.users == {ALICE: 50}
     assert plan.granted == {ALICE: 50}
+
+
+# --- D13: withdrawals wait for the destructive-action guard ----------------------------------------
+
+
+def test_held_withdrawals_keep_the_entry_and_the_record() -> None:
+    current = {BOT: 100, ALICE: 50, BOB: 100}
+    # Alice was granted 50 by the bot; Bob is a global admin from before the record (level unknown).
+    recorded: dict[str, int | None] = {ALICE: 50, BOB: None}
+    plan = plan_power_levels(current, {}, recorded, V12, bot_id=BOT)
+    assert ALICE not in plan.users and BOB not in plan.users
+
+    held = hold_withdrawals(plan, current, recorded, withdraw=frozenset({ALICE}), users_default=0)
+    assert held.held == (BOB,)
+    assert held.users == {BOT: 100, BOB: 100}  # Alice goes, Bob stays at his level
+    assert held.granted == {BOB: 100}  # and stays recorded, so it can be withdrawn once permitted
+
+
+def test_nothing_held_leaves_the_plan_alone() -> None:
+    current = {BOT: 100, ALICE: 50}
+    plan = plan_power_levels(current, {}, {ALICE: 50}, V12, bot_id=BOT)
+    assert hold_withdrawals(plan, current, {ALICE: 50}, withdraw={ALICE}, users_default=0) == plan

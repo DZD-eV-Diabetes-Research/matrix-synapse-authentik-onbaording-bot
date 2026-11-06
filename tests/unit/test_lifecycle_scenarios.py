@@ -17,6 +17,15 @@ import pytest
 
 from onbot.config import OnbotConfig
 from onbot.events import Event, EventBus, Signal
+from onbot.guard import (
+    DestructiveAction,
+    DestructiveActionGuard,
+    GuardDecision,
+    GuardLimits,
+    InputCounts,
+    MatrixAccountDataGuardStore,
+    MemoryGuardStore,
+)
 from onbot.lifecycle.accounts import (
     AccountLifecycleManager,
     LifecycleLedger,
@@ -53,6 +62,7 @@ class Directory:
         self.users: dict[int, dict[str, Any]] = {}
         self._next_pk = 1
         self.blind = False  # simulate a token that suddenly sees nobody (200 with an empty list)
+        self.visible: set[str] | None = None  # a token narrowed to these usernames (REC-01)
 
     def add(
         self,
@@ -98,6 +108,8 @@ class Directory:
         groups = [filter_groups_by_pk] if isinstance(filter_groups_by_pk, str) else filter_groups_by_pk
         out = []
         for user in self.users.values():
+            if self.visible is not None and user["username"] not in self.visible:
+                continue
             if filter_is_active is not None and user["is_active"] is not filter_is_active:
                 continue
             if filter_by_path is not None and user["path"] != filter_by_path:
@@ -212,10 +224,37 @@ class Clock:
         return self.now
 
 
-class World:
-    """One deployment: directory, Synapse, MAS, ledger and an engine wired to all of them."""
+class AllowAllGuard(DestructiveActionGuard):
+    """Permits every planned action: these scenarios are about the lifecycle's own decisions.
 
-    def __init__(self, *, dry_run: bool = False, delete_after: int | None = None, **sync: Any) -> None:
+    The guard has its own tests (``test_guard.py``) and its own scenarios below (``World(guard=True)``).
+    """
+
+    def __init__(self) -> None:
+        super().__init__(GuardLimits(), MemoryGuardStore(), EventBus())
+
+    async def decide(self, counts: InputCounts, planned: Any) -> GuardDecision:
+        actions: list[DestructiveAction] = list(planned)
+        return GuardDecision(
+            counts=counts,
+            permitted=frozenset(a.key for a in actions),
+            held=(),
+            reasons=(),
+            input_tripped=False,
+            confirmed_batches=(),
+        )
+
+
+class World:
+    """One deployment: directory, Synapse, MAS, ledger and an engine wired to all of them.
+
+    ``guard=True`` puts the real destructive-action guard in front of the lifecycle, with its state in
+    the same account-data store as the ledger.
+    """
+
+    def __init__(
+        self, *, dry_run: bool = False, delete_after: int | None = None, guard: bool = False, **sync: Any
+    ) -> None:
         self.config = OnbotConfig.model_validate(_BASE)
         self.config.sync_matrix_rooms_based_on_authentik_groups.enabled = False
         self.config.create_matrix_rooms_in_a_matrix_space.enabled = False
@@ -239,6 +278,9 @@ class World:
         signal = getattr(Signal, "lifecycle_attention", None)
         if signal is not None:
             self.events.subscribe(signal, self._on_report)
+        self.guard_events: list[Event] = []
+        self.events.subscribe(Signal.destructive_actions_suppressed, self._on_guard)
+        self.events.subscribe(Signal.guard_batch_closed, self._on_guard)
         from onbot.lifecycle.accounts import MatrixAccountDataLedgerStore
 
         self.manager = AccountLifecycleManager(
@@ -247,6 +289,16 @@ class World:
             MasLifecycleEffectors(self.mas, synapse_admin=self.media),
             clock=self.clock,
         )
+        self.guard: DestructiveActionGuard = (
+            DestructiveActionGuard(
+                GuardLimits.from_config(self.config),
+                MatrixAccountDataGuardStore(self.store, mx("bot"), SERVER),
+                self.events,
+                clock=self.clock,
+            )
+            if guard
+            else AllowAllGuard()
+        )
         self.engine = ReconcilerEngine(
             self.config,
             self.directory,  # type: ignore[arg-type]
@@ -254,10 +306,14 @@ class World:
             DryRunEffectors(),
             events=self.events,
             lifecycle=self.manager,
+            guard=self.guard,
         )
 
     async def _on_report(self, event: Event) -> None:
         self.reports.append(event)
+
+    async def _on_guard(self, event: Event) -> None:
+        self.guard_events.append(event)
 
     def person(self, local: str, **kwargs: Any) -> int:
         """An Authentik user with a provisioned Matrix account and a MAS user."""
@@ -701,3 +757,92 @@ async def test_lock_audit_line_says_erase_disabled(caplog: pytest.LogCaptureFixt
     text = "\n".join(r.getMessage() for r in caplog.records if r.name == "onbot.lifecycle.audit")
     assert "Nones" not in text
     assert "erase disabled" in text
+
+
+# --- REC-01 / D13: the destructive-action guard in front of the lifecycle ---------------------------
+
+
+def _proposals(w: World) -> list[Event]:
+    return [e for e in w.guard_events if e.signal is Signal.destructive_actions_suppressed]
+
+
+async def test_a_narrowed_token_locks_no_known_user() -> None:
+    """S1 handover: a token that sees one user makes every other known user look deleted."""
+    w = World(guard=True)
+    for name in ("anna", "ben", "cleo", "dino"):
+        w.person(name)
+    await w.tick()  # all four become known users; the baseline is five active users
+
+    w.directory.visible = {"anna"}
+    await w.tick()  # the others look deleted: marked (bookkeeping only)
+    await w.tick(DAY)  # cooldown elapsed: the locks are planned, and paused
+    await w.tick(DAY)
+
+    assert w.mas.calls == []
+    [proposal] = _proposals(w)
+    assert proposal.payload["action"] == "lock"
+    assert "from 5 to 1" in proposal.payload["reason"]
+
+    ok, _ = await w.guard.confirm(proposal.payload["batch_id"], "@admin:company.org")
+    assert ok
+    await w.tick()
+    assert sorted(w.mas.ops("lock")) == ["ben", "cleo", "dino"]
+
+
+async def test_switching_dry_run_off_after_a_long_dry_run_goes_through_the_limit() -> None:
+    """LIF-08: every user marked during the dry run would be locked in the first live pass."""
+    w = World(guard=True, dry_run=True)
+    staff = [w.person(f"p{n:02d}") for n in range(40)]
+    await w.tick()
+    for week in range(3):  # people leave over weeks, a few at a time: never an implausible drop
+        for pk in staff[week * 4 : week * 4 + 4][: 11 - week * 4]:
+            w.directory.set_active(pk, False)
+        await w.tick(7 * DAY)
+    assert w.mas.calls == []  # dry run
+
+    w.lc.dry_run = False
+    await w.tick()
+    assert w.mas.calls == []  # 11 locks at once: paused, not done
+    [proposal] = _proposals(w)
+    assert "11 reversible destructive actions" in proposal.payload["reason"]
+
+    await w.guard.confirm(proposal.payload["batch_id"], "@admin:company.org")
+    await w.tick()
+    assert len(w.mas.ops("lock")) == 11
+
+
+async def test_a_few_locks_still_run_without_a_confirmation() -> None:
+    w = World(guard=True)
+    staff = [w.person(f"q{n:02d}") for n in range(40)]
+    await w.tick()
+    for pk in staff[:3]:
+        w.directory.set_active(pk, False)
+    await w.tick()
+    await w.tick()
+    assert len(w.mas.ops("lock")) == 3
+    assert _proposals(w) == []
+
+
+async def test_dry_run_audit_lines_are_written_once_per_stage_not_every_tick(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """LIF-08: the audit channel used to repeat "would lock out" for every user on every tick."""
+    w = World(dry_run=True)
+    pk = w.person("dry")
+    w.directory.set_active(pk, False)
+    with caplog.at_level(logging.INFO, logger="onbot.lifecycle.audit"):
+        for _ in range(5):
+            await w.tick()
+    lines = [r.getMessage() for r in caplog.records if r.name == "onbot.lifecycle.audit"]
+    assert sum("DRY-RUN: would lock out" in line for line in lines) == 1
+
+    # A new stage is news again: the user comes back (nothing was locked) and leaves once more.
+    w.directory.set_active(pk, True)
+    await w.tick()
+    w.directory.set_active(pk, False)
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="onbot.lifecycle.audit"):
+        for _ in range(3):
+            await w.tick()
+    lines = [r.getMessage() for r in caplog.records if r.name == "onbot.lifecycle.audit"]
+    assert sum("DRY-RUN: would lock out" in line for line in lines) == 1
