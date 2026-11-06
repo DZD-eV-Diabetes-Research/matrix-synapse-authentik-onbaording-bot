@@ -560,7 +560,9 @@ class DeactivateDisabledAuthentikUsersInMatrix(_StrictModel):
                 or deleted. Whether the profile is GDPR-erased as well is
                 `gdpr_erase_on_delete`, whether uploaded media goes too is
                 `include_user_media_on_delete`. `null` disables erasure entirely and leaves accounts
-                locked. The default is 365 days."""
+                locked. The default is 365 days. From
+                `destructive_action_guard.confirm_irreversible_actions_from` irreversible actions in
+                one pass on, the erasures wait for an administrator's `!confirm <id>`."""
             ),
             examples=[31536000, None],
             ge=0,
@@ -868,7 +870,10 @@ class SyncMatrixRoomsBasedOnAuthentikGroups(_StrictModel):
             description=inspect.cleandoc(
                 """When a room is disabled (see `disable_rooms_when_mapped_authentik_group_disappears`)
                 also delete it through the Synapse admin API, rather than only blocking it. This
-                destroys the room's history irreversibly — leave `false` unless you are sure."""
+                destroys the room's history irreversibly: leave `false` unless you are sure. A room is
+                deleted only in a pass that also blocks it and kicks its members, and from
+                `destructive_action_guard.confirm_irreversible_actions_from` irreversible actions in
+                one pass on, the deletions wait for an administrator's `!confirm <id>`."""
             ),
         ),
     ] = False
@@ -1199,11 +1204,12 @@ class AvatarFetch(_StrictModel):
 
 
 class DestructiveActionGuard(_StrictModel):
-    """Limits of the destructive-action guard (D4 layers 1 and 2, D13; enforced by :mod:`onbot.guard`).
+    """Limits of the destructive-action guard (D4 layers 1 to 3, D13; enforced by :mod:`onbot.guard`).
 
     Layer 1 compares the pass's input counts with the last known good ones, layer 2 counts the
-    reversible destructive actions of one pass. Either pauses the destructive part of the pass into a
-    batch that an admin releases with ``!confirm <id>`` in the admin control room.
+    reversible destructive actions of one pass, layer 3 the irreversible ones. Each pauses the
+    destructive part of the pass into a batch that an admin releases with ``!confirm <id>`` in the
+    admin control room.
     """
 
     max_drop_percent: Annotated[
@@ -1216,8 +1222,9 @@ class DestructiveActionGuard(_StrictModel):
                 of groups mapped to rooms. If either dropped by more than this percentage, or came
                 back empty, the bot treats the answer as implausible (an API token that lost its
                 permissions, a broken filter). Fewer users pauses every destructive action of the
-                pass: kicks, power-level withdrawals, room teardowns, account locks and erasures.
-                Fewer groups pauses what happens in rooms (kicks, withdrawals, teardowns); locks and
+                pass: kicks, power-level withdrawals, room teardowns and deletions, account locks and
+                erasures. Fewer groups pauses what happens in rooms (kicks, withdrawals, teardowns,
+                deletions); locks and
                 erasures do not depend on the groups. Rooms are still created and users still added
                 and welcomed.
 
@@ -1264,6 +1271,24 @@ class DestructiveActionGuard(_StrictModel):
             gt=0,
         ),
     ] = 72 * 60 * 60
+    confirm_irreversible_actions_from: Annotated[
+        int,
+        Field(
+            title="Irreversible actions in one pass that need a confirmation",
+            description=inspect.cleandoc(
+                """From how many irreversible actions in one pass on the bot asks first: erasing
+                accounts (offboarding's `delete_after_n_sec`) and deleting rooms
+                (`delete_disabled_rooms`). A pass with this many or more pauses all of them and
+                reports them in the admin control room as a batch for an administrator to release with
+                `!confirm <id>`; fewer run on their own. Locking an account, kicking members and
+                closing a room are reversible and count under `max_reversible_actions_per_pass`
+                instead. The media deletion that continues an erasure over later passes needs no new
+                confirmation. `1` asks for every irreversible action."""
+            ),
+            examples=[3, 1],
+            ge=1,
+        ),
+    ] = 3
 
 
 class OnbotConfig(BaseSettings):

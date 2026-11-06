@@ -1,7 +1,7 @@
-"""Guard against mass destruction: input plausibility and per-pass limits (D4 layers 1 and 2, D13).
+"""Guard against mass destruction: input plausibility and per-pass limits (D4 layers 1 to 3, D13).
 
 A reconcile pass computes everything it would destroy (kicks, power-level withdrawals, room
-teardowns, account locks, erasures) *before* it destroys anything, as a list of
+teardowns and deletions, account locks, erasures) *before* it destroys anything, as a list of
 :class:`DestructiveAction`. This module decides which of them may run now:
 
 * **Layer 1, input plausibility.** The pass's input counts (active users in the sync scope, Authentik
@@ -12,6 +12,14 @@ teardowns, account locks, erasures) *before* it destroys anything, as a list of
 * **Layer 2, per-pass limit.** More than ``max_reversible_actions_per_pass`` reversible actions (kick,
   lock, room teardown, power-level withdrawal) in one pass pauses those actions. This also catches a
   long dry run being switched off (LIF-08) and a broken group mapping that keeps the counts intact.
+* **Layer 3, irreversible actions.** ``confirm_irreversible_actions_from`` or more irreversible actions
+  (account erasure, room deletion, D19) in one pass pause those actions; fewer run on their own. The
+  media cleanup that continues an erasure over later passes (LIF-12) is not a new irreversible
+  decision: the erasure that started it already ran, so it is only held by layer 1.
+
+A room deletion never runs in a pass whose teardown of the same room is paused: the teardown (block,
+kick) goes first, and a deletion without it would remove the members irreversibly while the
+reversible part is still waiting for an admin.
 
 A tripped guard never just blocks (D13). The paused actions become a :class:`GuardBatch` with a short
 id, reported to the admin room; an allowlisted admin releases exactly that batch with ``!confirm <id>``
@@ -26,9 +34,6 @@ The guard fails closed on its own memory: a stored state it cannot read holds ev
 of the pass, is reported once in the admin room and is never overwritten. An allowlisted admin resets
 it with ``!guard reset``, which keeps a verbatim copy of the unreadable blob (see
 :meth:`MatrixAccountDataGuardStore.reset_unreadable`).
-
-Layer 3 (irreversible actions above a small number, review session S5) plugs into the same batch
-store: it only needs its own rule in :func:`decide`.
 
 The pure part (:func:`input_drops`, :func:`decide`, :func:`record`) is side-effect free; the
 :class:`DestructiveActionGuard` service persists the state in the bot's account data (AD-1) and emits
@@ -78,22 +83,33 @@ class ActionKind(StrEnum):
     kick = "kick"
     # Lowering a level, whether the entry goes or a still-desired user gets a lower one (D10).
     withdraw_power_level = "withdraw_power_level"
+    # Block an obsolete room and kick its members; reversible. Deleting it is ``room_delete``.
     room_teardown = "room_teardown"
     lock = "lock"
+    # Deactivate the account (and GDPR-erase it, delete its media, as configured); irreversible.
     erase = "erase"
+    # Delete an obsolete room (``delete_disabled_rooms``); irreversible (D19).
+    room_delete = "room_delete"
+    # Continue deleting the media of an account an earlier pass already erased (LIF-12).
+    delete_media = "delete_media"
 
 
-# D13 layer 2: the reversible destructive actions. Everything else is irreversible (layer 3, S5).
+# D13 layer 2: the reversible destructive actions.
 REVERSIBLE_KINDS = frozenset(
     {ActionKind.kick, ActionKind.withdraw_power_level, ActionKind.room_teardown, ActionKind.lock}
 )
+# D13 layer 3: the irreversible decisions. ``delete_media`` is neither: it finishes an erasure that
+# already ran (confirmed, or below the limit), so it never asks again; layer 1 still holds it.
+IRREVERSIBLE_KINDS = frozenset({ActionKind.erase, ActionKind.room_delete})
 
 _KIND_PLURAL = {
     ActionKind.kick: "kick {n} room member(s)",
     ActionKind.withdraw_power_level: "lower or withdraw {n} power level(s)",
     ActionKind.room_teardown: "tear down {n} room(s)",
     ActionKind.lock: "lock {n} account(s)",
-    ActionKind.erase: "erase {n} account(s)",
+    ActionKind.erase: "erase {n} account(s) (irreversible)",
+    ActionKind.room_delete: "delete {n} room(s) (irreversible)",
+    ActionKind.delete_media: "continue deleting the media of {n} erased account(s)",
 }
 
 
@@ -103,7 +119,7 @@ class DestructiveAction(BaseModel):
     model_config = {"frozen": True}
 
     kind: ActionKind
-    target: str  # the MXID, or the room id for a room teardown
+    target: str  # the MXID, or the room id for a room teardown or deletion
     room_id: str | None = None
     group_pk: str | None = None
 
@@ -115,6 +131,23 @@ class DestructiveAction(BaseModel):
     def reversible(self) -> bool:
         return self.kind in REVERSIBLE_KINDS
 
+    @property
+    def irreversible(self) -> bool:
+        """Whether this is an irreversible decision (layer 3)."""
+        return self.kind in IRREVERSIBLE_KINDS
+
+    @property
+    def prerequisite(self) -> str | None:
+        """The key of the action that must run in the same pass before this one may run.
+
+        A room is deleted only in a pass that also tears it down (blocks it, kicks its members).
+        """
+        if self.kind is ActionKind.room_delete:
+            return DestructiveAction(
+                kind=ActionKind.room_teardown, target=self.target, room_id=self.room_id
+            ).key
+        return None
+
     def describe(self) -> str:
         group = f" (group {self.group_pk})" if self.group_pk else ""
         if self.kind is ActionKind.kick:
@@ -123,9 +156,13 @@ class DestructiveAction(BaseModel):
             return f"lower or withdraw the power level of {self.target} in {self.room_id}{group}"
         if self.kind is ActionKind.room_teardown:
             return f"tear down room {self.target}{group}"
+        if self.kind is ActionKind.room_delete:
+            return f"delete room {self.target}{group} (irreversible)"
         if self.kind is ActionKind.lock:
             return f"lock account {self.target}"
-        return f"erase account {self.target}"
+        if self.kind is ActionKind.delete_media:
+            return f"continue deleting the media of the erased account {self.target}"
+        return f"erase account {self.target} (irreversible)"
 
 
 class InputCounts(BaseModel):
@@ -160,10 +197,11 @@ class GuardBatch(BaseModel):
     actions: list[DestructiveAction] = Field(default_factory=list)
     decided_by: str | None = None
     decided_at: float | None = None
-    # What created the batch: the layer-1 metrics that dropped, and whether layer 2's limit was
-    # exceeded. A rejected batch ends once none of them holds any more.
+    # What created the batch: the layer-1 metrics that dropped, whether layer 2's limit was exceeded,
+    # and whether layer 3 asked for a confirmation. A rejected batch ends once none of them holds.
     metrics: list[str] = Field(default_factory=list)
     over_limit: bool = False
+    irreversible_over_limit: bool = False
 
     @property
     def keys(self) -> frozenset[str]:
@@ -183,6 +221,7 @@ class GuardLimits:
     max_drop_percent: float = 20.0
     max_reversible_actions_per_pass: int = 10
     confirmation_expiry_sec: float = 72 * 60 * 60.0
+    confirm_irreversible_actions_from: int = 3
 
     @classmethod
     def from_config(cls, config: OnbotConfig) -> GuardLimits:
@@ -191,6 +230,7 @@ class GuardLimits:
             max_drop_percent=cfg.max_drop_percent,
             max_reversible_actions_per_pass=cfg.max_reversible_actions_per_pass,
             confirmation_expiry_sec=float(cfg.confirmation_expiry_sec),
+            confirm_irreversible_actions_from=cfg.confirm_irreversible_actions_from,
         )
 
 
@@ -207,6 +247,10 @@ class GuardDecision:
     decided_at: float = 0.0
     tripped_metrics: frozenset[str] = frozenset()  # their baseline must not move
     over_limit: bool = False  # layer 2 paused the reversible actions of this pass
+    irreversible_over_limit: bool = False  # layer 3 paused the irreversible actions of this pass
+    # Actions held only because their prerequisite is held (a room deletion whose teardown waits).
+    # A confirmed batch that holds one of them stays open until it can run.
+    after_prerequisite: frozenset[str] = frozenset()
     # Rejected batches that end with this pass (id, why); their actions were judged afresh.
     ended_rejections: tuple[tuple[str, str], ...] = ()
     # The stored guard state could not be read: everything is held and nothing is recorded.
@@ -267,25 +311,35 @@ def input_drops_by_metric(
     return reasons
 
 
-def _batch_conditions(batch: GuardBatch) -> tuple[frozenset[str], bool]:
-    """The layer-1 metrics and the layer-2 flag that created ``batch``.
+def _batch_conditions(batch: GuardBatch) -> tuple[frozenset[str], bool, bool]:
+    """The layer-1 metrics, the layer-2 flag and the layer-3 flag that created ``batch``.
 
-    Batches stored before these were recorded carry neither: a layer-1 batch (one with ``observed``
+    Batches stored before these were recorded carry none: a layer-1 batch (one with ``observed``
     counts) then counts every metric it observed, any other batch counts as a layer-2 batch.
     """
-    if batch.metrics or batch.over_limit:
-        return frozenset(batch.metrics), batch.over_limit
+    if batch.metrics or batch.over_limit or batch.irreversible_over_limit:
+        return frozenset(batch.metrics), batch.over_limit, batch.irreversible_over_limit
     if batch.observed is not None:
-        return frozenset(m for m, _ in _METRICS if getattr(batch.observed, m) is not None), False
-    return frozenset(), True
+        return frozenset(m for m, _ in _METRICS if getattr(batch.observed, m) is not None), False, False
+    return frozenset(), True, False
+
+
+@dataclass(frozen=True, slots=True)
+class _PassShape:
+    """What :func:`_rejection_end` weighs a rejected batch against."""
+
+    planned_keys: frozenset[str]
+    reversible_keys: frozenset[str]
+    irreversible_keys: frozenset[str]
+    # Planned actions of each kind that no batch covers: they count towards the limits as well.
+    fresh_reversible: int
+    fresh_irreversible: int
 
 
 def _rejection_end(
     batch: GuardBatch,
     *,
-    planned_keys: frozenset[str],
-    reversible_keys: frozenset[str],
-    fresh_reversible: int,
+    shape: _PassShape,
     counts: InputCounts,
     drops: dict[str, str],
     limits: GuardLimits,
@@ -294,20 +348,25 @@ def _rejection_end(
     """Why the rejected ``batch`` ends with this pass, or ``None`` while it still holds (D13).
 
     It ends when it expires, or when the condition that created it is gone: none of its layer-1
-    metrics dropped in this pass (a metric this pass did not measure still counts as dropped), and,
-    for a layer-2 batch, this pass no longer exceeds the limit with its actions. A batch none of whose
-    actions this pass planned is left to :func:`record`, which only ends it after a complete pass.
+    metrics dropped in this pass (a metric this pass did not measure still counts as dropped), for a
+    layer-2 batch this pass no longer exceeds the limit with its actions, and for a layer-3 batch this
+    pass no longer reaches the limit with its irreversible actions. A batch none of whose actions this
+    pass planned is left to :func:`record`, which only ends it after a complete pass.
     """
     if now >= batch.expires_at:
         return "it expired"
-    if not batch.keys & planned_keys:
+    if not batch.keys & shape.planned_keys:
         return None
-    metrics, over_limit = _batch_conditions(batch)
+    metrics, over_limit, irreversible_over_limit = _batch_conditions(batch)
     if any(m in drops or getattr(counts, m) is None for m in metrics):
         return None
     if over_limit:
-        mine = len(batch.keys & planned_keys & reversible_keys)
-        if mine and fresh_reversible + mine > limits.max_reversible_actions_per_pass:
+        mine = len(batch.keys & shape.planned_keys & shape.reversible_keys)
+        if mine and shape.fresh_reversible + mine > limits.max_reversible_actions_per_pass:
+            return None
+    if irreversible_over_limit:
+        mine = len(batch.keys & shape.planned_keys & shape.irreversible_keys)
+        if mine and shape.fresh_irreversible + mine >= limits.confirm_irreversible_actions_from:
             return None
     return "the condition that created it is gone"
 
@@ -327,12 +386,16 @@ def decide(
       them, never a later pass that happens to look normal.
     * Actions of a rejected batch stay paused while the condition that created the batch lasts (see
       :func:`_rejection_end`). Once it ends they are judged afresh, like everything else.
-    * Everything else passes layer 1 (implausible input pauses all of it) and layer 2 (too many
-      reversible actions pauses those).
+    * Everything else passes layer 1 (implausible input pauses all of it), layer 2 (too many
+      reversible actions pauses those) and layer 3 (from a small number on, irreversible actions
+      pause).
+    * Last, an action whose prerequisite is planned but does not run this pass waits as well (a room
+      deletion whose teardown is paused), even when a confirmed batch released it.
     """
     unique = list({a.key: a for a in planned}.values())
     planned_keys = frozenset(a.key for a in unique)
     reversible_keys = frozenset(a.key for a in unique if a.reversible)
+    irreversible_keys = frozenset(a.key for a in unique if a.irreversible)
     drops = input_drops_by_metric(state.baseline, counts, limits.max_drop_percent)
 
     confirmed: dict[str, str] = {}
@@ -346,14 +409,19 @@ def decide(
         elif now < batch.expires_at:
             waiting.update(dict.fromkeys(batch.keys, batch.id))
     in_rejected = {key for batch in rejected for key in batch.keys}
-    fresh_reversible = len(reversible_keys - confirmed.keys() - waiting.keys() - in_rejected)
+    covered = confirmed.keys() | waiting.keys() | in_rejected
+    shape = _PassShape(
+        planned_keys=planned_keys,
+        reversible_keys=reversible_keys,
+        irreversible_keys=irreversible_keys,
+        fresh_reversible=len(reversible_keys - covered),
+        fresh_irreversible=len(irreversible_keys - covered),
+    )
     ended: list[tuple[str, str]] = []
     for batch in rejected:
         why = _rejection_end(
             batch,
-            planned_keys=planned_keys,
-            reversible_keys=reversible_keys,
-            fresh_reversible=fresh_reversible,
+            shape=shape,
             counts=counts,
             drops=drops,
             limits=limits,
@@ -368,7 +436,6 @@ def decide(
     permitted = {a.key for a in unique if a.key in confirmed}
     held = [a for a in unique if a.key not in confirmed and a.key in waiting]
     rest = [a for a in unique if a.key not in confirmed and a.key not in waiting]
-    confirmed_batches = tuple(sorted({confirmed[k] for k in permitted}))
     reasons: list[str] = []
     if held:
         reasons.append("waiting for open batch(es) " + ", ".join(sorted({waiting[a.key] for a in held})))
@@ -384,6 +451,7 @@ def decide(
         held += [a for a in rest if a.room_id is not None]
         rest = [a for a in rest if a.room_id is None]
     over_limit = False
+    irreversible_over_limit = False
     if rest:
         reversible = [a for a in rest if a.reversible]
         if len(reversible) > limits.max_reversible_actions_per_pass:
@@ -393,8 +461,32 @@ def decide(
                 f"{len(reversible)} reversible destructive actions in one pass, more than the "
                 f"{limits.max_reversible_actions_per_pass} allowed"
             )
+        irreversible = [a for a in rest if a.irreversible]
+        if len(irreversible) >= limits.confirm_irreversible_actions_from:
+            irreversible_over_limit = True
+            held += irreversible
+            reasons.append(
+                f"{len(irreversible)} irreversible actions in one pass ({summarize_actions(irreversible)}); "
+                f"from {limits.confirm_irreversible_actions_from} on they need a confirmation"
+            )
     held_keys = {a.key for a in held}
     permitted |= {a.key for a in rest if a.key not in held_keys}
+
+    # A room is deleted only in a pass that also tears it down: a deletion on its own would remove
+    # the members irreversibly while the reversible teardown still waits for an admin.
+    blocked = [
+        a
+        for a in unique
+        if a.key in permitted
+        and a.prerequisite is not None
+        and a.prerequisite in planned_keys
+        and a.prerequisite not in permitted
+    ]
+    if blocked:
+        permitted -= {a.key for a in blocked}
+        held += [a for a in blocked if a.key not in held_keys]
+        reasons.append(f"{len(blocked)} room deletion(s) wait until the teardown of the same room may run")
+    confirmed_batches = tuple(sorted({confirmed[k] for k in permitted if k in confirmed}))
     return GuardDecision(
         counts=counts,
         permitted=frozenset(permitted),
@@ -405,7 +497,9 @@ def decide(
         decided_at=now,
         tripped_metrics=frozenset(drops),
         over_limit=over_limit,
+        irreversible_over_limit=irreversible_over_limit,
         ended_rejections=tuple(ended),
+        after_prerequisite=frozenset(a.key for a in blocked),
     )
 
 
@@ -465,6 +559,12 @@ def describe_batch(batch: GuardBatch, *, limit: int = MAX_LISTED_ACTIONS) -> str
     """The admin-room text for a batch: why, what, and how to release it."""
     lines = [f"Batch {batch.id} ({_batch_status_text(batch)}): {summarize_actions(batch.actions)}."]
     lines += [f"Why: {reason}." for reason in batch.reasons]
+    irreversible = sum(1 for a in batch.actions if a.irreversible)
+    if irreversible:
+        lines.append(
+            f"Irreversible: {irreversible} of these action(s) cannot be undone. An erased account stays "
+            "deactivated for good, a deleted room is purged with its history."
+        )
     actions = sorted(batch.actions, key=lambda a: (a.kind.value, a.room_id or "", a.target))
     lines += [f"- {a.describe()}" for a in actions[:limit]]
     if len(actions) > limit:
@@ -501,12 +601,30 @@ def record(
             continue
         if not complete and batch_id not in decision.confirmed_batches:
             continue  # a failed pass may just not have seen its actions; try again
-        del state.batches[batch_id]
         if batch.observed is not None:
             # D13: after a confirmed drop, the counts the admin saw become the last known good.
             state.baseline = _merge_counts(state.baseline, batch.observed)
             baseline_moved_by_confirmation = True
         ran = batch.keys & decision.permitted & planned_keys
+        if batch.keys & decision.after_prerequisite:
+            # Some of it (a room deletion) waits for a paused teardown of the same room. The batch
+            # stays confirmed for that part; what ran is done.
+            batch.observed = None
+            if ran:
+                batch.actions = [a for a in batch.actions if a.key not in ran]
+                text = (
+                    f"Batch {batch.id} confirmed by {batch.decided_by}: ran {len(ran)} action(s); "
+                    f"{len(batch.actions)} wait until the teardown of their room may run (it is "
+                    "paused, see !pending), then they run without a new confirmation."
+                )
+                notices.append(
+                    GuardNotice(
+                        Signal.guard_batch_closed,
+                        {"batch_id": batch.id, "outcome": "partly_executed", "text": text},
+                    )
+                )
+            continue
+        del state.batches[batch_id]
         skipped = len(batch.keys) - len(ran)
         text = f"Batch {batch.id} confirmed by {batch.decided_by}: ran {len(ran)} action(s)" + (
             f"; {skipped} no longer applied and were skipped." if skipped else "."
@@ -572,6 +690,7 @@ def record(
             actions=uncovered,
             metrics=sorted(decision.tripped_metrics),
             over_limit=decision.over_limit,
+            irreversible_over_limit=decision.irreversible_over_limit,
         )
         state.batches[batch_id] = batch
         text = (
