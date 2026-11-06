@@ -57,7 +57,7 @@ Authentik user via MAS link or recorded binding, D21 conflicts, SEC-08 path enco
 needed resolution in engine.py (teardown reason without the Authentik URL) and in S5's engine guard
 tests (rooms registered as bot-created marked rooms, identity resolver rewired). S9 merged main into
 its branch itself. After the merges: 1214 unit and contract tests green, hooks green, config docs
-regenerated. Running: full integration on main (instance 0) and a cold wave 3 review.
+regenerated. Full integration run on main (9b31a98): **1277 passed, 0 failed**, 13 minutes.
 
 Note: D20, S17 and the revised S6 brief were written by the maintainer and were swept into commit
 44346fe by a `git commit -a`; from now on commit explicit paths only.
