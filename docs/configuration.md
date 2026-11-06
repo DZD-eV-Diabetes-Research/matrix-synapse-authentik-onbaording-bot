@@ -79,6 +79,11 @@ What is checked, beyond types and required fields:
 - **Settings that cannot take effect**: `delete_disabled_rooms` without
   `disable_rooms_when_mapped_authentik_group_disappears`, `place_onboarding_rooms_in_space` without the
   parent space, and a visitor lobby without the parent space.
+- **An admin room nobody may command**: `admin_room.enabled` is `true` by default, and an enabled
+  admin room needs at least one entry in `admin_room.admin_user_ids` or
+  `admin_room.authentik_group_pks_granting_bot_admin`. Set `admin_room.enabled: false` to run without
+  the room; reports then only go to the log, and the destructive-action guard's pauses can only be
+  lifted by raising its limits.
 - **`log_level`** accepts `DEBUG`, `INFO`, `WARNING`, `ERROR` and `CRITICAL` (any case), as does
   the `--log-level` flag.
 
@@ -136,7 +141,9 @@ Onbot runs a quarantined offboarding lifecycle. Two things to know:
 - **`mas_admin` is required to actually offboard.** When Authentik disables a user, MAS blocks new
   logins but existing Matrix sessions keep working. The Synapse admin API cannot end a MAS-issued
   session, only MAS can. Configure the `mas_admin` block so Onbot can. Omit it only on non-MAS
-  deployments; on a MAS-backed homeserver without it Onbot logs an error at startup. Ending sessions
+  deployments: on a MAS-backed homeserver without it Onbot refuses to lock or erase anybody (the
+  Synapse admin API would leave every MAS session valid), logs that at ERROR and reports it once in
+  the admin room. Onboarding and rooms keep working. Ending sessions
   on lock and erasing without GDPR erasure need a MAS whose admin API offers them; the startup log
   lists what the configured MAS can do (see [features.md](features.md#offboarding)).
 - **The lifecycle defaults to `dry_run: true`.** Nothing destructive happens until you opt in. Until
