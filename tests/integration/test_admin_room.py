@@ -22,6 +22,7 @@ from onbot.clients.matrix import ApiClientMatrix
 from onbot.clients.synapse_admin import ApiClientSynapseAdmin
 from onbot.config import OnbotConfig
 from onbot.rooms.admin import AdminRoomProvisioner
+from onbot.rooms.identity import RoomIdentityResolver
 from tests.integration import stack_api as S
 
 pytestmark = pytest.mark.integration
@@ -52,6 +53,7 @@ async def test_only_an_allowlisted_admin_can_announce(
     authentik_client: ApiClientAuthentik,
     matrix_client: ApiClientMatrix,
     admin_client: ApiClientSynapseAdmin,
+    room_identity: RoomIdentityResolver,
 ) -> None:
     # A user whose notice board is the broadcast target, plus an admin and a stranger.
     _u, target = S.provision(authentik_admin, S.uniq("target"))
@@ -69,7 +71,7 @@ async def test_only_an_allowlisted_admin_can_announce(
     notice_board = direct[target.mxid][0]
 
     resolver = _resolver(authentik_client, config)
-    control_room = await AdminRoomProvisioner(matrix_client, config, resolver).ensure()
+    control_room = await AdminRoomProvisioner(matrix_client, config, resolver, room_identity).ensure()
     assert control_room is not None
 
     # Both humans join. The stranger is in the room and is *not* on the allowlist — the whole point.
@@ -100,6 +102,7 @@ async def test_a_replayed_sync_timeline_does_not_re_announce(
     authentik_client: ApiClientAuthentik,
     matrix_client: ApiClientMatrix,
     admin_client: ApiClientSynapseAdmin,
+    room_identity: RoomIdentityResolver,
 ) -> None:
     # Sliding sync from pos=None replays the timeline, which on restart would otherwise re-page
     # every user with the last announcement.
@@ -116,7 +119,7 @@ async def test_a_replayed_sync_timeline_does_not_re_announce(
     notice_board = direct[target.mxid][0]
 
     resolver = _resolver(authentik_client, config)
-    control_room = await AdminRoomProvisioner(matrix_client, config, resolver).ensure()
+    control_room = await AdminRoomProvisioner(matrix_client, config, resolver, room_identity).ensure()
     assert control_room is not None
     await admin_client.add_user_to_room(control_room, admin.mxid)
 
@@ -138,6 +141,7 @@ async def test_an_authentik_group_grants_commands_and_leaving_it_revokes_them(
     authentik_client: ApiClientAuthentik,
     matrix_client: ApiClientMatrix,
     admin_client: ApiClientSynapseAdmin,
+    room_identity: RoomIdentityResolver,
 ) -> None:
     # The hand-maintained list is at least honest about needing a deploy to revoke. A group
     # membership that *looks* revocable and is not would be worse, so prove it against real
@@ -157,7 +161,7 @@ async def test_an_authentik_group_grants_commands_and_leaving_it_revokes_them(
     notice_board = direct[target.mxid][0]
 
     resolver = _resolver(authentik_client, config)
-    control_room = await AdminRoomProvisioner(matrix_client, config, resolver).ensure()
+    control_room = await AdminRoomProvisioner(matrix_client, config, resolver, room_identity).ensure()
     assert control_room is not None
     await admin_client.add_user_to_room(control_room, admin.mxid)
 
