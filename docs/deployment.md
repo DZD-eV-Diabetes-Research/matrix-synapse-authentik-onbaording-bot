@@ -61,6 +61,7 @@ The image runs `onbot run` by default. You can override the command to run any o
 ```
 onbot run               # long-running service: reconcile loop + event-driven onboarding (default)
 onbot reconcile-once    # one idempotent reconcile pass, then exit
+onbot reconcile-once --dry-run  # log what one pass would change, change nothing
 onbot broadcast "..."   # send one notice to every user's onboarding room; exit 1 if a room failed
 onbot generate-config   # print a minimal config template (config.example.yml is the rich one)
 onbot healthcheck       # is the running service alive? reads its heartbeat file; exit 0 healthy, 1 not
@@ -70,7 +71,15 @@ onbot healthcheck --deep  # probe Synapse/Authentik/MAS with the real credential
 The one-shot commands do only what they need. `reconcile-once` does the same startup work as the
 service, once (register the bot's device, lift its send rate limit, set its avatar, provision the admin
 room and invite new admins), then runs one pass, so a cron-only deployment stays complete. It does not
-read the sync stream, so commands in the admin room are only answered by a running service.
+read the sync stream, so commands in the admin room are only answered by a running service. That
+includes `!confirm <id>` for removals the [guard](features.md#guard-against-mass-removals) paused: a
+cron-only deployment can report a paused batch but needs the service (or higher limits) to release it.
+
+`reconcile-once --dry-run` is the preview: it reads Authentik and Matrix, writes every change the pass
+would make to the log with a `[dry-run]` prefix (rooms it would create, members it would add or kick,
+power levels, offboarding steps, what the guard would pause), and changes nothing. It skips every
+startup step except version negotiation, saves no bookkeeping and posts nothing. It is safe to run
+while the service runs.
 `broadcast` registers the device, lifts the bot's send rate limit and sends; it sets no avatar and does
 not touch the admin room.
 
