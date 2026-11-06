@@ -58,6 +58,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   This `CHANGELOG.md`.
 
 ### Changed
+- **Obsolete-room teardown only acts on bot-created rooms whose locked marker names a vanished group**
+  (review S6), and waits while any bot room is unreadable. Unadopted legacy rooms are never torn
+  down. Groups with colliding aliases get no new room (REC-13); rooms upgraded by a human are
+  reported and skipped. Changing `alias_prefix` or the alias attribute keeps existing group rooms; a
+  changed space or control-room alias still creates a new one. Notice-board setup interrupted after
+  creation is completed later (ONB-02).
+- **Upgrade note for operators (review S6):** on the first pass every existing marked room the bot
+  created is adopted at its configured alias ("adopted ... found at its alias" in the log). Stranded
+  marked rooms and rooms created by another account are reported, not adopted.
 - **Room deletion is its own irreversible step (review S5, D19):** closing a room (block and kick)
   stays under `max_reversible_actions_per_pass`. A room is only deleted in a pass that also closes it,
   and never while that closing waits for a confirmation.
@@ -225,6 +234,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   model forbids unknown keys, so remove these two settings if present.
 
 ### Security
+- **Rooms are recognised by creator plus a protected onbot marker, no longer by canonical alias
+  (review S6, REC-04, SEC-02, D20):** a room another user created at a group's alias is never adopted;
+  the group is skipped and reported, nobody is force-joined into it, no second room is built. A
+  moderator changing or removing an alias no longer breaks every pass or creates a second room. The
+  marker event types are locked at room creation, so moderators cannot rewrite `group_id`.
+- **The admin control room is only a room the bot created with its marker;** a foreign room at the
+  alias is never taken over (ONB-17).
+- **Markers no longer store the Authentik URL, and the teardown kick reason no longer names it**
+  (SEC-11).
 - **Guard layer 3 for irreversible actions (review S5, D4, D13):** from
   `destructive_action_guard.confirm_irreversible_actions_from` (default 3) irreversible actions in one
   pass (account erasures, room deletions under `delete_disabled_rooms`), they wait for `!confirm <id>`

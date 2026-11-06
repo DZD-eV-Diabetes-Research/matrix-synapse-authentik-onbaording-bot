@@ -39,7 +39,7 @@ Start a session by pointing Claude at this file and the session ID, for example:
 | 5 | S16 | Git history scrub | S | S0, no open branches | done (force-pushed 2026-11-06, new main 89afecf) |
 | 6 | S4 | Offboarding completeness | M | S1 | done (merged in wave 2) |
 | 7 | S5 | Guard layer 3: `!confirm` for irreversible actions | M | S3, S4 | done (merged in wave 3) |
-| 8 | S6 | Room identity (marker plus creator) and unified room provisioning | L | S2 | open |
+| 8 | S6 | Room identity (marker plus creator) and unified room provisioning | L | S2 | done (merged in wave 3) |
 | 9 | S7 | Room repair: space link, lobbies, blocks | M | S6 | open |
 | 10 | S8 | Onboarding correctness | M | S6 | open |
 | 11 | S9 | User identity across renames | M | S1, S3 | open |
