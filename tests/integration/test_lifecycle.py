@@ -304,27 +304,62 @@ async def test_erase_deletes_more_than_one_page_of_media(
     assert await admin_client.count_user_media(login.mxid) == 0
 
 
-async def test_synapse_fallback_under_mas_is_reported_and_audited_exactly(
-    make_config, authentik_admin: S.AuthentikAdmin, caplog: pytest.LogCaptureFixture
+async def _devices(admin_client, mxid: str) -> set[str]:
+    devices = await admin_client.get_json(f"v2/users/{quote(mxid, safe='@:')}/devices")
+    return {d["device_id"] for d in devices.get("devices", [])}
+
+
+async def _bot_messages(client, room_id: str) -> list[str]:
+    resp = await client.get_json(f"v3/rooms/{room_id}/messages", params={"dir": "b", "limit": 100})
+    return [
+        (ev.get("content") or {}).get("body", "")
+        for ev in reversed(resp.get("chunk", []))
+        if ev.get("type") == "m.room.message" and ev.get("sender") == S.BOT_USER_ID
+    ]
+
+
+async def test_without_mas_admin_on_a_mas_backed_homeserver_nobody_is_locked(
+    make_config,
+    authentik_admin: S.AuthentikAdmin,
+    admin_client,
+    matrix_client,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """LIF-09: without mas_admin on a MAS-backed homeserver onbot says so, at startup and per action."""
+    """LIF-09 (D19): the Synapse fallback cannot end a MAS session, so onbot refuses to lock at all.
+
+    The refusal goes to the log at ERROR and into the admin room; the disabled user is marked but
+    neither locked in MAS nor logged out in Synapse.
+    """
     username = S.uniq("lifefallback")
     user, login = S.provision(authentik_admin, username)
+    _admin_user, admin = S.provision(authentik_admin, S.uniq("lifefallbackadmin"))
+    devices_before = await _devices(admin_client, login.mxid)
     authentik_admin.set_active(user["pk"], False)
 
     config = make_config()
     config.mas_admin = None
     _live_lifecycle(config)
+    config.admin_room.enabled = True
+    config.admin_room.alias = S.uniq("onbot-admin")
+    config.admin_room.admin_user_ids = [admin.mxid]
     with caplog.at_level(logging.INFO):
         await run_reconcile_once(config)  # startup check, mark
-        await run_reconcile_once(config)  # "lock" through the Synapse admin API
+        await run_reconcile_once(config)  # cooldown over: the lock is refused
+
     errors = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
-    assert any("delegates logins to" in line and "mas_admin" in line for line in errors)
-    locked = [r.getMessage() for r in caplog.records if r.getMessage().startswith("locked out")]
-    assert len(locked) == 1
-    assert "AdminApiLifecycleEffectors" in locked[0] and "MAS sessions stay valid" in locked[0]
-    # And it is true: the MAS session survives the Synapse-side logout (§7 Q1).
+    assert any("delegates logins to" in line and "refuses to lock or erase" in line for line in errors)
+    messages = [r.getMessage() for r in caplog.records]
+    assert not any(line.startswith("locked out") for line in messages)
+    assert any(line.startswith(f"REFUSED logout of {login.mxid}") for line in messages)
+    assert not any(line.startswith("FAILED") for line in messages)
+
+    control_room = await matrix_client.resolve_room_alias(f"#{config.admin_room.alias}:{S.SERVER_NAME}")
+    assert control_room is not None
+    reports = await _bot_messages(matrix_client, control_room)
+    assert any("mas_admin" in body and "refuses to lock or erase" in body for body in reports), reports
+
     assert S.mas_user(username)["locked_at"] is None
+    assert await _devices(admin_client, login.mxid) == devices_before  # no Synapse-side logout either
     assert S.whoami_status(login.access_token) == 200
 
 

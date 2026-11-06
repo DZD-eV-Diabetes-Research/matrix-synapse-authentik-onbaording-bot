@@ -157,8 +157,8 @@ class MasAdmin(_StrictModel):
     session; only MAS can (lock, finish sessions, deactivate). When this block is set, the lifecycle
     module enforces lockout through the MAS admin API using an OAuth2 ``client_credentials`` token
     with the ``urn:mas:admin`` scope (the client must be listed in MAS ``policy.data.admin_clients``).
-    Leave unset to fall back to the Synapse-admin effectors (which do NOT end MAS sessions; the
-    startup check logs an error when the homeserver turns out to be MAS-backed).
+    Leave unset to fall back to the Synapse-admin effectors, which do NOT end MAS sessions and
+    therefore refuse to lock or erase when the homeserver turns out to be MAS-backed (LIF-09).
     """
 
     url: Annotated[
@@ -1383,8 +1383,10 @@ class OnbotConfig(BaseSettings):
                 Synapse admin API cannot end it. Ending sessions and erasing without GDPR erasure
                 need a MAS whose admin API offers them (0.14 does not); the startup log lists what
                 the configured MAS can do. Leave unset (`null`) on homeservers that do not use MAS:
-                the bot then enforces offboarding through the Synapse admin API alone, and logs an
-                error at startup if the homeserver turns out to delegate logins to MAS."""
+                the bot then enforces offboarding through the Synapse admin API alone. If the
+                homeserver turns out to delegate logins to MAS, the bot refuses to lock or erase
+                anybody (the Synapse admin API would leave every MAS session valid), logs that at
+                ERROR and reports it in the admin room; onboarding and rooms keep working."""
             ),
         ),
     ] = None

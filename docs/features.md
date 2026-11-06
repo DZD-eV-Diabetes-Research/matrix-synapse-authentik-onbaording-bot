@@ -486,11 +486,14 @@ within.
   rather than remove more than you configured. Upgrade MAS or turn the option on.
 - **On a MAS-fronted homeserver you must configure `mas_admin`.** There the Matrix session belongs to
   the Matrix Authentication Service, and the Synapse admin API cannot end it: without `mas_admin`
-  credentials the lock is a no-op against live sessions. At startup Onbot asks the homeserver whether
-  it delegates logins to MAS and logs an error (`offboarding: the homeserver delegates logins ...`) if
-  `mas_admin` is missing; every audit line then says that the MAS sessions stay valid. This, and the
-  `dry_run` default, are the two reasons "disabled users keep their access" in
-  [troubleshooting.md](troubleshooting.md).
+  credentials a lock would be a no-op against live sessions. So Onbot asks the homeserver whether it
+  delegates logins to MAS, and if it does while `mas_admin` is missing, it refuses to lock or erase
+  anybody: it logs an error (`offboarding: the homeserver delegates logins ...`), reports it once in
+  the admin room, and writes one `REFUSED` audit line per account that would have been locked or
+  erased. Disabled users are still marked, so once `mas_admin` is configured the pending locks follow
+  on the next pass. Onboarding and rooms are not affected. Until the homeserver has answered the
+  question, nobody is locked either. This, and the `dry_run` default, are the two reasons "disabled
+  users keep their access" in [troubleshooting.md](troubleshooting.md).
 - **The startup log states the setup.** One `offboarding:` line lists `enabled`, `dry_run`, which
   effectors are in use, the grace periods and the erase options, and with `mas_admin` a second line
   lists what that MAS can do (end sessions, deactivate without GDPR erasure).

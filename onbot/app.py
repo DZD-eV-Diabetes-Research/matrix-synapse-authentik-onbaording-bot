@@ -209,8 +209,9 @@ class App:
     async def check_offboarding(self) -> None:
         """Log the offboarding setup and report what the effectors found wrong (LIF-09).
 
-        Detects a MAS-backed homeserver behind the Synapse fallback and reads what the configured MAS
-        can do. Each finding goes to the log at ERROR and to the admin-room signal.
+        Detects a MAS-backed homeserver behind the Synapse fallback (offboarding is then refused) and
+        reads what the configured MAS can do. Each finding goes to the log at ERROR and, once, to the
+        admin-room signal.
         """
         lifecycle = self.engine.lifecycle
         if lifecycle is None:
@@ -340,7 +341,8 @@ async def build_app(
         events = EventBus()
         # Lifecycle enforcement: under MAS only the MAS admin API can end a live session (§7 Q1),
         # so prefer it when configured; otherwise fall back to the Synapse-admin effectors, which
-        # ask the homeserver at startup whether it is MAS-backed after all (LIF-09).
+        # ask the homeserver whether it is MAS-backed after all and then refuse every lock and
+        # erase (LIF-09). Until it answered they act on nobody.
         lifecycle_effectors: LifecycleEffectors
         if config.mas_admin is not None:
             mas_admin = ApiClientMasAdmin(
