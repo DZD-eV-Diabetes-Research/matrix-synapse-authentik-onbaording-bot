@@ -23,9 +23,11 @@ is built around these safety principles:
   backs off, and the ledger is saved after every user, so a crash never repeats a completed
   irreversible step.
 
-**Two stages.** Stage one (``deactivate_after_n_sec``) locks the user out: under MAS (AD-6) a MAS lock,
-which suspends every session and blocks new logins, reversibly (ADR-0005 §7 Q1). Stage two
-(``delete_after_n_sec``) erases the account (G9.4) and optionally its uploaded media (G9.5).
+**Two stages.** Stage one (``deactivate_after_n_sec``, despite the name) locks the user out: under
+MAS (AD-6) a MAS lock, which blocks new logins reversibly, plus finishing every session so an unlock
+cannot revive them (LIF-07, ADR-0005). Stage two (``delete_after_n_sec``, counted from the lock)
+erases the account (G9.4), GDPR-erasing it when ``gdpr_erase_on_delete`` says so (D7), and optionally
+its uploaded media (G9.5).
 
 **Who is tracked.** Disabled Authentik users in the sync scope whose Matrix account exists, plus
 *known users*: every in-scope, active, mapped user is recorded once as ``authentik pk -> MXID``
@@ -47,7 +49,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from onbot.config import OnbotConfig
 from onbot.logging import get_logger
@@ -61,6 +63,9 @@ audit = get_logger("onbot.lifecycle.audit")
 _BACKOFF_BASE_SEC = 60.0
 _BACKOFF_MAX_SEC = 6 * 60 * 60.0
 _MAX_ERROR_LEN = 300
+# How long a lock record in its final state is kept (locked, deleted from Authentik, erase disabled)
+# before onbot forgets it, which keeps the ledger bounded (LIF-14). The MAS lock itself stays.
+LEDGER_RETENTION_SEC = 90 * 24 * 60 * 60.0
 
 
 def lifecycle_account_data_type(server_name: str) -> str:
@@ -81,6 +86,11 @@ class LifecycleTargetNotFound(RuntimeError):
     """
 
 
+class LifecycleStepIncomplete(RuntimeError):
+    """An effector could not do its job as configured (for example an erase this MAS cannot do
+    without GDPR erasure). Audited as a failure; the state does not advance."""
+
+
 class AccountStatus(StrEnum):
     """What the directory says about one Matrix account this pass."""
 
@@ -98,6 +108,9 @@ class LifecycleAction(StrEnum):
     erase = "erase"  # further cooldown elapsed: deactivate/erase the account (G9.4/G9.5)
     wait = "wait"  # in a cooldown window: do nothing yet
     freeze = "freeze"  # tracked but out of scope or ambiguous: hold everything and report (D9)
+    forget = "forget"  # locked, deleted upstream, erase disabled, retention over: drop the record
+    abort = "abort"  # the whole step was refused (unreadable ledger); not a per-user decision
+    alert = "alert"  # something an admin must look at (quarantined entry, lost ledger)
 
 
 def decide_account_action(
@@ -146,6 +159,9 @@ class LifecycleEntry(BaseModel):
     media_deleted_timestamp: float | None = None
     # Why the entry is on hold (D9); reported once when it is set.
     frozen_reason: str | None = None
+    # The Authentik username that put the entry on hold through ``authentik_user_ignore_list``. The
+    # ignore list names users, so a deleted user can only be checked against it through this record.
+    ignored_username: str | None = None
     # Backoff after a failed step (LIF-03).
     failures: int = 0
     retry_after_timestamp: float | None = None
@@ -157,6 +173,10 @@ class LifecycleLedger(BaseModel):
 
     schema_version: int = SCHEMA_VERSION
     entries: dict[str, LifecycleEntry] = Field(default_factory=dict)
+    # Entries that did not validate, kept verbatim until an admin repairs them (LIF-14).
+    quarantined: dict[str, Any] = Field(default_factory=dict)
+    # Not stored: the blob did not exist when it was loaded (see the missing-ledger check).
+    missing: bool = Field(default=False, exclude=True)
 
 
 class KnownUser(BaseModel):
@@ -199,6 +219,11 @@ class DirectorySnapshot:
     matrix_mxids: frozenset[str]  # Matrix accounts that exist
     excluded_mxids: frozenset[str]  # the bot and matrix_user_ignore_list
     synced_mxids: frozenset[str] = frozenset()  # accounts the room sync treats as active members
+    ignored_usernames: frozenset[str] = frozenset()  # authentik_user_ignore_list
+
+
+IGNORED_REASON = "the Authentik user is on authentik_user_ignore_list"
+DELETED_REASON = "deleted from Authentik"
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,6 +231,7 @@ class Classification:
     status: AccountStatus
     reason: str
     pk: str | None = None  # the Authentik user this account is bound to, when unambiguous
+    ignored_username: str | None = None  # the ignore-listed Authentik username behind a freeze
 
 
 def classify_accounts(
@@ -279,8 +305,17 @@ def _classify_one(
 
     if mxid in snapshot.excluded_mxids:
         return frozen("the bot account or on matrix_user_ignore_list")
-    if any(u.ignored for u in everyone):
-        return frozen("the Authentik user is on authentik_user_ignore_list")
+    ignored = [u for u in everyone if u.ignored]
+    if ignored:
+        return Classification(AccountStatus.frozen, IGNORED_REASON, pk, ignored_username=ignored[0].username)
+    entry = ledger.entries.get(mxid)
+    if not primary and entry is not None and entry.frozen_reason == IGNORED_REASON:
+        # The ignore list names present users only, so deleting an ignored user would end the freeze
+        # and resume offboarding at once (wave 1 review). Keep it while the recorded username is
+        # still listed; an entry frozen before the username was recorded stays frozen (fail closed).
+        name = entry.ignored_username
+        if name is None or name in snapshot.ignored_usernames:
+            return Classification(AccountStatus.frozen, IGNORED_REASON, pk, ignored_username=name)
     if any(u.is_active and u.in_scope for u in primary):
         return Classification(AccountStatus.active, "active in Authentik and in the sync scope", pk)
     if any(u.is_active for u in primary):
@@ -299,7 +334,7 @@ def _classify_one(
         else:
             return frozen("disabled in Authentik but outside the sync scope")
     elif bound_pks or tracked:
-        status = Classification(AccountStatus.orphaned, "deleted from Authentik", pk)
+        status = Classification(AccountStatus.orphaned, DELETED_REASON, pk)
     else:
         return Classification(AccountStatus.untracked, "no Authentik user maps to this account")
     # A new offboarding only starts for an account that exists; a tracked one continues regardless,
@@ -357,66 +392,162 @@ def update_known_users(
     return changed, warnings
 
 
+@dataclass(frozen=True, slots=True)
+class MediaDeletion:
+    """Result of one media deletion run: how many files went, how many are left (LIF-12)."""
+
+    deleted: int
+    remaining: int
+
+    @property
+    def complete(self) -> bool:
+        return self.remaining == 0
+
+
+# Media deletion per pass: Synapse deletes at most one page per request, so a user with many uploads
+# takes several requests; more than this many are left for the next pass (the entry resumes).
+_MEDIA_BATCH = 100
+_MEDIA_REQUESTS_PER_PASS = 50
+
+
+async def delete_all_user_media(admin: Any, mxid: str) -> MediaDeletion:
+    """Delete the user's media page by page until none is left or the per-pass budget is used up.
+
+    Raises when Synapse stops deleting while media is left (nothing to resume, an admin has to look).
+    """
+    deleted = 0
+    last = _MEDIA_BATCH
+    for _ in range(_MEDIA_REQUESTS_PER_PASS):
+        result = await admin.delete_user_media(mxid, limit=_MEDIA_BATCH)
+        last = int((result or {}).get("total", 0))
+        deleted += last
+        if last < _MEDIA_BATCH:
+            break
+    remaining = int(await admin.count_user_media(mxid))
+    if remaining and last == 0:
+        raise LifecycleStepIncomplete(
+            f"{remaining} media file(s) of {mxid} could not be deleted (Synapse deleted none of them)"
+        )
+    return MediaDeletion(deleted=deleted, remaining=remaining)
+
+
 @runtime_checkable
 class LifecycleEffectors(Protocol):
     """The destructive Matrix/Synapse operations, isolated behind a seam (separate boundary, AD-5).
 
     Every method raises when it could not do its job (for example :class:`LifecycleTargetNotFound`);
-    returning normally means the action happened.
+    returning normally means the action happened. The returned text says exactly what was done; it
+    goes into the audit line (LIF-09), so it must not claim more than the effector achieved.
     """
 
-    async def logout(self, mxid: str) -> None:
+    async def logout(self, mxid: str) -> str | None:
         """Lock the account out (G9.2). Reversible (see :meth:`reenable`)."""
 
-    async def reenable(self, mxid: str) -> None:
+    async def reenable(self, mxid: str) -> str | None:
         """Undo a lock onbot set when the user returns (G9.6). May be a no-op."""
 
-    async def erase(self, mxid: str, *, gdpr_erase: bool) -> None:
-        """Deactivate the account, irreversibly (G9.4)."""
+    async def erase(self, mxid: str, *, gdpr_erase: bool) -> str | None:
+        """Deactivate the account, irreversibly (G9.4); GDPR-erase it too when asked (D7)."""
 
-    async def delete_media(self, mxid: str) -> None:
-        """Delete the media the user uploaded (G9.5)."""
+    async def delete_media(self, mxid: str) -> MediaDeletion | None:
+        """Delete the media the user uploaded (G9.5); ``None`` means everything is gone."""
 
 
 class AdminApiLifecycleEffectors:
-    """Concrete effectors over the Synapse Admin API.
+    """Concrete effectors over the Synapse Admin API, for homeservers that handle logins themselves.
 
     NOTE (BATTLE_PLAN §7 Q1, verified by the Phase 7b harness): under MAS these do **not** revoke a
     live MAS-issued session; deleting devices/deactivating in Synapse leaves the MAS token valid.
-    Use :class:`MasLifecycleEffectors` for real enforcement under the MAS topology (ADR-0006). These
-    remain correct for non-MAS Synapse deployments.
+    Use :class:`MasLifecycleEffectors` for real enforcement under the MAS topology (ADR-0006). The
+    startup check (:meth:`preflight`) asks the homeserver whether it delegates logins and, if so,
+    every audit line says that the MAS sessions stay valid (LIF-09).
     """
 
-    def __init__(self, admin: Any) -> None:
+    def __init__(self, admin: Any, *, matrix: Any | None = None) -> None:
         self.admin = admin
+        self.matrix = matrix  # client-server API client, asked for the auth issuer at startup
+        #: The OAuth 2.0 issuer the homeserver delegates logins to, once :meth:`preflight` found one.
+        self.delegated_issuer: str | None = None
 
-    async def logout(self, mxid: str) -> None:
-        await self.admin.logout_account(mxid)
+    async def preflight(self) -> list[str]:
+        """Detect a MAS-backed homeserver; return the warnings an operator must see."""
+        if self.matrix is None:
+            return []
+        self.delegated_issuer = await self.matrix.get_auth_issuer()
+        if self.delegated_issuer is None:
+            return []
+        return [
+            f"the homeserver delegates logins to {self.delegated_issuer} (MAS) but `mas_admin` is not "
+            "configured: offboarding falls back to the Synapse admin API, which deletes devices and "
+            "deactivates accounts in Synapse but leaves every MAS session valid. Configure `mas_admin` "
+            "to really lock users out"
+        ]
 
-    async def reenable(self, mxid: str) -> None:
+    def _under_mas(self) -> str:
+        if self.delegated_issuer is None:
+            return ""
+        return f"; the homeserver delegates logins to {self.delegated_issuer}, so MAS sessions stay valid"
+
+    async def logout(self, mxid: str) -> str:
+        devices = await self.admin.logout_account(mxid)
+        count = "all" if devices is None else str(devices)
+        return f"deleted {count} Synapse device(s){self._under_mas()}"
+
+    async def reenable(self, mxid: str) -> str:
         # Synapse logout deletes devices; there is nothing to restore, the user logs in afresh.
-        return None
+        return "nothing to undo in Synapse (the deleted devices stay deleted, the user logs in again)"
 
-    async def erase(self, mxid: str, *, gdpr_erase: bool) -> None:
+    async def erase(self, mxid: str, *, gdpr_erase: bool) -> str:
         await self.admin.deactivate_account(mxid, erase=gdpr_erase)
+        return f"Synapse account deactivated, GDPR erase {'yes' if gdpr_erase else 'no'}{self._under_mas()}"
 
-    async def delete_media(self, mxid: str) -> None:
-        await self.admin.delete_user_media(mxid)
+    async def delete_media(self, mxid: str) -> MediaDeletion:
+        return await delete_all_user_media(self.admin, mxid)
+
+
+# Synapse caches MAS token introspection, so a lock or an unlock reaches tokens already in use only
+# after about two minutes (LIV-03, measured 115 s on Synapse 1.156); the audit line is immediate.
+_TOKEN_CACHE_NOTE = "; tokens already in use follow within about 2 minutes (Synapse token cache)"
 
 
 class MasLifecycleEffectors:
     """Effectors that enforce lockout through the **MAS admin API** (ADR-0006, §7 Q1).
 
-    This is the path that actually works under MAS: ``logout`` locks the MAS user (suspending live
-    sessions and blocking new logins, reversibly), ``reenable`` unlocks them when their upstream
-    account returns (G9.6), and ``erase`` deactivates the account irreversibly. Media deletion goes
-    through the Synapse admin API (MAS does not own media). A MAS user that cannot be resolved raises
+    This is the path that actually works under MAS. ``logout`` locks the MAS user (blocking new logins
+    and suspending live sessions) and then finishes every session it has, so a later unlock does not
+    bring back the session of, say, a stolen laptop (LIF-07). ``reenable`` finishes any session that
+    is still active (a lock from before this behaviour) and then unlocks. ``erase`` deactivates the
+    account irreversibly, with or without GDPR erasure (D7). Media deletion goes through the Synapse
+    admin API (MAS does not own media). A MAS user that cannot be resolved raises
     :class:`LifecycleTargetNotFound` (LIF-10).
+
+    What a given MAS can do is read from its admin API description (:class:`MasCapabilities`). A MAS
+    that cannot finish sessions still locks; the audit line then says the sessions are only
+    suspended. A MAS that cannot deactivate without erasing refuses an erase that must not erase.
     """
 
     def __init__(self, mas_admin: Any, synapse_admin: Any | None = None) -> None:
         self.mas = mas_admin
         self.synapse_admin = synapse_admin
+
+    async def preflight(self) -> list[str]:
+        """Read and log what this MAS can do; return the warnings an operator must see."""
+        caps = await self.mas.capabilities()
+        log.info("MAS admin API capabilities: %s", caps.describe())
+        warnings: list[str] = []
+        if caps.missing_finish:
+            warnings.append(
+                "this MAS cannot finish sessions through its admin API ("
+                + ", ".join(caps.missing_finish)
+                + "): a lock only suspends sessions, and unlocking a re-enabled user brings every "
+                "pre-lock session back. Upgrade MAS to end them"
+            )
+        if not caps.deactivate_skip_erase:
+            warnings.append(
+                "this MAS always GDPR-erases on deactivation: with `gdpr_erase_on_delete: false` "
+                "onbot refuses the erase stage instead of erasing more than configured"
+            )
+        return warnings
 
     async def _resolve(self, mxid: str) -> str:
         from onbot.clients.mas_admin import mxid_localpart
@@ -427,20 +558,110 @@ class MasLifecycleEffectors:
             raise LifecycleTargetNotFound(f"MAS has no user {localpart!r} (for {mxid})")
         return uid
 
-    async def logout(self, mxid: str) -> None:
-        await self.mas.lock_user(await self._resolve(mxid))
+    async def _finish_sessions(self, uid: str) -> str:
+        """Finish every active session of the user; describe what was ended and what could not be."""
+        caps = await self.mas.capabilities()
+        ended: list[str] = []
+        for kind in sorted(caps.finishable_sessions):
+            ids = await self.mas.list_active_session_ids(kind, uid)
+            done = 0
+            for session_id in ids:
+                if await self.mas.finish_session(kind, session_id):
+                    done += 1
+            ended.append(f"{done} {kind.removesuffix('-sessions')}")
+        text = "sessions ended: " + (", ".join(ended) if ended else "none")
+        if caps.missing_finish:
+            text += (
+                f"; this MAS cannot end {', '.join(caps.missing_finish)}"
+                + ("" if caps.known else " (capabilities unknown)")
+                + ", those are only suspended and come back on unlock"
+            )
+        return text
 
-    async def reenable(self, mxid: str) -> None:
-        await self.mas.unlock_user(await self._resolve(mxid))
+    async def logout(self, mxid: str) -> str:
+        uid = await self._resolve(mxid)
+        await self.mas.lock_user(uid)
+        try:
+            sessions = await self._finish_sessions(uid)
+        except Exception as exc:
+            # The lock stands and is recorded; ``reenable`` finishes what is left before it unlocks.
+            log.warning("locked %s but could not end its sessions yet: %s", mxid, exc)
+            sessions = f"sessions suspended, ending them failed ({type(exc).__name__}); retried on unlock"
+        return f"MAS user locked, {sessions}{_TOKEN_CACHE_NOTE}"
 
-    async def erase(self, mxid: str, *, gdpr_erase: bool) -> None:
-        # MAS erases on every deactivation today, whatever ``gdpr_erase`` says (LIF-11, D7).
-        await self.mas.deactivate_user(await self._resolve(mxid))
+    async def reenable(self, mxid: str) -> str:
+        uid = await self._resolve(mxid)
+        # Before the unlock, so no session from before the lock comes back (LIF-07). A failure here
+        # raises: better a retried unlock than a revived stolen session.
+        sessions = await self._finish_sessions(uid)
+        await self.mas.unlock_user(uid)
+        return f"MAS user unlocked, {sessions}{_TOKEN_CACHE_NOTE}"
 
-    async def delete_media(self, mxid: str) -> None:
+    async def erase(self, mxid: str, *, gdpr_erase: bool) -> str:
+        uid = await self._resolve(mxid)
+        caps = await self.mas.capabilities()
+        if caps.deactivate_skip_erase:
+            await self.mas.deactivate_user(uid, skip_erase=not gdpr_erase)
+        elif gdpr_erase:
+            await self.mas.deactivate_user(uid)  # this MAS always erases, which is what is wanted
+        else:
+            raise LifecycleStepIncomplete(
+                "refusing to deactivate: this MAS "
+                + (
+                    "always GDPR-erases on deactivation"
+                    if caps.known
+                    else "may GDPR-erase (capabilities unknown)"
+                )
+                + " but gdpr_erase_on_delete is false; upgrade MAS or set gdpr_erase_on_delete: true"
+            )
+        return f"MAS user deactivated (all sessions ended), GDPR erase {'yes' if gdpr_erase else 'no'}"
+
+    async def delete_media(self, mxid: str) -> MediaDeletion:
         if self.synapse_admin is None:
             raise LifecycleTargetNotFound(f"no Synapse admin client to delete the media of {mxid}")
-        await self.synapse_admin.delete_user_media(mxid)
+        return await delete_all_user_media(self.synapse_admin, mxid)
+
+    async def count_locked_accounts(self) -> int:
+        """How many MAS users are locked, for the missing-ledger alarm (LIF-14)."""
+        return int(await self.mas.count_locked_users())
+
+
+class LedgerUnreadable(RuntimeError):
+    """The ledger or known-users blob cannot be read as a whole (LIF-14); the step is refused."""
+
+
+def parse_ledger(raw: Any) -> LifecycleLedger:
+    """Read a stored ledger blob, quarantining entries that do not validate (LIF-14).
+
+    A broken entry must not stall offboarding for everybody, and it must not be lost either: it moves
+    to ``quarantined`` with its raw content and its account is left alone until an admin repairs or
+    removes it. A blob that is broken as a whole, or written by a newer schema, raises
+    :class:`LedgerUnreadable` so nothing is decided on a misread and nothing overwrites it.
+    """
+    if not raw:
+        ledger = LifecycleLedger()
+        ledger.missing = True
+        return ledger
+    if not isinstance(raw, dict):
+        raise LedgerUnreadable("the lifecycle ledger is not a JSON object")
+    version = raw.get("schema_version", SCHEMA_VERSION)
+    if not isinstance(version, int) or version > SCHEMA_VERSION:
+        raise LedgerUnreadable(
+            f"the lifecycle ledger has schema_version {version!r}, this onbot understands up to "
+            f"{SCHEMA_VERSION} (written by a newer onbot?)"
+        )
+    entries = raw.get("entries", {})
+    if not isinstance(entries, dict):
+        raise LedgerUnreadable("the lifecycle ledger's `entries` is not a JSON object")
+    stored_quarantine = raw.get("quarantined", {})
+    quarantined: dict[str, Any] = dict(stored_quarantine) if isinstance(stored_quarantine, dict) else {}
+    valid: dict[str, LifecycleEntry] = {}
+    for mxid, content in entries.items():
+        try:
+            valid[mxid] = LifecycleEntry.model_validate(content)
+        except ValidationError:
+            quarantined[mxid] = content
+    return LifecycleLedger(schema_version=version, entries=valid, quarantined=quarantined)
 
 
 @runtime_checkable
@@ -464,10 +685,7 @@ class MatrixAccountDataLedgerStore:
         self.known_users_type = known_users_account_data_type(server_name)
 
     async def load(self) -> LifecycleLedger:
-        raw = await self.client.get_account_data(self.bot_id, self.data_type)
-        if not raw:
-            return LifecycleLedger()
-        return LifecycleLedger.model_validate(raw)
+        return parse_ledger(await self.client.get_account_data(self.bot_id, self.data_type))
 
     async def save(self, ledger: LifecycleLedger) -> None:
         content = ledger.model_dump(mode="json", exclude_defaults=True)
@@ -478,16 +696,21 @@ class MatrixAccountDataLedgerStore:
         raw = await self.client.get_account_data(self.bot_id, self.known_users_type)
         if not raw:
             return KnownUsers()
-        return KnownUsers.model_validate(raw)
+        try:
+            return KnownUsers.model_validate(raw)
+        except ValidationError as exc:
+            raise LedgerUnreadable(
+                f"the known-users record does not validate ({exc.error_count()} error(s))"
+            ) from exc
 
     async def save_known_users(self, known: KnownUsers) -> None:
         await self.client.set_account_data(self.bot_id, self.known_users_type, known.model_dump(mode="json"))
 
 
 class LifecycleOutcome(BaseModel):
-    """What the manager did for one user this pass (returned for tests and observability)."""
+    """What the manager did for one user (or, with ``mxid=None``, the step) this pass."""
 
-    mxid: str
+    mxid: str | None
     action: LifecycleAction
     dry_run: bool
     failed: bool = False
@@ -495,8 +718,8 @@ class LifecycleOutcome(BaseModel):
 
     @property
     def needs_attention(self) -> bool:
-        """Whether an admin should hear about it: a failed step or a newly frozen user."""
-        return self.failed or self.action is LifecycleAction.freeze
+        """Whether an admin should hear about it: a failure, a new freeze, an abort or an alert."""
+        return self.failed or self.action in _ATTENTION_ACTIONS
 
 
 @dataclass(frozen=True, slots=True)
@@ -514,6 +737,7 @@ GUARDED_ACTIONS = frozenset({LifecycleAction.logout, LifecycleAction.erase})
 # Whether the guard lets one destructive step run this pass.
 Permit = Callable[[str, LifecycleAction], bool]
 
+_ATTENTION_ACTIONS = frozenset({LifecycleAction.freeze, LifecycleAction.abort, LifecycleAction.alert})
 
 EMPTY_DIRECTORY_MESSAGE = (
     "lifecycle step aborted: Authentik returned no users at all; refusing to judge any account on an "
@@ -549,6 +773,43 @@ class AccountLifecycleManager:
         # The step whose "DRY-RUN: would ..." or "HELD" line was last logged per account, so the audit
         # channel gets one line per stage transition instead of one per tick (LIF-08).
         self._noted: dict[str, str] = {}
+        self._missing_ledger_checked = False
+
+    async def preflight(self) -> list[str]:
+        """Log the offboarding setup once at startup and return what an operator must know (LIF-09).
+
+        Asks the effectors to check their side (whether the homeserver is MAS-backed although the
+        Synapse fallback is in use, what this MAS can do). Network errors propagate, so the startup
+        step retries.
+        """
+        cfg = self.cfg
+        log.info(
+            "offboarding: enabled=%s, dry_run=%s, effectors=%s, lock after %ss, %s, "
+            "gdpr_erase_on_delete=%s, include_user_media_on_delete=%s",
+            cfg.enabled,
+            cfg.dry_run,
+            self._effector_name,
+            cfg.deactivate_after_n_sec,
+            self._erase_plan(),
+            cfg.gdpr_erase_on_delete,
+            cfg.include_user_media_on_delete,
+        )
+        if not cfg.enabled:
+            return []
+        check = getattr(self.effectors, "preflight", None)
+        if check is None:
+            return []
+        warnings: list[str] = list(await check())
+        for warning in warnings:
+            log.error("offboarding: %s", warning)
+        return warnings
+
+    def _once(self, message: str) -> bool:
+        """Whether ``message`` is new in this process (reports go out once, not every tick)."""
+        if message in self._reported_warnings:
+            return False
+        self._reported_warnings.add(message)
+        return True
 
     @property
     def dry_run(self) -> bool:
@@ -570,6 +831,8 @@ class AccountLifecycleManager:
         update_known_users(known, snapshot, ledger, now)  # in memory only, as the pass will see it
         planned: list[PlannedAccountAction] = []
         for mxid, classification in sorted(classify_accounts(snapshot, known, ledger).items()):
+            if mxid in ledger.quarantined:
+                continue  # reconcile_accounts skips it too
             entry = ledger.entries.get(mxid)
             if (
                 entry is not None
@@ -615,34 +878,96 @@ class AccountLifecycleManager:
             # The reconciler checks this before calling; kept here so no caller can get it wrong.
             log.error(EMPTY_DIRECTORY_MESSAGE)
             return []
-        ledger = await self.store.load()
-        known = await self.store.load_known_users()
+        try:
+            ledger = await self.store.load()
+            known = await self.store.load_known_users()
+        except LedgerUnreadable as exc:
+            message = (
+                f"lifecycle step aborted: {exc}. No account is judged and nothing is written until the "
+                "bot's lifecycle account data is repaired"
+            )
+            log.error("%s", message)
+            if not self._once(message):
+                return []
+            return [
+                LifecycleOutcome(
+                    mxid=None, action=LifecycleAction.abort, dry_run=self.cfg.dry_run, detail=message
+                )
+            ]
         now = self.clock()
+        outcomes: list[LifecycleOutcome] = []
+        if ledger.missing and not self._missing_ledger_checked:
+            outcomes.extend(await self._check_missing_ledger(ledger))
+        for mxid in sorted(ledger.quarantined):
+            message = (
+                f"the lifecycle entry of {mxid} does not validate and is quarantined; onbot leaves the "
+                "account alone until an admin repairs or removes it in the bot's lifecycle account data"
+            )
+            if self._once(message):
+                audit.error("QUARANTINED %s", message)
+                outcomes.append(
+                    LifecycleOutcome(
+                        mxid=mxid, action=LifecycleAction.alert, dry_run=self.cfg.dry_run, detail=message
+                    )
+                )
 
         known_changed, warnings = update_known_users(known, snapshot, ledger, now)
         for warning in warnings:
-            if warning not in self._reported_warnings:  # once per process, not every tick
-                self._reported_warnings.add(warning)
+            if self._once(warning):
                 log.warning("lifecycle identity: %s", warning)
         if known_changed:
             await self.store.save_known_users(known)
 
-        outcomes: list[LifecycleOutcome] = []
-        erased: list[str] = []
+        finished: list[str] = []
         for mxid, classification in sorted(classify_accounts(snapshot, known, ledger).items()):
+            if mxid in ledger.quarantined:
+                continue
             outcome = await self._reconcile_one(ledger, mxid, classification, now, permit)
             if outcome is None:
                 continue
             outcomes.append(outcome)
-            if outcome.action is LifecycleAction.erase and mxid not in ledger.entries:
-                erased.append(mxid)
+            if (
+                outcome.action in (LifecycleAction.erase, LifecycleAction.forget)
+                and mxid not in ledger.entries
+            ):
+                finished.append(mxid)
 
-        if erased:  # nothing left to offboard: drop the bindings, which keeps the record bounded
+        if finished:  # nothing left to offboard: drop the bindings, which keeps the record bounded
             for pk, known_user in list(known.users.items()):
-                if known_user.mxid in erased:
+                if known_user.mxid in finished:
                     del known.users[pk]
             await self.store.save_known_users(known)
         return outcomes
+
+    async def _check_missing_ledger(self, ledger: LifecycleLedger) -> list[LifecycleOutcome]:
+        """Alarm when the ledger is gone while locks exist (LIF-14), then write an empty one.
+
+        Without the ledger onbot no longer knows which locks it set, so a user re-enabled in
+        Authentik would stay locked. Writing the empty ledger makes a later loss detectable again.
+        """
+        self._missing_ledger_checked = True
+        counter = getattr(self.effectors, "count_locked_accounts", None)
+        locked: int | None = None
+        if counter is not None:
+            try:
+                locked = int(await counter())
+            except Exception as exc:
+                log.warning("could not count locked accounts for the missing-ledger check: %s", exc)
+        await self.store.save(ledger)
+        ledger.missing = False
+        if not locked:
+            return []
+        message = (
+            f"the lifecycle ledger is missing (first start, or the bot's account data was lost) while "
+            f"{locked} account(s) are locked in MAS. If onbot locked any of them, it no longer knows: "
+            "they stay locked even when re-enabled in Authentik, and an admin must unlock them by hand"
+        )
+        audit.error("ALERT %s", message)
+        return [
+            LifecycleOutcome(
+                mxid=None, action=LifecycleAction.alert, dry_run=self.cfg.dry_run, detail=message
+            )
+        ]
 
     async def _reconcile_one(
         self,
@@ -666,6 +991,7 @@ class AccountLifecycleManager:
         ):
             audit.info("%s is no longer frozen (%s)", mxid, classification.reason)
             entry.frozen_reason = None
+            entry.ignored_username = None
             await self.store.save(ledger)
         if (
             entry is not None
@@ -677,6 +1003,8 @@ class AccountLifecycleManager:
             # a later rename or lost mapping attribute cannot detach it.
             entry.authentik_pk = classification.pk
             await self.store.save(ledger)
+        if entry is not None and self._retention_over(entry, classification, now):
+            return await self._forget(ledger, mxid, entry, now)
 
         action = self._decide(entry, classification, now)
         noted = self._noted.get(mxid)
@@ -699,7 +1027,7 @@ class AccountLifecycleManager:
                 )
             return None
         if action is LifecycleAction.freeze:
-            return await self._freeze(ledger, mxid, classification.reason)
+            return await self._freeze(ledger, mxid, classification)
 
         try:
             changed = await self._apply(ledger, mxid, action, now, classification)
@@ -713,11 +1041,51 @@ class AccountLifecycleManager:
             await self.store.save(ledger)  # after every user, never once at the end (LIF-03)
         return LifecycleOutcome(mxid=mxid, action=action, dry_run=self.dry_run)
 
-    async def _freeze(self, ledger: LifecycleLedger, mxid: str, reason: str) -> LifecycleOutcome | None:
+    def _retention_over(self, entry: LifecycleEntry, classification: Classification, now: float) -> bool:
+        """Whether a lock record has reached its final state and outlived the retention (LIF-14).
+
+        Final means: onbot locked the account, erasure is disabled (so no further step can come), and
+        the Authentik user is gone (so no re-enable can come either). Every other entry may still be
+        needed and is kept, however old.
+        """
+        return (
+            self.cfg.delete_after_n_sec is None
+            and entry.disabled_user_timestamp is not None
+            and entry.deactivated_timestamp is None
+            and entry.frozen_reason is None
+            and classification.status is AccountStatus.orphaned
+            and classification.reason == DELETED_REASON
+            and now - entry.disabled_user_timestamp >= LEDGER_RETENTION_SEC
+        )
+
+    async def _forget(
+        self, ledger: LifecycleLedger, mxid: str, entry: LifecycleEntry, now: float
+    ) -> LifecycleOutcome:
+        assert entry.disabled_user_timestamp is not None
+        days = int((now - entry.disabled_user_timestamp) // 86400)
+        ledger.entries.pop(mxid)
+        await self.store.save(ledger)
+        audit.info(
+            "forgot %s: locked %d days ago, deleted from Authentik, erase disabled; the account stays "
+            "locked and onbot no longer tracks it",
+            mxid,
+            days,
+        )
+        return LifecycleOutcome(mxid=mxid, action=LifecycleAction.forget, dry_run=self.cfg.dry_run)
+
+    async def _freeze(
+        self, ledger: LifecycleLedger, mxid: str, classification: Classification
+    ) -> LifecycleOutcome | None:
         entry = ledger.entries[mxid]
+        reason = classification.reason
+        username = classification.ignored_username
         if entry.frozen_reason == reason:
+            if username is not None and entry.ignored_username != username:
+                entry.ignored_username = username  # an entry frozen before the name was recorded
+                await self.store.save(ledger)
             return None  # reported when it was frozen; stay quiet until something changes
         entry.frozen_reason = reason
+        entry.ignored_username = username
         await self.store.save(ledger)
         audit.warning(
             "FROZEN %s: %s. No unlock and no further offboarding step until an admin decides (D9)",
@@ -782,13 +1150,18 @@ class AccountLifecycleManager:
                 if self._note_once(mxid, f"dry-run:{action.value}"):
                     audit.warning("DRY-RUN: would lock out %s (%s)", mxid, reason)
                 return False
-            await self.effectors.logout(mxid)
+            detail = await self.effectors.logout(mxid)
             entry = ledger.entries.setdefault(mxid, LifecycleEntry())
             entry.disabled_user_timestamp = now
             if entry.authentik_pk is None and classification.pk is not None:
                 entry.authentik_pk = classification.pk
             audit.warning(
-                "locked out %s via %s (%s); %s", mxid, self._effector_name, reason, self._erase_plan()
+                "locked out %s via %s (%s): %s; %s",
+                mxid,
+                self._effector_name,
+                reason,
+                detail or "done",
+                self._erase_plan(),
             )
             return True
 
@@ -814,29 +1187,52 @@ class AccountLifecycleManager:
             if self._note_once(mxid, f"dry-run:{LifecycleAction.reenable.value}"):
                 audit.warning("DRY-RUN: would unlock %s (%s)", mxid, reason)
             return False
-        await self.effectors.reenable(mxid)
+        detail = await self.effectors.reenable(mxid)
         ledger.entries.pop(mxid)
-        audit.info("re-enabled %s via %s (%s); cleared lifecycle state", mxid, self._effector_name, reason)
+        audit.info(
+            "re-enabled %s via %s (%s): %s; cleared lifecycle state",
+            mxid,
+            self._effector_name,
+            reason,
+            detail or "done",
+        )
         return True
 
     async def _erase(self, ledger: LifecycleLedger, mxid: str, now: float) -> bool:
+        gdpr_erase = self.cfg.gdpr_erase_on_delete
         delete_media = self.cfg.include_user_media_on_delete
         if self.dry_run:
             if self._note_once(mxid, f"dry-run:{LifecycleAction.erase.value}"):
                 audit.warning(
-                    "DRY-RUN: would erase %s (deactivate account, delete_media=%s)", mxid, delete_media
+                    "DRY-RUN: would erase %s (deactivate account, GDPR erase=%s, delete media=%s)",
+                    mxid,
+                    gdpr_erase,
+                    delete_media,
                 )
             return False
         entry = ledger.entries.setdefault(mxid, LifecycleEntry())
         if entry.deactivated_timestamp is None:
-            await self.effectors.erase(mxid, gdpr_erase=delete_media)
+            detail = await self.effectors.erase(mxid, gdpr_erase=gdpr_erase)
             entry.deactivated_timestamp = now
             # Persist the irreversible half at once, so a failure below never repeats it (LIF-03).
             await self.store.save(ledger)
-            audit.warning("deactivated %s via %s (irreversible)", mxid, self._effector_name)
+            audit.warning(
+                "deactivated %s via %s (irreversible): %s", mxid, self._effector_name, detail or "done"
+            )
         if delete_media and entry.media_deleted_timestamp is None:
-            await self.effectors.delete_media(mxid)
+            result = await self.effectors.delete_media(mxid)
+            if result is not None and not result.complete:
+                # Synapse deletes one page per request; the rest follows on the next pass (LIF-12).
+                audit.warning(
+                    "deleting the media of %s: %d file(s) deleted this pass, %d left; continues next pass",
+                    mxid,
+                    result.deleted,
+                    result.remaining,
+                )
+                return True
             entry.media_deleted_timestamp = now
         ledger.entries.pop(mxid)
-        audit.warning("erased %s (account deactivated, media deleted=%s)", mxid, delete_media)
+        audit.warning(
+            "erased %s (account deactivated, GDPR erase=%s, media deleted=%s)", mxid, gdpr_erase, delete_media
+        )
         return True

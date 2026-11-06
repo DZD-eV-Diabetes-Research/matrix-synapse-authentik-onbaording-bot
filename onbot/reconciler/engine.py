@@ -1388,4 +1388,5 @@ class ReconcilerEngine:
                 {self.config.synapse_server.bot_user_id, *self.config.matrix_user_ignore_list}
             ),
             synced_mxids=frozenset(active_mxids),
+            ignored_usernames=frozenset(ignored),
         )

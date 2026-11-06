@@ -25,8 +25,10 @@ class Signal(StrEnum):
     # Emitted at the end of every reconcile pass, so state that must converge on the tick but is not
     # the reconciler's business can ride along (the admin room's invites, ADR-0010).
     reconcile_completed = "reconcile_completed"
-    # The offboarding step needs a human: a user was frozen (D9), a step failed, or the step was
-    # aborted on an implausible Authentik answer. Payload: ``mxid`` (None for an abort), ``action``,
+    # The offboarding step needs a human: a user was frozen (D9), a step failed, the step was aborted
+    # on an implausible Authentik answer or an unreadable ledger, a ledger entry was quarantined, the
+    # ledger went missing while locks exist, or the startup check found a problem (action
+    # ``preflight``). Payload: ``mxid`` (None when no single account is meant), ``action``,
     # ``detail``. Routed to the admin room (``onbot.admin.notifier``); the lifecycle also logs it.
     lifecycle_attention = "lifecycle_attention"
     # A managed room (or the space) the pass could not fully converge: emitted once per room per pass,

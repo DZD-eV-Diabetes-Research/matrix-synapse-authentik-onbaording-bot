@@ -169,16 +169,33 @@ class ApiClientSynapseAdmin(BaseApiClient):
         # https://element-hq.github.io/synapse/latest/admin_api/user_admin_api.html#deactivate-account
         await self.post_json(f"v1/deactivate/{user_id}", json_body={"erase": erase})
 
-    async def logout_account(self, user_id: str) -> None:
-        # Revoke all sessions by deleting every device.
+    async def logout_account(self, user_id: str) -> int:
+        """Delete every device of the user, which ends their Synapse sessions; return the count.
+
+        Under MAS this does not end the MAS session behind a token (§7 Q1).
+        """
         devices = (await self.get_json(f"v2/users/{user_id}/devices"))["devices"]
         for device in devices:
             await self.delete_json(f"v2/users/{user_id}/devices/{device['device_id']}")
+        return len(devices)
 
-    async def delete_user_media(self, user_id: str) -> dict[str, Any]:
-        # https://element-hq.github.io/synapse/latest/admin_api/user_admin_api.html#delete-media-uploaded-by-a-user
-        result: dict[str, Any] = await self.delete_json(f"v1/users/{user_id}/media")
+    async def delete_user_media(self, user_id: str, *, limit: int = 100) -> dict[str, Any]:
+        """Delete one batch (at most ``limit``) of the media the user uploaded.
+
+        Synapse deletes only one page per request (100 files unless ``limit`` says otherwise), so a
+        caller that wants everything gone loops (LIF-12, see :meth:`count_user_media`).
+        https://element-hq.github.io/synapse/latest/admin_api/user_admin_api.html#delete-media-uploaded-by-a-user
+        """
+        result: dict[str, Any] = await self.request_json(
+            "DELETE", f"v1/users/{user_id}/media", params={"limit": limit}
+        )
         return result
+
+    async def count_user_media(self, user_id: str) -> int:
+        """How many local media files the user uploaded (the ``total`` of the media list)."""
+        # https://element-hq.github.io/synapse/latest/admin_api/user_admin_api.html#list-media-uploaded-by-a-user
+        result = await self.get_json(f"v1/users/{user_id}/media", params={"limit": 1})
+        return int(result.get("total", 0))
 
     async def delete_room(
         self,

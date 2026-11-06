@@ -82,8 +82,8 @@ Two settings above are easy to get wrong and worth calling out:
   computes each user's MXID from this Authentik attribute. If it disagrees with MAS, the computed
   MXIDs will not match the real accounts and nobody gets added to rooms.
 - **`mas_admin` is required to actually offboard disabled users.** The Synapse admin API cannot
-  revoke a MAS-issued session, only MAS can. Without this block, offboarding silently does nothing
-  to live sessions.
+  end a MAS-issued session, only MAS can. Without this block, offboarding does nothing to live
+  sessions; Onbot logs an error at startup when it finds the homeserver MAS-backed.
 
 Every setting can also be supplied via an environment variable (prefix `ONBOT_`, nest with `__`),
 for example `ONBOT_SYNAPSE_SERVER__BOT_ACCESS_TOKEN=syt_…`.

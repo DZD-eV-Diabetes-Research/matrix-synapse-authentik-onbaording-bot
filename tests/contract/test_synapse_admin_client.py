@@ -233,3 +233,39 @@ async def test_delete_room_omits_message_when_absent() -> None:
     body = json.loads(route.calls[0].request.content)
     assert "message" not in body
     assert body == {"block": True, "purge": True, "force_purge": False}
+
+
+@respx.mock
+async def test_media_is_deleted_one_limited_page_at_a_time_and_counted() -> None:
+    """LIF-12: Synapse deletes one page per request; the caller loops and checks what is left."""
+    delete = respx.delete("https://matrix.test/_synapse/admin/v1/users/@u:x/media").mock(
+        return_value=httpx.Response(200, json={"deleted_media": ["m"] * 100, "total": 100})
+    )
+    listing = respx.get("https://matrix.test/_synapse/admin/v1/users/@u:x/media").mock(
+        return_value=httpx.Response(200, json={"media": [{"media_id": "m"}], "total": 42})
+    )
+    client = _client()
+    try:
+        result = await client.delete_user_media("@u:x", limit=100)
+        remaining = await client.count_user_media("@u:x")
+    finally:
+        await client.aclose()
+    assert result["total"] == 100
+    assert dict(delete.calls[0].request.url.params) == {"limit": "100"}
+    assert remaining == 42
+    assert dict(listing.calls[0].request.url.params) == {"limit": "1"}
+
+
+@respx.mock
+async def test_logout_account_returns_the_number_of_devices() -> None:
+    respx.get("https://matrix.test/_synapse/admin/v2/users/@u:x/devices").mock(
+        return_value=httpx.Response(200, json={"devices": [{"device_id": "D1"}]})
+    )
+    respx.delete("https://matrix.test/_synapse/admin/v2/users/@u:x/devices/D1").mock(
+        return_value=httpx.Response(200, json={})
+    )
+    client = _client()
+    try:
+        assert await client.logout_account("@u:x") == 1
+    finally:
+        await client.aclose()

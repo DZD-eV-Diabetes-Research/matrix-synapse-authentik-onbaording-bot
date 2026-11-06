@@ -113,6 +113,24 @@ class ApiClientMatrix(BaseApiClient):
 
     # --- device registration (MAS compatibility) ----------------------------
 
+    async def get_auth_issuer(self) -> str | None:
+        """The OAuth 2.0 issuer the homeserver delegates authentication to (MAS), or ``None``.
+
+        Reads ``GET /_matrix/client/v1/auth_metadata`` and falls back to the unstable MSC2965
+        ``auth_issuer`` endpoint of older servers. A 404 (or ``M_UNRECOGNIZED``) on both means the
+        homeserver handles logins itself.
+        """
+        for path in ("v1/auth_metadata", "unstable/org.matrix.msc2965/auth_issuer"):
+            try:
+                result = await self.get_json(path)
+            except ApiError as exc:
+                if exc.status_code in (400, 404):
+                    continue
+                raise
+            if isinstance(result, dict) and isinstance(result.get("issuer"), str):
+                return str(result["issuer"])
+        return None
+
     async def ensure_device_registered(self) -> None:
         """Register the bot's device so it can send messages under MAS.
 

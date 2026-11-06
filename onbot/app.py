@@ -206,6 +206,18 @@ class App:
             self.engine.trigger()
         log.info("onboarding active")
 
+    async def check_offboarding(self) -> None:
+        """Log the offboarding setup and report what the effectors found wrong (LIF-09).
+
+        Detects a MAS-backed homeserver behind the Synapse fallback and reads what the configured MAS
+        can do. Each finding goes to the log at ERROR and to the admin-room signal.
+        """
+        lifecycle = self.engine.lifecycle
+        if lifecycle is None:
+            return
+        for warning in await lifecycle.preflight():
+            await self.events.emit(Signal.lifecycle_attention, mxid=None, action="preflight", detail=warning)
+
     async def relax_ratelimit(self) -> None:
         await _relax_bot_ratelimit(self.admin, self.config)
 
@@ -257,6 +269,7 @@ class App:
             device,
             StartupStep("onboarding", self.open_onboarding, after=device),
             StartupStep("rate-limit override", self.relax_ratelimit),
+            StartupStep("offboarding check", self.check_offboarding),
         ]
         if self.config.synapse_server.bot_avatar_url:
             steps.append(StartupStep("bot avatar", self.apply_bot_avatar))
@@ -325,8 +338,9 @@ async def build_app(
         media = MediaUploader(matrix, fetcher=fetcher)
         stack.push_async_callback(media.aclose)
         events = EventBus()
-        # Lifecycle enforcement: under MAS only the MAS admin API can revoke a live session (§7 Q1),
-        # so prefer it when configured; otherwise fall back to the Synapse-admin effectors.
+        # Lifecycle enforcement: under MAS only the MAS admin API can end a live session (§7 Q1),
+        # so prefer it when configured; otherwise fall back to the Synapse-admin effectors, which
+        # ask the homeserver at startup whether it is MAS-backed after all (LIF-09).
         lifecycle_effectors: LifecycleEffectors
         if config.mas_admin is not None:
             mas_admin = ApiClientMasAdmin(
@@ -341,7 +355,7 @@ async def build_app(
             stack.push_async_callback(mas_admin.aclose)
             lifecycle_effectors = MasLifecycleEffectors(mas_admin, synapse_admin=admin)
         else:
-            lifecycle_effectors = AdminApiLifecycleEffectors(admin)
+            lifecycle_effectors = AdminApiLifecycleEffectors(admin, matrix=matrix)
         bot_id, server_name = config.synapse_server.bot_user_id, config.synapse_server.server_name
         ledger_store: LifecycleLedgerStore = MatrixAccountDataLedgerStore(matrix, bot_id, server_name)
         guard_store: GuardStore = MatrixAccountDataGuardStore(matrix, bot_id, server_name)

@@ -153,11 +153,12 @@ OAUTH2_REMOVED_MESSAGE = (
 class MasAdmin(_StrictModel):
     """MAS admin API credentials for lifecycle enforcement (ADR-0005/0006, §7 Q1).
 
-    Under MAS the Matrix token is owned by MAS, so the Synapse admin API cannot revoke a live
-    session — only MAS can (lock/deactivate). When this block is set, the lifecycle module enforces
-    lockout through the MAS admin API using an OAuth2 ``client_credentials`` token with the
-    ``urn:mas:admin`` scope (the client must be listed in MAS ``policy.data.admin_clients``). Leave
-    unset to fall back to the Synapse-admin effectors (which do NOT revoke MAS sessions).
+    Under MAS the Matrix token is owned by MAS, so the Synapse admin API cannot end a live
+    session; only MAS can (lock, finish sessions, deactivate). When this block is set, the lifecycle
+    module enforces lockout through the MAS admin API using an OAuth2 ``client_credentials`` token
+    with the ``urn:mas:admin`` scope (the client must be listed in MAS ``policy.data.admin_clients``).
+    Leave unset to fall back to the Synapse-admin effectors (which do NOT end MAS sessions; the
+    startup check logs an error when the homeserver turns out to be MAS-backed).
     """
 
     url: Annotated[
@@ -189,7 +190,7 @@ class MasAdmin(_StrictModel):
             title="MAS admin client secret",
             description=inspect.cleandoc(
                 """Client secret belonging to `client_id`. This credential can lock and deactivate
-                any account on the homeserver — prefer supplying it through the
+                any account on the homeserver, so prefer supplying it through the
                 `ONBOT_MAS_ADMIN__CLIENT_SECRET` environment variable rather than committing it to
                 the config file."""
             ),
@@ -494,7 +495,7 @@ class AuthentikServer(_StrictModel):
 
 
 class DeactivateDisabledAuthentikUsersInMatrix(_StrictModel):
-    """Lifecycle settings (Phase 5 — quarantined, dry-run/audit default; AD-5)."""
+    """Lifecycle settings (Phase 5: quarantined, dry-run/audit default; AD-5, ADR-0005)."""
 
     enabled: Annotated[
         bool,
@@ -513,8 +514,8 @@ class DeactivateDisabledAuthentikUsersInMatrix(_StrictModel):
             title="Dry run (audit only)",
             description=inspect.cleandoc(
                 """Quarantine switch. While `true` the bot only records bookkeeping and logs what it
-                *would* do to the `onbot.lifecycle.audit` channel — no session is revoked and no
-                account is deactivated or deleted. Set `false` to actually perform destructive
+                *would* do to the `onbot.lifecycle.audit` channel: no account is locked, unlocked
+                or erased and no session is ended. Set `false` to actually perform destructive
                 lifecycle actions. Defaults to `true` so destructive offboarding is always opt-in;
                 run with the default first and read the audit log before switching it off."""
             ),
@@ -523,11 +524,15 @@ class DeactivateDisabledAuthentikUsersInMatrix(_StrictModel):
     deactivate_after_n_sec: Annotated[
         int,
         Field(
-            title="Grace period before deactivation",
+            title="Grace period before the lock",
             description=inspect.cleandoc(
-                """Seconds a user must stay disabled in Authentik before their Matrix account is
-                deactivated. Absorbs accidental upstream disables: re-enabling the Authentik account
-                within this window cancels the pending deactivation. The default is 24 hours."""
+                """Seconds a user must stay disabled in (or deleted from) Authentik before their
+                Matrix account is locked. Despite the name nothing is deactivated at this stage: with
+                `mas_admin` the MAS user is locked (no new logins) and its sessions are ended, without
+                it the user's Synapse devices are deleted. Reversible: re-enabling the Authentik
+                account unlocks it. Within this window a re-enable simply cancels the pending lock.
+                Tokens already in use stop working only once Synapse's token cache lapses (about two
+                minutes under MAS). The default is 24 hours."""
             ),
             examples=[86400, 3600],
             ge=0,
@@ -536,25 +541,42 @@ class DeactivateDisabledAuthentikUsersInMatrix(_StrictModel):
     delete_after_n_sec: Annotated[
         int | None,
         Field(
-            title="Grace period before deletion",
+            title="Grace period before erasure",
             description=inspect.cleandoc(
-                """Seconds a user must stay disabled in Authentik before their Matrix account is
-                erased, counted from the same point as `deactivate_after_n_sec` (so it should be the
-                larger of the two). `null` disables deletion entirely and leaves accounts
-                deactivated. The default is 365 days."""
+                """Seconds after the lock before the Matrix account is erased, that is deactivated
+                for good (irreversible). Counted from the lock, so erasure happens
+                `deactivate_after_n_sec + delete_after_n_sec` after the user was first seen disabled
+                or deleted. Whether the profile is GDPR-erased as well is
+                `gdpr_erase_on_delete`, whether uploaded media goes too is
+                `include_user_media_on_delete`. `null` disables erasure entirely and leaves accounts
+                locked. The default is 365 days."""
             ),
             examples=[31536000, None],
             ge=0,
         ),
     ] = 60 * 60 * 24 * 365
+    gdpr_erase_on_delete: Annotated[
+        bool,
+        Field(
+            title="GDPR-erase on erasure",
+            description=inspect.cleandoc(
+                """Also GDPR-erase the account when it is erased: Synapse removes the display name
+                and avatar and hides the user's messages from users who join rooms later. Applied
+                the same way with and without `mas_admin`. Older MAS releases (0.14, for example)
+                always GDPR-erase on deactivation; with such a MAS and this option `false` onbot
+                refuses the erasure (logged as FAILED) instead of erasing more than configured."""
+            ),
+        ),
+    ] = False
     include_user_media_on_delete: Annotated[
         bool,
         Field(
-            title="Delete user media on deletion",
+            title="Delete user media on erasure",
             description=inspect.cleandoc(
-                """Also delete media the user uploaded when their account is erased. Useful to honour
-                data-protection requests, but the media is unrecoverable and may still be referenced
-                by messages in rooms the user posted in."""
+                """Also delete the media the user uploaded when their account is erased. Useful to
+                honour data-protection requests, but the media is unrecoverable and may still be
+                referenced by messages in rooms the user posted in. Large uploads are deleted over
+                several passes until none is left."""
             ),
         ),
     ] = False
@@ -650,7 +672,7 @@ class SyncAuthentikUsersWithMatrix(_StrictModel):
             title="Offboarding: lock out users disabled upstream",
             description=inspect.cleandoc(
                 """What happens to a Matrix account once its Authentik account is disabled or
-                deleted. Defaults to an audit-only dry run — see the `dry_run` field below."""
+                deleted. Defaults to an audit-only dry run, see the `dry_run` field below."""
             ),
         ),
     ] = Field(default_factory=DeactivateDisabledAuthentikUsersInMatrix)
@@ -1345,10 +1367,13 @@ class OnbotConfig(BaseSettings):
             title="Matrix Authentication Service admin API",
             description=inspect.cleandoc(
                 """Admin credentials for the Matrix Authentication Service. Required for the
-                offboarding module to actually revoke sessions and deactivate accounts on a
-                MAS-fronted homeserver: there the Matrix session is owned by MAS, and the Synapse
-                admin API cannot terminate it. Leave unset (`null`) on homeservers that do not use
-                MAS — the bot then enforces offboarding through the Synapse admin API alone."""
+                offboarding module to actually lock users out, end their sessions and erase accounts
+                on a MAS-fronted homeserver: there the Matrix session is owned by MAS, and the
+                Synapse admin API cannot end it. Ending sessions and erasing without GDPR erasure
+                need a MAS whose admin API offers them (0.14 does not); the startup log lists what
+                the configured MAS can do. Leave unset (`null`) on homeservers that do not use MAS:
+                the bot then enforces offboarding through the Synapse admin API alone, and logs an
+                error at startup if the homeserver turns out to delegate logins to MAS."""
             ),
         ),
     ] = None

@@ -61,8 +61,9 @@ through MAS. The Synapse-admin effectors are insufficient under the MAS topology
 - `clients/mas_admin.py` (`ApiClientMasAdmin`) wraps the MAS admin API (`by-username` lookup,
   `lock`/`unlock`/`deactivate`), authenticated by an OAuth2 `client_credentials` token with the
   `urn:mas:admin` scope (config: `mas_admin`; the bot's client must be in MAS `policy.data.admin_clients`).
-- `MasLifecycleEffectors` maps the state machine to MAS: `logout` → **lock** (reversible session
-  revocation), `reenable` → **unlock** (G9.6), `erase` → **deactivate** (+ media via Synapse admin).
+- `MasLifecycleEffectors` maps the state machine to MAS: `logout` → **lock** (reversible; a lock
+  suspends sessions, it does not end them, see the S4 update below), `reenable` → **unlock**
+  (G9.6), `erase` → **deactivate** (+ media via Synapse admin).
   `app.py` selects it whenever `mas_admin` is configured, else falls back to
   `AdminApiLifecycleEffectors` (correct only on non-MAS Synapse).
 - The lifecycle protocol gained a restorative `reenable` op so a returning user is unlocked.
@@ -96,10 +97,46 @@ decision rules are now:
 - **Minimal plausibility guard.** An empty Authentik user list skips the step. The configurable
   guards of D4 (drop thresholds, per-pass limits, confirmation) follow in later review sessions.
 
+## Implementation update (review S4, 2026-11-06): what each stage really does
+
+- **Names versus effects (LIF-15).** `deactivate_after_n_sec` triggers the *lock* (MAS lock, or
+  Synapse device deletion without MAS), not a deactivation. `delete_after_n_sec` triggers the
+  *erase* (MAS or Synapse deactivation) and counts from the lock, not from the mark. The names stay
+  for compatibility; the config descriptions say what happens.
+- **A lock ends sessions (LIF-07).** The MAS admin API documents that a lock "DOES NOT invalidate
+  any existing session", and live check 1 confirmed that an unlock revives the pre-lock token. The
+  MAS effector now finishes every compat, OAuth 2.0 and browser session right after the lock (best
+  effort: the lock stands if that fails) and again before an unlock (a failure there blocks the
+  unlock), so a re-enable never revives the session of a lost device. The finish endpoints only
+  exist in newer MAS releases: MAS 0.14.1, the integration stack's version, has none and answers
+  them with its HTML 404 page. The effector reads `/api/spec.json` to know, and on such a MAS the
+  audit line says the sessions are only suspended.
+- **Erasure is explicit (LIF-11, D7).** `gdpr_erase_on_delete` (default `false`) decides GDPR
+  erasure on both paths: MAS gets `{"skip_erase": not gdpr_erase_on_delete}`, Synapse
+  `erase=gdpr_erase_on_delete`; media stays `include_user_media_on_delete`. MAS 0.14.1 has no
+  `skip_erase`, ignores the body and always erases (verified live); there an erase with
+  `gdpr_erase_on_delete: false` is refused and audited as `FAILED` instead of erasing more than
+  configured.
+- **The audit says what happened (LIF-09).** Effectors return a description of what they did, which
+  goes into the audit line, so the Synapse fallback under MAS can no longer claim a revocation. A
+  startup step logs the offboarding setup and asks the homeserver (`/_matrix/client/v1/auth_metadata`)
+  whether it delegates logins; MAS-backed without `mas_admin` is logged as an error and emitted as
+  `lifecycle_attention`. Whether onbot should refuse the fallback under MAS outright is open.
+- **Timing (LIV-03).** Synapse caches MAS token introspection for about two minutes, so a lock or an
+  unlock reaches tokens in use only then; the audit line is immediate and says so.
+- **Media in pages (LIF-12).** Synapse deletes 100 files per request; erasure loops (50 requests per
+  pass) and resumes on the next pass until none is left.
+- **Ledger robustness (LIF-14).** Entries that do not validate are quarantined verbatim and their
+  accounts left alone; a ledger that cannot be read at all (or has a newer `schema_version`) stops
+  the step without writing; a missing ledger while MAS has locked users raises one alert; a lock
+  record in its final state (locked, deleted upstream, erase disabled) is dropped after 90 days.
+- **Ignore list and deletion.** A freeze caused by `authentik_user_ignore_list` survives the deletion
+  of the user: the entry records the ignored username and stays frozen while it is listed.
+
 ## Consequences
 
 - Operators must explicitly opt in to real destructive actions (G12.2); cooldown delays absorb
   accidental upstream disables (G9.3, G12.3).
 - Under MAS, configure `mas_admin` or **lifecycle enforcement is a no-op against live sessions**
-  (the Synapse-admin path silently fails to revoke). The module only ever gives access back by
+  (the Synapse-admin path cannot end them; since S4 the startup check and the audit lines say so). The module only ever gives access back by
   lifting a lock it set itself, for a user positively active and in scope, and never in dry-run.
