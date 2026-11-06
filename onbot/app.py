@@ -276,7 +276,10 @@ async def build_app(config: OnbotConfig, *, heartbeat: Heartbeat | None = None) 
         matrix, admin = _matrix_clients(stack, config)
         # One uploader for the bot avatar, the group rooms and the onboarding rooms: it caches by
         # source URL, so the bot's avatar is fetched and uploaded once no matter how many rooms wear it.
-        media = MediaUploader(matrix, fetcher=SafeImageFetcher(_fetch_policy(config)))
+        # The uploader does not own a fetcher it is handed, so the stack closes it (RUN-12).
+        fetcher = SafeImageFetcher(_fetch_policy(config))
+        stack.push_async_callback(fetcher.aclose)
+        media = MediaUploader(matrix, fetcher=fetcher)
         stack.push_async_callback(media.aclose)
         events = EventBus()
         # Lifecycle enforcement: under MAS only the MAS admin API can revoke a live session (§7 Q1),

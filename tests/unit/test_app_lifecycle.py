@@ -40,6 +40,7 @@ from onbot.runtime import (
     is_permanent_failure,
     run_interruptible,
 )
+from onbot.safe_fetch import SafeImageFetcher
 
 HS = "https://matrix.test"
 
@@ -377,6 +378,42 @@ async def test_clients_built_before_a_failure_are_closed(monkeypatch: pytest.Mon
         "ApiClientMatrix",
         "ApiClientSynapseAdmin",
     ]
+
+
+async def test_the_avatar_fetcher_is_closed_with_the_app(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The fetcher's HTTP client belongs to the app, not to the uploader it is handed to (RUN-12)."""
+    closed: list[SafeImageFetcher] = []
+    original = SafeImageFetcher.aclose
+
+    async def spy(self: SafeImageFetcher) -> None:
+        closed.append(self)
+        await original(self)
+
+    monkeypatch.setattr(SafeImageFetcher, "aclose", spy)
+    async with build_app(_config()) as app:
+        fetcher = app.media._fetcher
+        assert not fetcher._http.is_closed
+    assert closed == [fetcher]
+    assert fetcher._http.is_closed
+
+
+async def test_the_avatar_fetcher_is_closed_when_construction_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    closed: list[SafeImageFetcher] = []
+    original = SafeImageFetcher.aclose
+
+    async def spy(self: SafeImageFetcher) -> None:
+        closed.append(self)
+        await original(self)
+
+    def boom(*_a: object, **_k: object) -> None:
+        raise RuntimeError("engine construction failed")
+
+    monkeypatch.setattr(SafeImageFetcher, "aclose", spy)
+    monkeypatch.setattr(app_module, "ReconcilerEngine", boom)
+    with pytest.raises(RuntimeError, match="engine construction failed"):
+        async with build_app(_config()):
+            pass
+    assert len(closed) == 1
 
 
 # --- RUN-13: one-shot commands skip what they do not need --------------------------------------
