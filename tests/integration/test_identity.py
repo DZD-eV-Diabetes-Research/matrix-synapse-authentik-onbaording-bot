@@ -176,6 +176,14 @@ async def test_an_attribute_guess_does_not_take_a_mas_linked_account(
     assert alice_login.mxid not in await admin_client.list_room_members(other_room)  # carl's groups
     _not_locked(alice_name)
 
+    # Others stay in scope, so one leaver stays under the guard's 20 % drop limit (they never log
+    # in, an attribute is enough to count as a user in scope).
+    for _ in range(6):
+        anchor = S.uniq("anchor")
+        authentik_admin.create_user(
+            anchor, password=S.DEFAULT_PASSWORD, groups=[team["pk"]], attributes={"matrix_name": anchor}
+        )
+    await run_reconcile_once(config)  # the new baseline
     authentik_admin.set_active(alice["pk"], False)
     await run_reconcile_once(config)  # marks her
     await run_reconcile_once(config)  # locks her: the conflict did not freeze her account
