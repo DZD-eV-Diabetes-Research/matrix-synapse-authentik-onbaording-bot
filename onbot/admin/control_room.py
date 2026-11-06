@@ -204,18 +204,21 @@ class ControlRoomHandler:
             self.engine.trigger()  # run it now, not a whole tick later
 
     async def _status(self) -> str:
-        rooms = await self.broadcast.target_rooms()
-        if self.engine is None or self.engine.last_reconcile_at is None:
-            last = "not yet"
-        else:
-            last = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(self.engine.last_reconcile_at))
-        status = f"onbot {__version__} — last reconcile: {last} — managed rooms: {len(rooms)}"
+        status = await self._status_line()
         if self.guard is not None:
             waiting = len(await self.guard.open_batches())
             status += f"; destructive actions paused in {waiting} batch(es)" + (
                 ", see !pending" if waiting else ""
             )
         return status
+
+    async def _status_line(self) -> str:
+        rooms = await self.broadcast.target_rooms()
+        if self.engine is None or self.engine.last_reconcile_at is None:
+            last = "not yet"
+        else:
+            last = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(self.engine.last_reconcile_at))
+        return f"onbot {__version__} — last reconcile: {last} — managed rooms: {len(rooms)}"
 
     async def _reply(self, text: str) -> None:
         assert self.room_id is not None
