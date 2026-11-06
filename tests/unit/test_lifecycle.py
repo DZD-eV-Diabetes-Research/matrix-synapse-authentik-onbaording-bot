@@ -50,6 +50,7 @@ _BASE: dict[str, Any] = {
         "bot_access_token": "tok",
     },
     "authentik_server": {"url": "https://authentik/", "api_key": "key"},
+    "admin_room": {"enabled": False},
 }
 
 
@@ -882,50 +883,95 @@ class FakeAdmin:
 
 
 class FakeMatrix:
-    def __init__(self, issuer: str | None) -> None:
+    """The homeserver's answer to "do you delegate logins?": an issuer, ``None``, or an error."""
+
+    def __init__(self, issuer: str | None, *, fail: int = 0) -> None:
         self.issuer = issuer
+        self.fail = fail  # how many of the next questions raise
+        self.asked = 0
 
     async def get_auth_issuer(self) -> str | None:
+        self.asked += 1
+        if self.fail:
+            self.fail -= 1
+            raise ConnectionError("homeserver unreachable")
         return self.issuer
+
+
+MAS_ISSUER = "https://auth.company.org/"
+
+
+def _synapse_effectors(
+    admin: FakeAdmin, issuer: str | None = None, **kwargs: Any
+) -> AdminApiLifecycleEffectors:
+    return AdminApiLifecycleEffectors(admin, matrix=FakeMatrix(issuer, **kwargs))
 
 
 class TestAdminApiEffectors:
     async def test_logout_deletes_devices_and_says_so(self) -> None:
         admin = FakeAdmin()
-        detail = await AdminApiLifecycleEffectors(admin).logout(X)
+        detail = await _synapse_effectors(admin).logout(X)
         assert admin.logged_out == [X]
         assert detail == "deleted 2 Synapse device(s)"
 
     async def test_reenable_is_a_noop(self) -> None:
         admin = FakeAdmin()
-        await AdminApiLifecycleEffectors(admin).reenable(X)
+        await _synapse_effectors(admin).reenable(X)
         assert admin.logged_out == [] and admin.deactivated == []
 
     @pytest.mark.parametrize("gdpr", [True, False])
     async def test_erase_passes_the_erase_flag(self, gdpr: bool) -> None:
         admin = FakeAdmin()
-        await AdminApiLifecycleEffectors(admin).erase(X, gdpr_erase=gdpr)
+        await _synapse_effectors(admin).erase(X, gdpr_erase=gdpr)
         assert admin.deactivated == [(X, gdpr)]
         assert admin.media_requests == []
 
     async def test_delete_media_delegates(self) -> None:
         admin = FakeAdmin(media=3)
-        result = await AdminApiLifecycleEffectors(admin).delete_media(X)
+        result = await _synapse_effectors(admin).delete_media(X)
         assert admin.media_deleted == [X]
         assert result.complete and result.deleted == 3
 
     async def test_preflight_without_mas_is_quiet(self) -> None:
-        effectors = AdminApiLifecycleEffectors(FakeAdmin(), matrix=FakeMatrix(None))
+        effectors = _synapse_effectors(FakeAdmin())
         assert await effectors.preflight() == []
+        assert await effectors.destructive_refusal() is None
         assert "MAS" not in await effectors.logout(X)
 
     async def test_preflight_detects_a_mas_backed_homeserver(self) -> None:
-        """LIF-09: the fallback under MAS is reported, and every audit text says what it means."""
-        effectors = AdminApiLifecycleEffectors(FakeAdmin(), matrix=FakeMatrix("https://auth.company.org/"))
+        """LIF-09: the fallback under MAS is reported as a refusal to lock or erase."""
+        effectors = _synapse_effectors(FakeAdmin(), MAS_ISSUER)
         warnings = await effectors.preflight()
-        assert len(warnings) == 1 and "mas_admin" in warnings[0]
-        assert "MAS sessions stay valid" in await effectors.logout(X)
-        assert "MAS sessions stay valid" in await effectors.erase(X, gdpr_erase=False)
+        assert len(warnings) == 1
+        assert "mas_admin" in warnings[0] and "refuses to lock or erase" in warnings[0]
+        assert warnings == [await effectors.destructive_refusal()]
+
+    @pytest.mark.parametrize("step", ["logout", "erase", "delete_media"])
+    async def test_under_mas_no_destructive_step_reaches_synapse(self, step: str) -> None:
+        """LIF-09 (D19): fail closed even when called directly, without the manager's check."""
+        admin = FakeAdmin(media=3)
+        effectors = _synapse_effectors(admin, MAS_ISSUER)
+        kwargs: dict[str, Any] = {"gdpr_erase": False} if step == "erase" else {}
+        with pytest.raises(LifecycleStepIncomplete, match="mas_admin"):
+            await getattr(effectors, step)(X, **kwargs)
+        assert admin.logged_out == [] and admin.deactivated == [] and admin.media_requests == []
+
+    async def test_an_unanswered_question_blocks_and_is_asked_again(self) -> None:
+        """Fail closed: no answer from the homeserver is not a "no, not MAS"."""
+        admin = FakeAdmin()
+        effectors = _synapse_effectors(admin, None, fail=1)
+        with pytest.raises(ConnectionError):
+            await effectors.logout(X)
+        assert admin.logged_out == []
+        await effectors.logout(X)  # the homeserver answered this time: it handles logins itself
+        assert admin.logged_out == [X]
+
+    async def test_the_answer_is_asked_once_and_kept(self) -> None:
+        effectors = _synapse_effectors(FakeAdmin())
+        await effectors.preflight()
+        await effectors.logout(X)
+        await effectors.erase(X, gdpr_erase=False)
+        assert effectors.matrix.asked == 1
 
 
 # --- media deletion in pages (LIF-12) ----------------------------------------------------------
@@ -960,7 +1006,7 @@ class TestMediaDeletion:
         mgr = AccountLifecycleManager(
             _config(dry_run=False, delete_after_n_sec=0, include_user_media_on_delete=True),
             store,
-            AdminApiLifecycleEffectors(admin),
+            _synapse_effectors(admin),
             clock=Clock(DAY),
         )
         await mgr.reconcile_accounts(ORPHAN_X)
@@ -1164,6 +1210,109 @@ class TestPreflight:
         mgr = AccountLifecycleManager(_config(enabled=False), InMemoryLedgerStore(), effectors)
         assert await mgr.preflight() == []
         assert effectors.delegated_issuer is None
+
+
+# --- refusal under MAS without mas_admin (LIF-09, D19) -----------------------------------------
+
+
+def _refusing_manager(
+    store: InMemoryLedgerStore, admin: FakeAdmin, matrix: FakeMatrix, **lifecycle: Any
+) -> AccountLifecycleManager:
+    settings: dict[str, Any] = {"dry_run": False, "delete_after_n_sec": 0} | lifecycle
+    return AccountLifecycleManager(
+        _config(**settings),
+        store,
+        AdminApiLifecycleEffectors(admin, matrix=matrix),
+        clock=Clock(DAY * 2),
+    )
+
+
+def _marked_x(**fields: float) -> InMemoryLedgerStore:
+    return InMemoryLedgerStore(
+        LifecycleLedger(entries={X: LifecycleEntry(marked_for_disabling_timestamp=1.0, **fields)})
+    )
+
+
+class TestRefusalUnderMas:
+    async def test_lock_is_refused_reported_once_and_nothing_advances(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        admin, store = FakeAdmin(), _marked_x()
+        mgr = _refusing_manager(store, admin, FakeMatrix(MAS_ISSUER))
+        with caplog.at_level(logging.INFO):
+            first = await mgr.reconcile_accounts(ORPHAN_X)
+            second = await mgr.reconcile_accounts(ORPHAN_X)
+
+        assert admin.logged_out == [] and admin.deactivated == []
+        [report] = first
+        assert (report.mxid, report.action, report.failed) == (None, LifecycleAction.abort, False)
+        assert report.needs_attention and "mas_admin" in (report.detail or "")
+        assert second == []  # reported once, not every pass
+        entry = store.ledger.entries[X]
+        assert entry.disabled_user_timestamp is None  # not locked
+        assert entry.failures == 0 and entry.retry_after_timestamp is None  # held, not backed off
+        errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+        assert len(errors) == 1 and "refuses to lock or erase" in errors[0].getMessage()
+        refused = [r.getMessage() for r in caplog.records if r.getMessage().startswith("REFUSED")]
+        assert len(refused) == 1 and refused[0].startswith(f"REFUSED logout of {X}")
+
+    async def test_erase_is_refused_too(self) -> None:
+        admin, store = FakeAdmin(media=2), _marked_x(disabled_user_timestamp=1.0)
+        mgr = _refusing_manager(store, admin, FakeMatrix(MAS_ISSUER), include_user_media_on_delete=True)
+        await mgr.reconcile_accounts(ORPHAN_X)
+        assert admin.deactivated == [] and admin.media_requests == []
+        assert store.ledger.entries[X].deactivated_timestamp is None
+
+    async def test_marking_and_clearing_go_on(self) -> None:
+        """Only the destructive steps are refused: the cooldown clock still starts."""
+        store = InMemoryLedgerStore()
+        mgr = _refusing_manager(store, FakeAdmin(), FakeMatrix(MAS_ISSUER))
+        await mgr.reconcile_accounts(ORPHAN_X)
+        assert store.ledger.entries[X].marked_for_disabling_timestamp is not None
+        await mgr.reconcile_accounts(ACTIVE_X)
+        assert X not in store.ledger.entries
+
+    async def test_the_guard_is_not_asked_about_refused_steps(self) -> None:
+        mgr = _refusing_manager(_marked_x(), FakeAdmin(), FakeMatrix(MAS_ISSUER))
+        assert await mgr.plan_accounts(ORPHAN_X) == []
+
+    async def test_a_startup_report_is_not_repeated_by_the_pass(self) -> None:
+        mgr = _refusing_manager(_marked_x(), FakeAdmin(), FakeMatrix(MAS_ISSUER))
+        assert len(await mgr.preflight()) == 1
+        assert await mgr.reconcile_accounts(ORPHAN_X) == []
+
+    async def test_a_pass_report_is_not_repeated_by_a_late_startup_check(self) -> None:
+        mgr = _refusing_manager(_marked_x(), FakeAdmin(), FakeMatrix(MAS_ISSUER))
+        assert len(await mgr.reconcile_accounts(ORPHAN_X)) == 1
+        assert await mgr.preflight() == []
+
+    async def test_no_answer_yet_holds_the_lock_without_a_report(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Fail closed: the startup check has not run or failed, so the pass asks; no answer, no lock."""
+        admin, store = FakeAdmin(), _marked_x()
+        mgr = _refusing_manager(store, admin, FakeMatrix(None, fail=2))
+        with caplog.at_level(logging.WARNING):
+            assert await mgr.plan_accounts(ORPHAN_X) == []
+            assert await mgr.reconcile_accounts(ORPHAN_X) == []
+        assert admin.logged_out == []
+        assert store.ledger.entries[X].disabled_user_timestamp is None
+        assert store.ledger.entries[X].failures == 0
+        assert "could not ask the homeserver" in caplog.text
+
+        # The homeserver answers on the next pass: it handles logins itself, so the lock goes ahead.
+        [outcome] = await mgr.reconcile_accounts(ORPHAN_X)
+        assert (outcome.action, outcome.failed) == (LifecycleAction.logout, False)
+        assert admin.logged_out == [X]
+
+    async def test_without_mas_the_synapse_fallback_locks(self) -> None:
+        admin, store = FakeAdmin(), _marked_x()
+        mgr = _refusing_manager(store, admin, FakeMatrix(None))
+        [planned] = await mgr.plan_accounts(ORPHAN_X)
+        assert planned.action is LifecycleAction.logout
+        await mgr.reconcile_accounts(ORPHAN_X)
+        assert admin.logged_out == [X]
+        assert store.ledger.entries[X].disabled_user_timestamp is not None
 
 
 # --- ledger robustness (LIF-14) ----------------------------------------------------------------

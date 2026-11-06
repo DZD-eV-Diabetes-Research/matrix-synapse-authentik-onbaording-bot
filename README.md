@@ -74,6 +74,10 @@ mas_admin:
 
 sync_authentik_users_with_matrix_rooms:
   authentik_username_mapping_attribute: username   # MUST agree with MAS's localpart template
+
+# The admin control room is on by default and needs at least one admin (or `enabled: false`):
+admin_room:
+  admin_user_ids: ["@alice:company.org"]     # and/or authentik_group_pks_granting_bot_admin
 ```
 
 Two settings above are easy to get wrong and worth calling out:
@@ -83,7 +87,12 @@ Two settings above are easy to get wrong and worth calling out:
   MXIDs will not match the real accounts and nobody gets added to rooms.
 - **`mas_admin` is required to actually offboard disabled users.** The Synapse admin API cannot
   end a MAS-issued session, only MAS can. Without this block, offboarding does nothing to live
-  sessions; Onbot logs an error at startup when it finds the homeserver MAS-backed.
+  sessions, so on a MAS-backed homeserver without it Onbot refuses to lock or erase anybody and
+  reports that at startup (onboarding and rooms keep working).
+- **The admin control room needs an admin.** It is where Onbot reports what needs a human and where
+  an admin releases paused mass removals with `!confirm <id>`. List at least one admin in
+  `admin_user_ids` or `authentik_group_pks_granting_bot_admin`, or set `admin_room.enabled: false`;
+  otherwise Onbot refuses to start.
 
 Every setting can also be supplied via an environment variable (prefix `ONBOT_`, nest with `__`),
 for example `ONBOT_SYNAPSE_SERVER__BOT_ACCESS_TOKEN=syt_…`.

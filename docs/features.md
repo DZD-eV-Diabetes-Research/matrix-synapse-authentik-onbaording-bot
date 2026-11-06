@@ -486,11 +486,14 @@ within.
   rather than remove more than you configured. Upgrade MAS or turn the option on.
 - **On a MAS-fronted homeserver you must configure `mas_admin`.** There the Matrix session belongs to
   the Matrix Authentication Service, and the Synapse admin API cannot end it: without `mas_admin`
-  credentials the lock is a no-op against live sessions. At startup Onbot asks the homeserver whether
-  it delegates logins to MAS and logs an error (`offboarding: the homeserver delegates logins ...`) if
-  `mas_admin` is missing; every audit line then says that the MAS sessions stay valid. This, and the
-  `dry_run` default, are the two reasons "disabled users keep their access" in
-  [troubleshooting.md](troubleshooting.md).
+  credentials a lock would be a no-op against live sessions. So Onbot asks the homeserver whether it
+  delegates logins to MAS, and if it does while `mas_admin` is missing, it refuses to lock or erase
+  anybody: it logs an error (`offboarding: the homeserver delegates logins ...`), reports it once in
+  the admin room, and writes one `REFUSED` audit line per account that would have been locked or
+  erased. Disabled users are still marked, so once `mas_admin` is configured the pending locks follow
+  on the next pass. Onboarding and rooms are not affected. Until the homeserver has answered the
+  question, nobody is locked either. This, and the `dry_run` default, are the two reasons "disabled
+  users keep their access" in [troubleshooting.md](troubleshooting.md).
 - **The startup log states the setup.** One `offboarding:` line lists `enabled`, `dry_run`, which
   effectors are in use, the grace periods and the erase options, and with `mas_admin` a second line
   lists what that MAS can do (end sessions, deactivate without GDPR erasure).
@@ -575,13 +578,17 @@ to a shell.
 
 ### What an admin should know
 
-- **It is off by default** (`admin_room.enabled`), because it lets anyone on the allowlist message
-  every user on the server — a capability to turn on deliberately.
+- **It is on by default** (`admin_room.enabled`), because it is where Onbot asks before mass removals
+  (`!confirm <id>`) and reports what needs a human. It needs at least one admin in `admin_user_ids`
+  or `authentik_group_pks_granting_bot_admin`; a config without one is refused at startup. Turn the
+  room off with `admin_room.enabled: false`: reports then only reach the log, and paused removals
+  can only be let through by raising the guard's limits. Keep the allowlist short, since everyone on
+  it can message every user on the server.
 - **Authorisation is an allowlist, never a room power level.** The allowlist is the union of
   `admin_user_ids` (full Matrix IDs listed by hand — the break-glass floor that keeps working even
   when Authentik is unreachable) and the members of the Authentik groups in
-  `authentik_group_pks_granting_bot_admin`. An empty union means nobody may command the bot, even
-  someone who is somehow in the room.
+  `authentik_group_pks_granting_bot_admin`. When the union is empty at runtime (the admin group lost
+  its last member) nobody may command the bot, even someone who is somehow in the room.
 - **Authentik superusers are deliberately *not* bot admins**, and there is no option to make them so:
   a capability that pages everyone must not widen because somebody was granted an unrelated role
   upstream.

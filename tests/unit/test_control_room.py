@@ -83,11 +83,12 @@ def _handler(
     broadcast: _FakeBroadcast,
     *,
     admins: list[str] | None = None,
+    group_pks: list[str] | None = None,
     engine: object | None = None,
     remembered_events: int = 200,
     resolver: AdminResolver | None = None,
 ) -> ControlRoomHandler:
-    config = _config(admins)
+    config = _config(admins, group_pks=group_pks)
     handler = ControlRoomHandler(
         client,  # type: ignore[arg-type]
         config,
@@ -156,9 +157,11 @@ async def test_a_member_who_is_not_on_the_allowlist_is_refused() -> None:
 
 
 async def test_an_empty_allowlist_refuses_everyone() -> None:
+    # The config refuses an enabled room without any admin source (D19); an admin group without
+    # members is how the union still ends up empty at runtime.
     client, broadcast = _FakeClient(), _FakeBroadcast()
 
-    await _run(_handler(client, broadcast, admins=[]), _message("!announce hello"))
+    await _run(_handler(client, broadcast, admins=[], group_pks=[GROUP]), _message("!announce hello"))
 
     assert broadcast.calls == []
 

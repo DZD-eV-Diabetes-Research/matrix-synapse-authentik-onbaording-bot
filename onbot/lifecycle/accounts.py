@@ -452,56 +452,85 @@ class LifecycleEffectors(Protocol):
     async def delete_media(self, mxid: str) -> MediaDeletion | None:
         """Delete the media the user uploaded (G9.5); ``None`` means everything is gone."""
 
+    # Optional, looked up with getattr by the manager:
+    #   preflight() -> list[str]: the startup check's warnings for the operator.
+    #   destructive_refusal() -> str | None: why no lock or erase may run at all (LIF-09); raising
+    #     means "cannot tell yet", which holds them too.
+    #   count_locked_accounts() -> int: for the missing-ledger alarm (LIF-14).
+
+
+def mas_without_mas_admin_message(issuer: str) -> str:
+    """Why lock and erase are refused on a MAS-backed homeserver without ``mas_admin`` (LIF-09, D19)."""
+    return (
+        f"the homeserver delegates logins to {issuer} (MAS) but `mas_admin` is not configured: onbot "
+        "refuses to lock or erase any account, because the Synapse admin API fallback would leave every "
+        "MAS session valid. Offboarding stays paused (users are still marked, nobody is locked) until "
+        "`mas_admin` is configured; onboarding and rooms are not affected"
+    )
+
 
 class AdminApiLifecycleEffectors:
     """Concrete effectors over the Synapse Admin API, for homeservers that handle logins themselves.
 
     NOTE (BATTLE_PLAN §7 Q1, verified by the Phase 7b harness): under MAS these do **not** revoke a
     live MAS-issued session; deleting devices/deactivating in Synapse leaves the MAS token valid.
-    Use :class:`MasLifecycleEffectors` for real enforcement under the MAS topology (ADR-0006). The
-    startup check (:meth:`preflight`) asks the homeserver whether it delegates logins and, if so,
-    every audit line says that the MAS sessions stay valid (LIF-09).
+    Use :class:`MasLifecycleEffectors` for real enforcement under the MAS topology (ADR-0006).
+
+    So these effectors refuse to lock or erase on a homeserver that delegates logins (LIF-09, D19),
+    and they fail closed: they act only after the homeserver positively answered that it handles
+    logins itself. The answer is asked once (by the startup check :meth:`preflight`, or by the first
+    destructive step if that comes first) and kept; a failed question is asked again next time.
     """
 
-    def __init__(self, admin: Any, *, matrix: Any | None = None) -> None:
+    def __init__(self, admin: Any, *, matrix: Any) -> None:
         self.admin = admin
-        self.matrix = matrix  # client-server API client, asked for the auth issuer at startup
-        #: The OAuth 2.0 issuer the homeserver delegates logins to, once :meth:`preflight` found one.
+        self.matrix = matrix  # client-server API client, asked for the auth issuer
+        #: The OAuth 2.0 issuer the homeserver delegates logins to, once it answered with one.
         self.delegated_issuer: str | None = None
+        self._delegation_known = False
+
+    async def _detect_delegation(self) -> str | None:
+        """The issuer the homeserver delegates logins to, or ``None``; raises when it cannot tell."""
+        if not self._delegation_known:
+            self.delegated_issuer = await self.matrix.get_auth_issuer()
+            self._delegation_known = True
+        return self.delegated_issuer
 
     async def preflight(self) -> list[str]:
         """Detect a MAS-backed homeserver; return the warnings an operator must see."""
-        if self.matrix is None:
-            return []
-        self.delegated_issuer = await self.matrix.get_auth_issuer()
-        if self.delegated_issuer is None:
-            return []
-        return [
-            f"the homeserver delegates logins to {self.delegated_issuer} (MAS) but `mas_admin` is not "
-            "configured: offboarding falls back to the Synapse admin API, which deletes devices and "
-            "deactivates accounts in Synapse but leaves every MAS session valid. Configure `mas_admin` "
-            "to really lock users out"
-        ]
+        issuer = await self._detect_delegation()
+        return [] if issuer is None else [mas_without_mas_admin_message(issuer)]
 
-    def _under_mas(self) -> str:
-        if self.delegated_issuer is None:
-            return ""
-        return f"; the homeserver delegates logins to {self.delegated_issuer}, so MAS sessions stay valid"
+    async def destructive_refusal(self) -> str | None:
+        """Why lock and erase must not run through these effectors, or ``None`` when they may.
+
+        Raises when the homeserver cannot be asked; the caller then holds the step (fail closed).
+        """
+        issuer = await self._detect_delegation()
+        return None if issuer is None else mas_without_mas_admin_message(issuer)
+
+    async def _ensure_allowed(self) -> None:
+        refusal = await self.destructive_refusal()
+        if refusal is not None:
+            raise LifecycleStepIncomplete(refusal)
 
     async def logout(self, mxid: str) -> str:
+        await self._ensure_allowed()
         devices = await self.admin.logout_account(mxid)
         count = "all" if devices is None else str(devices)
-        return f"deleted {count} Synapse device(s){self._under_mas()}"
+        return f"deleted {count} Synapse device(s)"
 
     async def reenable(self, mxid: str) -> str:
         # Synapse logout deletes devices; there is nothing to restore, the user logs in afresh.
         return "nothing to undo in Synapse (the deleted devices stay deleted, the user logs in again)"
 
     async def erase(self, mxid: str, *, gdpr_erase: bool) -> str:
+        await self._ensure_allowed()
         await self.admin.deactivate_account(mxid, erase=gdpr_erase)
-        return f"Synapse account deactivated, GDPR erase {'yes' if gdpr_erase else 'no'}{self._under_mas()}"
+        return f"Synapse account deactivated, GDPR erase {'yes' if gdpr_erase else 'no'}"
 
     async def delete_media(self, mxid: str) -> MediaDeletion:
+        await self._ensure_allowed()
         return await delete_all_user_media(self.admin, mxid)
 
 
@@ -802,7 +831,30 @@ class AccountLifecycleManager:
         warnings: list[str] = list(await check())
         for warning in warnings:
             log.error("offboarding: %s", warning)
-        return warnings
+        # A warning the pass already reported (the refusal under MAS, LIF-09) is not reported twice.
+        return [warning for warning in warnings if self._once(warning)]
+
+    async def _destructive_refusal(self) -> tuple[str | None, bool]:
+        """Why no lock or erase may run this pass, and whether that is an operator's problem.
+
+        ``(None, False)``: they may run. ``(message, True)``: the effectors refuse them for good, for
+        example the Synapse fallback on a MAS-backed homeserver (LIF-09, D19). ``(message, False)``:
+        the effectors could not tell yet (the homeserver did not answer), so the steps wait as well
+        (fail closed) and the next pass asks again.
+        """
+        check = getattr(self.effectors, "destructive_refusal", None)
+        if check is None:
+            return None, False
+        try:
+            refusal: str | None = await check()
+        except Exception as exc:
+            message = (
+                f"could not ask the homeserver whether it delegates logins to MAS "
+                f"({type(exc).__name__}: {exc}); lock and erase wait for its answer"
+            )
+            log.warning("offboarding: %s", message)
+            return message, False
+        return refusal, refusal is not None
 
     def _once(self, message: str) -> bool:
         """Whether ``message`` is new in this process (reports go out once, not every tick)."""
@@ -825,6 +877,9 @@ class AccountLifecycleManager:
         """
         if not self.cfg.enabled or self.cfg.dry_run or not snapshot.users:
             return []
+        refusal, _ = await self._destructive_refusal()
+        if refusal is not None:
+            return []  # the pass takes none of them, so the guard has nothing to weigh
         ledger = await self.store.load()
         known = await self.store.load_known_users()
         now = self.clock()
@@ -918,11 +973,20 @@ class AccountLifecycleManager:
         if known_changed:
             await self.store.save_known_users(known)
 
+        refusal, report = await self._destructive_refusal()
+        if refusal is not None and report and self._once(refusal):
+            log.error("offboarding: %s", refusal)
+            outcomes.append(
+                LifecycleOutcome(
+                    mxid=None, action=LifecycleAction.abort, dry_run=self.cfg.dry_run, detail=refusal
+                )
+            )
+
         finished: list[str] = []
         for mxid, classification in sorted(classify_accounts(snapshot, known, ledger).items()):
             if mxid in ledger.quarantined:
                 continue
-            outcome = await self._reconcile_one(ledger, mxid, classification, now, permit)
+            outcome = await self._reconcile_one(ledger, mxid, classification, now, permit, refusal)
             if outcome is None:
                 continue
             outcomes.append(outcome)
@@ -976,6 +1040,7 @@ class AccountLifecycleManager:
         classification: Classification,
         now: float,
         permit: Permit | None = None,
+        refusal: str | None = None,
     ) -> LifecycleOutcome | None:
         entry = ledger.entries.get(mxid)
         if (
@@ -1011,6 +1076,12 @@ class AccountLifecycleManager:
         if noted is not None and not noted.endswith(f":{action.value}"):
             del self._noted[mxid]  # moved on to another step: its next line is news again
         if action is LifecycleAction.none or action is LifecycleAction.wait:
+            return None
+        if refusal is not None and action in GUARDED_ACTIONS:
+            # Refused for every account (LIF-09) or not decidable yet: no state change, no backoff;
+            # decided again on the next pass. The step itself was reported once, not per account.
+            if self._note_once(mxid, f"refused:{action.value}"):
+                audit.warning("REFUSED %s of %s (%s): %s", action.value, mxid, classification.reason, refusal)
             return None
         if (
             permit is not None

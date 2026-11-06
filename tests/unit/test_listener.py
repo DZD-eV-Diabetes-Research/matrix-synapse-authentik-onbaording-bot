@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from onbot.clients.matrix import RoomSync, SyncResult
-from onbot.config import AuthentikServer, OnbotConfig, SynapseServer
+from onbot.config import AdminRoom, AuthentikServer, OnbotConfig, SynapseServer
 from onbot.events import EventBus, Signal
 from onbot.onboarding.listener import OnboardingListener, extract_joined_users
 
@@ -17,6 +17,7 @@ def _config() -> OnbotConfig:
             bot_access_token="tok",
         ),
         authentik_server=AuthentikServer(url="https://authentik.test", api_key="k"),
+        admin_room=AdminRoom(enabled=False),
         matrix_user_ignore_list=["@ignored:matrix.test"],
     )
 

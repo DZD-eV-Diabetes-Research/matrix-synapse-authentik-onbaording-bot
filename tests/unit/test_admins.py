@@ -102,7 +102,9 @@ def test_the_matrix_ignore_list_does_not_apply_here() -> None:
 
 
 def test_an_empty_union_means_nobody_may_command_the_bot() -> None:
-    assert resolve_admin_mxids(_config(admin_user_ids=[]), []) == frozenset()
+    # The config refuses an enabled room without any admin source (D19); an Authentik admin group
+    # that has no members (left) is the runtime way to get here, and it still grants nothing.
+    assert resolve_admin_mxids(_config(admin_user_ids=[], group_pks=[GROUP]), []) == frozenset()
 
 
 # --- fetching and refreshing -----------------------------------------------

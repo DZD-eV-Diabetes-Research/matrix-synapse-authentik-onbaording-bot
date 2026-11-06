@@ -40,14 +40,25 @@ def _mas_client() -> ApiClientMasAdmin:
 
 
 async def _mas_capabilities() -> MasCapabilities:
-    """What the stack's MAS can do. Tests branch on it, so they hold on 0.14.1 and on newer releases."""
+    """What the stack's MAS can do, as onbot reads it at runtime."""
     client = _mas_client()
     try:
-        caps = await client.capabilities()
+        return await client.capabilities()
     finally:
         await client.aclose()
+
+
+async def test_stack_mas_can_end_sessions_and_deactivate_without_erasing() -> None:
+    """The stack pins a MAS (1.28.0) whose admin API has every operation the offboarding uses.
+
+    The tests below exercise the capable paths only (sessions ended on lock, deactivation without
+    GDPR erasure). A downgrade of the stack to a MAS without them (0.14, for example) fails here
+    instead of turning those tests into checks of the degraded path, which is unit-tested.
+    """
+    caps = await _mas_capabilities()
     assert caps.known, "the stack's MAS must serve /api/spec.json"
-    return caps
+    assert caps.missing_finish == [], f"the stack's MAS cannot finish {caps.missing_finish}"
+    assert caps.deactivate_skip_erase, "the stack's MAS cannot deactivate without GDPR erasure"
 
 
 async def _active_sessions(username: str) -> dict[str, int]:
@@ -115,10 +126,7 @@ def _live_lifecycle(config, *, delete_after: int | None = None):
     life.dry_run = False
     life.deactivate_after_n_sec = 0
     life.delete_after_n_sec = delete_after
-    # The stack's MAS 0.14.1 can only deactivate with GDPR erasure, and onbot refuses an erase that
-    # must not erase (D7). Tests about who gets erased opt in; the erasure semantics have their own test.
-    life.gdpr_erase_on_delete = True
-    return life
+    return life  # gdpr_erase_on_delete stays at its default (false); its semantics have their own test
 
 
 async def _deactivated(admin_client, mxid: str) -> bool:
@@ -168,7 +176,7 @@ async def test_locked_user_deleted_in_authentik_stays_locked_and_is_erased(
 
     life.delete_after_n_sec = 0  # the deleted user proceeds through the state machine
     await run_reconcile_once(config)
-    assert await _deactivated(admin_client, login.mxid)
+    assert await _wait_deactivated(admin_client, login.mxid)
     assert S.whoami_status(login.access_token) == 401
 
 
@@ -178,6 +186,9 @@ async def test_known_user_deleted_without_disable_is_offboarded(
     """LIF-02: a user deleted directly (no disable phase) is locked after the cooldown."""
     username = S.uniq("lifedirect")
     user, login = S.provision(authentik_admin, username)
+    # Four active colleagues, so one deletion stays under the guard's 20 % drop limit (D13) even on
+    # a fresh stack with few users (the test used to depend on what earlier tests had created).
+    _scope_anchors(authentik_admin, 4)
 
     config = make_config()
     _live_lifecycle(config)
@@ -196,14 +207,12 @@ async def test_locked_user_reenabled_in_authentik_is_unlocked(
 ) -> None:
     """The legitimate way back: a real re-enable in Authentik unlocks the account (G9.6).
 
-    LIF-07: on a MAS that can end sessions the pre-lock session stays dead and the user logs in
-    afresh. MAS 0.14.1 (the stack today) cannot, so there the old session comes back, and the audit
-    line has to say so.
+    LIF-07: the lock ended the pre-lock session, so it stays dead after the unlock and the user logs
+    in afresh.
     """
     username = S.uniq("lifeback")
     user, login = S.provision(authentik_admin, username)
     authentik_admin.set_active(user["pk"], False)
-    caps = await _mas_capabilities()
 
     config = make_config()
     _live_lifecycle(config)
@@ -217,23 +226,18 @@ async def test_locked_user_reenabled_in_authentik_is_unlocked(
         await run_reconcile_once(config)
     assert S.mas_user(username)["locked_at"] is None
     reenabled = [r.getMessage() for r in caplog.records if r.getMessage().startswith("re-enabled")]
-    assert len(reenabled) == 1
-    if caps.missing_finish:
-        assert "come back on unlock" in reenabled[0]
-        assert S.wait_whoami_ok(login.access_token)  # MAS 0.14: the same session is back
-    else:
-        assert not S.wait_whoami_ok(login.access_token, timeout=150)  # past the token cache
-        assert S.whoami_status(S.mas_login(username, S.DEFAULT_PASSWORD).access_token) == 200
+    assert len(reenabled) == 1 and "come back on unlock" not in reenabled[0]
+    assert not S.wait_whoami_ok(login.access_token, timeout=150)  # past the token cache
+    assert S.whoami_status(S.mas_login(username, S.DEFAULT_PASSWORD).access_token) == 200
 
 
 async def test_lock_ends_the_users_sessions_where_mas_can(
     make_config, authentik_admin: S.AuthentikAdmin, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """LIF-07: after the lock MAS lists no active session for the user (or the audit says why)."""
+    """LIF-07: after the lock MAS lists no active session for the user."""
     username = S.uniq("lifesess")
     user, _login = S.provision(authentik_admin, username)
     authentik_admin.set_active(user["pk"], False)
-    caps = await _mas_capabilities()
 
     config = make_config()
     _live_lifecycle(config)
@@ -242,12 +246,8 @@ async def test_lock_ends_the_users_sessions_where_mas_can(
         await run_reconcile_once(config)  # lock
     locked = [r.getMessage() for r in caplog.records if r.getMessage().startswith("locked out")]
     assert len(locked) == 1 and "MasLifecycleEffectors" in locked[0]
-    active = await _active_sessions(username)
-    if caps.missing_finish:
-        assert "only suspended" in locked[0]
-        assert active["oauth2-sessions"] >= 1  # the login session, suspended by the lock
-    else:
-        assert active == dict.fromkeys(SESSION_KINDS, 0)
+    assert "only suspended" not in locked[0]
+    assert await _active_sessions(username) == dict.fromkeys(SESSION_KINDS, 0)
 
 
 @pytest.mark.parametrize("gdpr", [True, False])
@@ -258,11 +258,10 @@ async def test_erase_stage_honours_gdpr_erase_on_delete(
     admin_client,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """LIF-11 (D7): the MAS erase GDPR-erases exactly when configured, or refuses where it cannot."""
+    """LIF-11 (D7): the MAS erase GDPR-erases exactly when configured."""
     username = S.uniq("liferase")
     user, login = S.provision(authentik_admin, username)
     authentik_admin.set_active(user["pk"], False)
-    caps = await _mas_capabilities()
 
     config = make_config()
     life = _live_lifecycle(config, delete_after=0)
@@ -272,12 +271,7 @@ async def test_erase_stage_honours_gdpr_erase_on_delete(
     with caplog.at_level(logging.INFO, logger="onbot.lifecycle.audit"):
         await run_reconcile_once(config)  # erase
     audit = [r.getMessage() for r in caplog.records if r.name == "onbot.lifecycle.audit"]
-
-    if not gdpr and not caps.deactivate_skip_erase:
-        # MAS 0.14 always erases: onbot must refuse instead of erasing more than configured.
-        assert any(line.startswith("FAILED erase") and "refusing to deactivate" in line for line in audit)
-        assert not await _deactivated(admin_client, login.mxid)
-        return
+    assert not any(line.startswith("FAILED") for line in audit)
     assert await _wait_deactivated(admin_client, login.mxid)
     synapse_user = await admin_client.get_json(f"v2/users/{quote(login.mxid, safe='@:')}")
     assert bool(synapse_user.get("erased")) is gdpr
@@ -313,27 +307,62 @@ async def test_erase_deletes_more_than_one_page_of_media(
     assert await admin_client.count_user_media(login.mxid) == 0
 
 
-async def test_synapse_fallback_under_mas_is_reported_and_audited_exactly(
-    make_config, authentik_admin: S.AuthentikAdmin, caplog: pytest.LogCaptureFixture
+async def _devices(admin_client, mxid: str) -> set[str]:
+    devices = await admin_client.get_json(f"v2/users/{quote(mxid, safe='@:')}/devices")
+    return {d["device_id"] for d in devices.get("devices", [])}
+
+
+async def _bot_messages(client, room_id: str) -> list[str]:
+    resp = await client.get_json(f"v3/rooms/{room_id}/messages", params={"dir": "b", "limit": 100})
+    return [
+        (ev.get("content") or {}).get("body", "")
+        for ev in reversed(resp.get("chunk", []))
+        if ev.get("type") == "m.room.message" and ev.get("sender") == S.BOT_USER_ID
+    ]
+
+
+async def test_without_mas_admin_on_a_mas_backed_homeserver_nobody_is_locked(
+    make_config,
+    authentik_admin: S.AuthentikAdmin,
+    admin_client,
+    matrix_client,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """LIF-09: without mas_admin on a MAS-backed homeserver onbot says so, at startup and per action."""
+    """LIF-09 (D19): the Synapse fallback cannot end a MAS session, so onbot refuses to lock at all.
+
+    The refusal goes to the log at ERROR and into the admin room; the disabled user is marked but
+    neither locked in MAS nor logged out in Synapse.
+    """
     username = S.uniq("lifefallback")
     user, login = S.provision(authentik_admin, username)
+    _admin_user, admin = S.provision(authentik_admin, S.uniq("lifefallbackadmin"))
+    devices_before = await _devices(admin_client, login.mxid)
     authentik_admin.set_active(user["pk"], False)
 
     config = make_config()
     config.mas_admin = None
     _live_lifecycle(config)
+    config.admin_room.enabled = True
+    config.admin_room.alias = S.uniq("onbot-admin")
+    config.admin_room.admin_user_ids = [admin.mxid]
     with caplog.at_level(logging.INFO):
         await run_reconcile_once(config)  # startup check, mark
-        await run_reconcile_once(config)  # "lock" through the Synapse admin API
+        await run_reconcile_once(config)  # cooldown over: the lock is refused
+
     errors = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
-    assert any("delegates logins to" in line and "mas_admin" in line for line in errors)
-    locked = [r.getMessage() for r in caplog.records if r.getMessage().startswith("locked out")]
-    assert len(locked) == 1
-    assert "AdminApiLifecycleEffectors" in locked[0] and "MAS sessions stay valid" in locked[0]
-    # And it is true: the MAS session survives the Synapse-side logout (§7 Q1).
+    assert any("delegates logins to" in line and "refuses to lock or erase" in line for line in errors)
+    messages = [r.getMessage() for r in caplog.records]
+    assert not any(line.startswith("locked out") for line in messages)
+    assert any(line.startswith(f"REFUSED logout of {login.mxid}") for line in messages)
+    assert not any(line.startswith("FAILED") for line in messages)
+
+    control_room = await matrix_client.resolve_room_alias(f"#{config.admin_room.alias}:{S.SERVER_NAME}")
+    assert control_room is not None
+    reports = await _bot_messages(matrix_client, control_room)
+    assert any("mas_admin" in body and "refuses to lock or erase" in body for body in reports), reports
+
     assert S.mas_user(username)["locked_at"] is None
+    assert await _devices(admin_client, login.mxid) == devices_before  # no Synapse-side logout either
     assert S.whoami_status(login.access_token) == 200
 
 

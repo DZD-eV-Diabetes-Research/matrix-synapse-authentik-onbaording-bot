@@ -1,7 +1,8 @@
 # Synapse homeserver config for the Phase 7b integration stack.
-# Auth is fully delegated to MAS via MSC3861 (ADR-0006): Synapse creates no accounts of its own and
-# introspects every token against MAS. The shared `admin_token` lets MAS act on the admin API and
-# doubles as the bot's path to admin operations (the bot's compat token is granted admin scope).
+# Auth is fully delegated to MAS (ADR-0006): Synapse creates no accounts of its own and introspects
+# every token against MAS. The shared `secret` (MAS `matrix.secret`) authenticates both directions:
+# Synapse introspecting tokens at MAS, and MAS acting on Synapse's admin API. The bot's admin rights
+# come from its compatibility token, which is granted the admin scope.
 server_name: "onbot.test"
 public_baseurl: "http://localhost:8008/"
 pid_file: /data/homeserver.pid
@@ -46,15 +47,12 @@ enable_registration: false
 # this server default is what its createRoom calls inherit. See docs/adr/0011-room-version-12.md.
 default_room_version: "12"
 
-experimental_features:
-  msc3861:
-    enabled: true
-    issuer: "http://mas:8080/"
-    client_id: "0000000000000000000SYNAPSE"
-    client_auth_method: client_secret_basic
-    client_secret: "7ad6a9abfd83a14c730e376e7e2627424194aef6212e8cc07328199ed708aebd"
-    admin_token: "fdaec979e563f67d6941b8263248e495ae49c7be7e59d2d4ecda601a830f4ed5"
-    account_management_url: "http://localhost:8080/account"
+# The stable MAS integration (Synapse 1.136 and newer; the experimental `msc3861` block it replaces
+# is refused since then). Synapse reads the issuer and the account management URL from MAS itself.
+matrix_authentication_service:
+  enabled: true
+  endpoint: "http://mas:8080/"
+  secret: "fdaec979e563f67d6941b8263248e495ae49c7be7e59d2d4ecda601a830f4ed5"
 
 # Quieter logs; this is a test server.
 rc_message:

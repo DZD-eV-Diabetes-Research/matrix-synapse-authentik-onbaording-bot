@@ -405,6 +405,7 @@ _CONFIG: dict[str, Any] = {
         "bot_access_token": "t",
     },
     "authentik_server": {"url": "https://a/", "api_key": "k"},
+    "admin_room": {"enabled": False},
 }
 
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import httpx
 import respx
 
-from onbot.config import AuthentikServer, MasAdmin, OnbotConfig, SynapseServer
+from onbot.config import AdminRoom, AuthentikServer, MasAdmin, OnbotConfig, SynapseServer
 from onbot.healthcheck import run_healthcheck
 
 
@@ -18,6 +18,7 @@ def _config(*, with_mas: bool = False) -> OnbotConfig:
             bot_access_token="tok",
         ),
         authentik_server=AuthentikServer(url="https://authentik.test", api_key="ak"),
+        admin_room=AdminRoom(enabled=False),
         mas_admin=(
             MasAdmin(url="https://mas.test", client_id="cid", client_secret="secret") if with_mas else None
         ),
