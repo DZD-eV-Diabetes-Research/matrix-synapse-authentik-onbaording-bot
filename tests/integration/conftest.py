@@ -22,6 +22,7 @@ import re
 import time
 from collections.abc import AsyncIterator, Callable, Iterator
 from pathlib import Path
+from urllib.parse import quote
 
 import httpx
 import pytest
@@ -37,6 +38,7 @@ from onbot.config import (
     OnbotConfig,
     SynapseServer,
 )
+from onbot.guard import guard_account_data_type
 from tests.integration import stack_api as S
 from tests.integration.stack_instance import SKIP_VAR, StackUnavailable, skip_requested, start_stack
 
@@ -188,6 +190,21 @@ def _bot_token(config: OnbotConfig) -> str:
     token = config.synapse_server.bot_access_token
     assert token is not None
     return token.get_secret_value()
+
+
+@pytest.fixture(autouse=True)
+def fresh_guard_state(bot_token: str) -> None:
+    """Every test is a deployment of its own for the destructive-action guard (D13).
+
+    The guard keeps the last known good input counts and its paused batches in the bot's account
+    data, and every test shares the one bot. Without a reset, a test that maps one group after a
+    test that mapped five would look like a collapsed Authentik answer and pause its kicks.
+    """
+    url = (
+        f"{S.SYNAPSE_URL}/_matrix/client/v3/user/{quote(S.BOT_USER_ID, safe='@:')}"
+        f"/account_data/{guard_account_data_type(S.SERVER_NAME)}"
+    )
+    httpx.put(url, json={}, headers={"Authorization": f"Bearer {bot_token}"}, timeout=30.0).raise_for_status()
 
 
 @pytest.fixture(scope="session")
