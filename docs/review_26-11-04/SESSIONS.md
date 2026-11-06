@@ -42,7 +42,7 @@ Start a session by pointing Claude at this file and the session ID, for example:
 | 7 | S5 | Guard layer 3: `!confirm` for irreversible actions | M | S3, S4 | done (merged in wave 3) |
 | 8 | S6 | Room identity (marker plus creator) and unified room provisioning | L | S2 | done (merged in wave 3) |
 | 9 | S7 | Room repair: space link, lobbies, blocks | M | S6 | open |
-| 10 | S8 | Onboarding correctness | M | S6 | open |
+| 10 | S8 | Onboarding correctness | M | S6 | done (merged in wave 4) |
 | 11 | S9 | User identity across renames | M | S1, S3 | done (merged in wave 3) |
 | 12 | S10 | Runtime lifecycle: startup, sync recovery, shutdown, liveness | M | S0 | done (merged in wave 1a) |
 | 13 | S11 | HTTP layer: retries, idempotency, token provider | M | S10 | done (merged in wave 2) |
@@ -485,6 +485,13 @@ it; httpx logs at WARNING; delete the dead version gating.
 ---
 
 ## S12 Broadcast and admin room
+
+**Handover from S8:** `BroadcastService` requires a `recipients` source (the reconciler's mapped
+set); `RecipientsUnknown` and `BroadcastResult.refused` / `not_member` are the new outcomes;
+`summary()` keeps the "sent to N rooms, F failed" prefix plus ", K skipped (...)". Pacing and
+truncation can build on the per-room `_send`, which does one membership GET before each send. The
+integration helper `S.recipients(*mxids)` stands in for the mapped set. A pre-existing em dash in the
+`!status` output string is S14's.
 
 **Findings:** ONB-03, ONB-04, ONB-10, ONB-11, ONB-12, SEC-09, SEC-12, ONB-15.
 

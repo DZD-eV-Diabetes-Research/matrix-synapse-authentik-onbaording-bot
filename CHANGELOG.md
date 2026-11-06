@@ -11,6 +11,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Welcome messages can carry an `id`** so their text can be corrected without re-sending; whitespace-only
+  edits no longer re-send (review S8, ONB-18).
+- **An encrypted control room or notice board is reported** in the log and the room (ONB-06; Synapse's
+  `encryption_enabled_by_default_for_room_type` cannot be opted out of at creation).
 - **`mas_admin.upstream_subject_attribute` (default `uid`) and `mas_admin.upstream_provider_id`** for
   resolving users through MAS upstream links (review S9, D8).
 - **`gdpr_erase_on_delete` offboarding option (review S4, D7, default `false`)**, applied identically
@@ -60,6 +64,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   This `CHANGELOG.md`.
 
 ### Changed
+- **`onbot broadcast` reads Authentik to know who is mapped** and exits 1 when nobody can be mapped;
+  `!announce` is refused until the first pass. With user sync off there are no welcomes and no
+  broadcasts (review S8).
+- **Welcomes run in a background queue (4 at a time) beside the reconcile pass** instead of inside it
+  (RUN-08).
+- **A user who left their notice board is invited back once;** broadcasts skip and count rooms whose
+  user left (ONB-07).
 - **Guard batches expire more conservatively (review W3R, pending maintainer confirmation):** erasures
   and room deletions in a rejected batch stay held until the batch expires, even when fewer than
   `confirm_irreversible_actions_from` remain. A confirmed batch that cannot run within
@@ -183,6 +194,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   troubleshooting.
 
 ### Fixed
+- **Concurrent welcomes no longer lose `m.direct` entries,** which caused duplicate notice boards and
+  re-sent welcomes after a restart (review S8, RUN-01, ONB-01).
+- **Welcome sends use deterministic transaction ids,** so a repeated send is deduplicated by Synapse
+  (ONB-09).
+- **A notice board the bot is no longer in is replaced** instead of failing every pass; unreadable
+  notice-board state is reported once (ONB-08).
 - **After following a bot-created room upgrade, the next pass no longer reports the old and new room as
   a conflict** (review W3R).
 - **When protecting a new room's marker fails at creation, the next pass retries it** instead of
@@ -260,6 +277,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   model forbids unknown keys, so remove these two settings if present.
 
 ### Security
+- **Only users the reconciler maps get a notice board and receive broadcasts (review S8, SEC-06,
+  ONB-13):** active Authentik users in the sync scope with a Matrix account and no identity conflict.
+  Joining a room the bot is in no longer enrols anyone. Notice boards of deactivated or foreign
+  accounts are dropped from `m.direct`.
 - **No attribute guess takes an account MAS links to somebody else (review W3R, D21):** also when that
   owner is disabled, outside the sync scope or never seen by onbot; the guesser is skipped and
   reported.

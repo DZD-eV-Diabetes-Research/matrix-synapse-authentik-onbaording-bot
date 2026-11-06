@@ -522,9 +522,13 @@ upstream_provider_id: 01HFS67GJ145HCM9ZASYS9DC3J
 *Welcome messages*
 
 Messages the bot sends, in order, in the 1:1 welcome direct room it opens with each
-newly onboarded user. Each message is sent at most once per user — they are matched by
-content, so editing a message here re-sends that one message to everyone. `null` or an
-empty list disables the welcome direct room entirely.
+user the reconciler maps (so it needs `sync_authentik_users_with_matrix_rooms`).
+Each message is sent at most once per user. A plain entry is matched by its text:
+**editing it re-sends that one message to every onboarded user** (whitespace at line
+ends and blank lines around the text do not count). To correct a message without
+re-sending it, give it an id: `{id: intro, text: "..."}` is matched by the id, so its
+text can change freely. Turning a plain entry into one with an id sends nothing
+again. `null` or an empty list disables the welcome direct room entirely.
 
 Each message is **Markdown** (CommonMark): `[text](url)`, `**bold**`, `*italic*`,
 `` `code` ``, lists, headings and quotes all render in the client, and a bare URL
@@ -544,16 +548,26 @@ than sent with a gap in it. Any other `{...}` is left as written.
 
 | Property | Value |
 |---|---|
-| Type | List of str |
+| Type | List of Object |
 | Required | No |
 | Environment variable | `ONBOT_WELCOME_NEW_USERS_MESSAGES` |
 
 **Examples:**
 
+*Example 1:*
+
 ```yaml
 welcome_new_users_messages:
 - Welcome aboard! I will invite you to the rooms for your groups.
 - "Everything else lives in **[{space_name}]({space_link})** \u2014 have a look around."
+```
+
+*Example 2:*
+
+```yaml
+welcome_new_users_messages:
+- id: intro
+  text: Welcome aboard! I will invite you to the rooms for your groups.
 ```
 
 ---
@@ -856,7 +870,8 @@ Master switch for projecting Authentik group membership into Matrix rooms.
 With `false` the bot does not manage membership at all: it maps no users, so it
 joins nobody, kicks nobody (also with
 `kick_matrix_room_members_not_in_mapped_authentik_group_anymore`), leaves power
-levels and the space's membership alone, and a pass triggers no welcome messages.
+levels and the space's membership alone, and no welcome messages are sent (only
+mapped users are welcomed, and broadcasts reach only them).
 Turning it off never empties a room. The rooms themselves still converge (created,
 named, topic, lobby join rule, avatars), and offboarding
 (`deactivate_disabled_authentik_users_in_matrix`) runs on its own switch, with the

@@ -32,9 +32,11 @@ blocks a release from a safety point of view.
 
 ## Wave 4 (in progress)
 
-- **S8 Onboarding correctness** on `review/s8-onboarding` (worktree under `.claude/worktrees/`, stack
-  instance 2), branched from c9c5cbf. Findings RUN-01, ONB-01, SEC-06, ONB-13, ONB-06, ONB-07, ONB-08,
-  ONB-09, ONB-18, RUN-08.
+- **S8 Onboarding correctness: merged.** All 10 findings fixed (RUN-01, ONB-01, SEC-06, ONB-13,
+  ONB-06, ONB-07, ONB-08, ONB-09, ONB-18, RUN-08); its full integration run on the branch: 1321
+  passed. After the merge: 1274 unit and contract tests green, config docs regenerated. Leftover:
+  the `m.direct` prune only drops deactivated or remote accounts; local active accounts an older
+  version enrolled stay (excluded from broadcasts, not pruned).
 - **S7 Room repair** on `review/s7-room-repair` (stack instance 1), branched from 3e062eb. REC-09,
   REC-10 (D16 manual lobby close and `!lobby reopen`), REC-11, plus the live teardown and deletion
   tests S5 left over.
@@ -67,6 +69,10 @@ Ask with AskUserQuestion, in German, one batch at a time:
    instead of running on an old confirmation;
    (c) a confirmation resets the batch's expiry window, so a last-minute confirmation is not lost.
    Confirm or choose the earlier behaviour; then record the outcome in D13.
+3. **S8, user sync off:** with `sync_authentik_users_with_matrix_rooms.enabled: false`, welcomes and
+   broadcasts now stop completely (only mapped users are onboarded, and nobody is mapped). Confirm.
+4. **S8, CLI broadcast:** `onbot broadcast` now needs Authentik to be reachable (it maps the users
+   first). OK?
 
 ## Maintainer to-dos outside the code
 
