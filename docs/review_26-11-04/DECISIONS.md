@@ -148,3 +148,13 @@ A lobby that a human closed (for example join rule changed to invite) stays clos
 that the change was not its own, logs it at WARNING and reports it once in the admin room, and stops
 reverting it. An allowlisted admin can withdraw the manual close with a control room command (for
 example `!lobby reopen <group or room>`); afterwards the bot manages the lobby from the config again.
+
+## D17 CI duration (decided 2026-11-06)
+
+The repository is public, so GitHub-hosted runner minutes are free; the concern is waiting time. The
+integration suite stays a required gate, but:
+
+- It runs only when code, tests, dependencies, the Dockerfile or the workflows change (path filter);
+  docs-only commits and PRs run lint, unit tests and the secret scan only.
+- A release reuses a green CI run of the tagged SHA when one exists and runs the CI only otherwise.
+- Speeding up the suite itself (cached stack start, parallel tests) is part of S14.

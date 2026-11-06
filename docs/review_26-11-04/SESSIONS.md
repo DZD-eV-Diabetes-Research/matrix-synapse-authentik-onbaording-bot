@@ -32,6 +32,7 @@ Start a session by pointing Claude at this file and the session ID, for example:
 | 2 | S1 | Offboarding fails open (critical hotfix) | M | S0 | done (merged in wave 1a) |
 | 3 | S2 | Reconciler pass robustness | M | S0 | done (merged in wave 1a) |
 | 3a | W1F | Wave 1 review fixups (D14, startup 4xx, reconcile-once, base image) | S | S1, S10 | done (merged in wave 1c) |
+| 3b | CI1 | CI duration: integration path filter, release reuses the CI result (D17) | S | S15, S16 | open |
 | 4 | S3 | Guard layers 1 and 2, reconciler dry-run | M | S2 | open |
 | 5 | S16 | Git history scrub | S | S0, no open branches | open |
 | 6 | S4 | Offboarding completeness | M | S1 | open |
@@ -85,6 +86,21 @@ orchestrator's summary) and checks that every listed finding is really fixed and
 - Product decisions not covered by `DECISIONS.md`: stop and report the question instead of guessing.
 - Commit on your branch in small, reviewable commits. No push, no AI attribution, no em or en dashes.
 - Use your own integration stack instance (see `tests/README.md` after S0) and tear it down at the end.
+
+---
+
+## CI1 CI duration (D17)
+
+**Goal:** shorter waits without weakening the gate. Runs after S16 (the scrub), before wave 2.
+
+- Path filter: the integration job runs only when `onbot/`, `tests/`, `pyproject.toml`, `pdm.lock`,
+  `Dockerfile`, `.dockerignore`, `run_integration_tests.sh` or `.github/workflows/` change. Required
+  checks must still report on docs-only PRs (a skipped job inside the workflow, not a workflow-level
+  `paths` filter, so branch protection does not wait forever).
+- Release: look up a successful `ci.yml` run for the tagged SHA (`gh api` with the run's `head_sha`,
+  event `push` on `main`) and skip the `workflow_call` CI when one exists and covered the integration
+  job; otherwise run the CI as today. Keep the tag-on-main check. Test the decision logic.
+- Update `docs/development.md` (release flow, how long a release takes).
 
 ---
 
@@ -465,6 +481,9 @@ only after the allowlist check; key avatars by content hash as well as URL (ONB-
 ---
 
 ## S14 Docs, dead code, cleanup
+
+**From D17:** speed up the integration suite (about 20 minutes in CI): cache or reuse the stack start
+(Authentik dominates), run independent test files in parallel where the stack allows it.
 
 **Findings:** MNT-12, SUP-18, SUP-19, ONB-19, MNT-10, MNT-14, MNT-15, REC-15, ONB-05 (D5), LIF-15
 leftovers, optionally REC-16 and REC-17.
