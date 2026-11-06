@@ -141,6 +141,11 @@ class AuthentikAdmin:
         r = self._http.patch(f"/core/users/{pk}/", json={"attributes": attributes})
         r.raise_for_status()
 
+    def rename(self, pk: int, username: str) -> None:
+        """Change the Authentik username (a marriage, a name change); the pk and uid stay."""
+        r = self._http.patch(f"/core/users/{pk}/", json={"username": username, "name": username})
+        r.raise_for_status()
+
     def set_path(self, pk: int, path: str) -> None:
         r = self._http.patch(f"/core/users/{pk}/", json={"path": path})
         r.raise_for_status()

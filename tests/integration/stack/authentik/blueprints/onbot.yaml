@@ -37,7 +37,11 @@ entries:
       signing_key:
         !Find [authentik_crypto.certificatekeypair, [name, "authentik Self-signed Certificate"]]
       issuer_mode: per_provider
-      sub_mode: user_username
+      # Authentik's default: `sub` is the user's hashed ID (`uid` on the API's user object), which
+      # survives a rename. MAS links accounts by it, and onbot resolves users through those links
+      # (D8, `mas_admin.upstream_subject_attribute: uid`). `user_username` would make a renamed user
+      # a stranger to MAS.
+      sub_mode: hashed_user_id
       property_mappings:
         - !Find [authentik_providers_oauth2.scopemapping, [scope_name, openid]]
         - !Find [authentik_providers_oauth2.scopemapping, [scope_name, email]]
