@@ -165,14 +165,43 @@ What this means in practice:
   or welcomed again. The rename is reported once in the admin room.
 - Changing `authentik_username_mapping_attribute` on a running deployment moves nobody who was
   already seen; it only affects users who appear later. The changed mappings are reported.
-- When two Authentik users resolve to the same Matrix account (for example a new user whose
-  `attributes.matrix_name` names somebody else's account), Onbot skips both: no join, no kick, no
-  power-level change, no lock and no erase of that account, until an admin resolves the conflict in
-  Authentik or by editing the binding in the bot's `known_users` account data. The conflict is
-  reported in the admin room.
+- When several Authentik users resolve to the same Matrix account (for example a new user whose
+  `attributes.matrix_name` names somebody else's account):
+  - if MAS links the account to exactly one of them and the others only name it by the mapping
+    attribute (never seen, no MAS link), the MAS-linked owner is managed as usual and the others are
+    skipped;
+  - otherwise (two MAS links, two recorded bindings, a MAS link against another user's binding, or
+    a binding against an attribute guess) Onbot skips all of them: no join, no kick, no power-level
+    change, no lock and no erase of that account.
+
+  Either way the conflict is reported in the admin room. There is no bot command for it; resolve it
+  by hand (see below).
 - If MAS cannot be read, Onbot uses the bindings and the attribute for that pass and reports it.
   If the binding record itself cannot be read, Onbot leaves memberships and power levels alone and
   offboards nobody until it is repaired.
+
+#### Resolving a conflict or a wrong binding by hand
+
+Usually the fix belongs in Authentik: correct the mapping attribute of the user who names the wrong
+account (a duplicate `matrix_name`, a typo). The next pass picks it up.
+
+When a recorded binding itself is wrong, edit it in the bot's account data. The record is the
+account-data event `<reversed server name>.onbot.known_users` of the bot user (for example
+`org.company.onbot.known_users`), shaped `{"schema_version": ..., "users": {"<Authentik pk>":
+{"mxid": "@alice:company.org", "first_seen": <unix time>}}}`. Read it and write it back with the
+bot's access token:
+
+```bash
+curl -H "Authorization: Bearer $BOT_TOKEN" \
+  "https://matrix.company.org/_matrix/client/v3/user/@onbot:company.org/account_data/org.company.onbot.known_users"
+# edit the JSON, then
+curl -X PUT -H "Authorization: Bearer $BOT_TOKEN" -d @known_users.json \
+  "https://matrix.company.org/_matrix/client/v3/user/@onbot:company.org/account_data/org.company.onbot.known_users"
+```
+
+Remove or correct the entry of the wrong pk; keep the JSON valid, since an unreadable record pauses
+user sync and offboarding. With `mas_admin` configured, MAS overrides a binding that disagrees with
+its upstream link anyway.
 
 ## Offboarding and the lifecycle
 

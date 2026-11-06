@@ -134,21 +134,23 @@ async def test_a_changed_mapping_attribute_kicks_and_locks_nobody(
     _not_locked(*names)
 
 
-async def test_two_users_resolving_to_one_account_leave_it_alone(
+async def test_an_attribute_guess_does_not_take_a_mas_linked_account(
     make_config: Any,
     authentik_admin: S.AuthentikAdmin,
     matrix_client: ApiClientMatrix,
     admin_client: ApiClientSynapseAdmin,
 ) -> None:
-    """SEC-07: a second Authentik user whose mapping attribute names alice's account (MAS knows
-    better, but the newcomer has no link) gets nothing; alice is neither kicked nor demoted."""
+    """SEC-07, D21: a second Authentik user whose mapping attribute names alice's account, without
+    a MAS link of their own, gets nothing: none of their groups reach the account. MAS links the
+    account to alice, so she stays managed as usual: not kicked or demoted, and offboarded when
+    she is disabled."""
     prefix = S.uniq("dup")
     team = authentik_admin.create_group(
         f"{prefix}-team", attributes={"is_chatroom": True, "chat-systemwide-powerlevel": 50}
     )
     other = authentik_admin.create_group(f"{prefix}-other", attributes={"is_chatroom": True})
     alice_name = S.uniq("dupalice")
-    _alice, alice_login = S.provision(
+    alice, alice_login = S.provision(
         authentik_admin, alice_name, groups=[team["pk"]], attributes={"matrix_name": alice_name}
     )
     config = _config(make_config, prefix, [str(team["pk"]), str(other["pk"])])
@@ -173,3 +175,8 @@ async def test_two_users_resolving_to_one_account_leave_it_alone(
     assert after[:2] == before[:2]  # alice stays, at her level
     assert alice_login.mxid not in await admin_client.list_room_members(other_room)  # carl's groups
     _not_locked(alice_name)
+
+    authentik_admin.set_active(alice["pk"], False)
+    await run_reconcile_once(config)  # marks her
+    await run_reconcile_once(config)  # locks her: the conflict did not freeze her account
+    assert S.mas_user(alice_name)["locked_at"] is not None
