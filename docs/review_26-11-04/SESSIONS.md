@@ -378,6 +378,11 @@ edit the marker, a room upgraded by a human (reported, skipped).
 
 ## S7 Room repair
 
+**From S5:** no integration test covers room teardown (block, kick) and deletion
+(`delete_disabled_rooms`, now its own irreversible guard step that only runs in a pass that also
+closes the room) against the live stack; the room path is covered by engine unit tests only. Add
+live tests for teardown, deletion below the layer 3 limit, and deletion held for `!confirm`.
+
 **Goal:** rooms converge back to the desired shape, not only at creation.
 
 **Findings:** REC-09, REC-10, REC-11.
