@@ -33,7 +33,7 @@ Start a session by pointing Claude at this file and the session ID, for example:
 | 3 | S2 | Reconciler pass robustness | M | S0 | done (merged in wave 1a) |
 | 3a | W1F | Wave 1 review fixups (D14, startup 4xx, reconcile-once, base image) | S | S1, S10 | done (merged in wave 1c) |
 | 3b | CI1 | CI duration: integration path filter, release reuses the CI result (D17) | S | S15, S16 | done (merged before wave 2) |
-| 4 | S3 | Guard layers 1 and 2, reconciler dry-run | M | S2 | open |
+| 4 | S3 | Guard layers 1 and 2, reconciler dry-run | M | S2 | done (merged in wave 2) |
 | 5 | S16 | Git history scrub | S | S0, no open branches | done (force-pushed 2026-11-06, new main 89afecf) |
 | 6 | S4 | Offboarding completeness | M | S1 | open |
 | 7 | S5 | Guard layer 3: `!confirm` for irreversible actions | M | S3, S4 | open |
@@ -306,6 +306,13 @@ S1's per-user ledger save and backoff; check before re-doing.
 ---
 
 ## S5 Guard layer 3: confirmation for irreversible actions (D4)
+
+**Handover from S3:** plug in at `decide()` in `onbot/guard.py`, after layer 1: hold irreversible
+actions (`ActionKind.erase`, plus a deactivate kind if you split it, plus room deletion per D19) when
+there are 3 or more in the `rest` set. The lifecycle already plans `erase`
+(`AccountLifecycleManager.plan_accounts`) and runs it only if `permit(mxid, action)` allows it;
+batches, confirm, expiry and reports already cover it. Add the limit to `GuardLimits` and the config.
+`reconcile-once` and a running service each hold their own copy of the guard state.
 
 **Decisions from 2026-11-06 (D13):** S3 already builds the batch store, `!confirm <id>`, `!pending`
 and the 72 h expiry. This session only adds layer 3: 3 or more irreversible actions (deactivate,

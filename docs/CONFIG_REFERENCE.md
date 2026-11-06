@@ -2626,3 +2626,125 @@ timeout_sec: 30
 ```
 
 ---
+
+## `destructive_action_guard`
+
+*Guard against mass removals*
+
+When a pass looks like it would remove far more than usual, the bot pauses the
+removals and asks an administrator in the admin control room (`!pending`,
+`!confirm <id>`, `!reject <id>`) instead of carrying them out. Without the admin
+control room the paused actions are only logged; raise these limits to let them
+through.
+
+| Property | Value |
+|---|---|
+| Type | Object (DestructiveActionGuard) |
+| Required | No |
+| Environment variable | `ONBOT_DESTRUCTIVE_ACTION_GUARD` |
+
+---
+
+### `destructive_action_guard.max_drop_percent`
+
+*Largest plausible drop in Authentik's answer (percent)*
+
+Before a pass removes anybody, the bot compares what Authentik returned with the
+last answer it trusted: the number of active users in the sync scope and the number
+of groups mapped to rooms. If either dropped by more than this percentage, or came
+back empty, the bot treats the answer as implausible (an API token that lost its
+permissions, a broken filter). Fewer users pauses every destructive action of the
+pass: kicks, power-level withdrawals, room teardowns, account locks and erasures.
+Fewer groups pauses what happens in rooms (kicks, withdrawals, teardowns); locks and
+erasures do not depend on the groups. Rooms are still created and users still added
+and welcomed.
+
+The paused actions are reported in the admin control room as a batch with a short id,
+and an administrator releases exactly that batch with `!confirm <id>`. After that,
+the new numbers count as normal. The comparison moves with every normal pass, so
+removing people a few at a time never trips it. `100` switches the percentage check
+off; an empty answer still needs a confirmation.
+
+| Property | Value |
+|---|---|
+| Type | float |
+| Required | No |
+| Default | `20.0` |
+| Constraints | Gt(gt=0), Le(le=100) |
+| Environment variable | `ONBOT_DESTRUCTIVE_ACTION_GUARD__MAX_DROP_PERCENT` |
+
+**Examples:**
+
+*Example 1:*
+
+```yaml
+max_drop_percent: 20
+```
+
+*Example 2:*
+
+```yaml
+max_drop_percent: 50
+```
+
+---
+
+### `destructive_action_guard.max_reversible_actions_per_pass`
+
+*Most removals in one pass without confirmation*
+
+How many reversible destructive actions one pass may carry out on its own: kicks
+from group rooms, account locks (offboarding), teardowns of rooms whose group
+disappeared, and withdrawals of power levels the bot granted. A pass that would do
+more pauses all of them and reports them in the admin control room as a batch for an
+administrator to release with `!confirm <id>`. This also covers switching
+offboarding's `dry_run` off after a long dry run, when every user marked meanwhile
+would be locked at once.
+
+| Property | Value |
+|---|---|
+| Type | int |
+| Required | No |
+| Default | `10` |
+| Constraints | Ge(ge=0) |
+| Environment variable | `ONBOT_DESTRUCTIVE_ACTION_GUARD__MAX_REVERSIBLE_ACTIONS_PER_PASS` |
+
+**Examples:**
+
+*Example 1:*
+
+```yaml
+max_reversible_actions_per_pass: 10
+```
+
+*Example 2:*
+
+```yaml
+max_reversible_actions_per_pass: 50
+```
+
+---
+
+### `destructive_action_guard.confirmation_expiry_sec`
+
+*Time to confirm a paused batch (seconds)*
+
+How long a paused batch waits for `!confirm <id>` or `!reject <id>` before it
+expires. Its actions stay paused meanwhile. If they still apply after it expired, a
+later pass proposes them again under a new id. The default is 72 hours.
+
+| Property | Value |
+|---|---|
+| Type | int |
+| Required | No |
+| Default | `259200` |
+| Constraints | Gt(gt=0) |
+| Environment variable | `ONBOT_DESTRUCTIVE_ACTION_GUARD__CONFIRMATION_EXPIRY_SEC` |
+
+**Examples:**
+
+```yaml
+confirmation_expiry_sec: 259200
+```
+
+---

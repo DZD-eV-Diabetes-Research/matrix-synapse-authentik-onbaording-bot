@@ -11,6 +11,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Admin commands for paused destructive actions (review S3, D13):** `!pending`, `!confirm <id>` and
+  `!reject <id>`; `!status` shows the number of paused batches. The admin room reports paused and
+  closed batches, offboarding attention (frozen, failed, aborted users) and rooms that did not
+  converge.
+- **`onbot reconcile-once --dry-run` (MNT-09):** reads from the live servers and logs every write it
+  would make, offboarding included, without changing anything or saving state.
 - **Markdown welcome messages:** every entry of `welcome_new_users_messages` is rendered from
   CommonMark to the `org.matrix.custom.html` `formatted_body` a client displays, so links, emphasis,
   lists, headings and bare URLs arrive formatted. The markdown source stays in `body` as the fallback,
@@ -48,6 +54,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   This `CHANGELOG.md`.
 
 ### Changed
+- **Switching offboarding `dry_run` off goes through the per-pass limit** of the guard, and dry-run
+  audit lines are written once per stage instead of every tick (LIF-08).
 - **httpx and httpcore request lines are logged only at `log_level: DEBUG`** (RUN-15).
 - **`onbot healthcheck --deep` fails when MAS does not know the bot's own user** (LIF-10).
 - **Shorter CI waits (review decision D17):** pushes and PRs that change documentation only skip the
@@ -202,6 +210,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Leaked tokens in git history (SUP-01):** both old `syt_` tokens were already invalid (review
   decision D1); the history was scrubbed and force-pushed on 2026-11-06 (S16), so every commit SHA
   changed. Re-clone instead of pulling.
-- ⚠️ **Unresolved release blocker:** since review S1 a known user who vanishes from Authentik is
-  offboarded. Until the drop guard of review S3 is merged, a token that suddenly sees only some users
-  would lock the others after the cooldown. Do not release before S3.
+- **Destructive actions go through a guard (review S3, D4, D13, fixes REC-01):** an empty answer from
+  Authentik, a drop of more than 20 % in active users in scope (pauses every removal) or in mapped
+  groups (pauses kicks, withdrawals and teardowns), or more than 10 reversible removals in one pass
+  pause those actions. Paused actions become a batch reported in the admin room; `!confirm <id>`
+  releases exactly that batch (only what still applies), `!reject <id>` discards it, and batches
+  expire after 72 h. Configurable under `destructive_action_guard`. Before, a narrowed Authentik token
+  kicked everyone and locked every known user, and a collapsed answer withdrew every bot-granted power
+  level. Replaces the S2 kick heuristic.
