@@ -17,7 +17,11 @@ This file is the entry point; `SESSIONS.md` holds the session briefs and the sta
   Python dependencies.
 - Full integration run on main (556c41b): 820 passed, 1 failed. The failure was a test written by S2
   that passed the S13 `SecretStr` token unwrapped (401); fixed in 0173aa6, file rerun green (4 passed).
-- Running when this was written: the W1F session agent on `review/w1f-fixups` (instance 1).
+- W1F merged (ea282bd, follow-up 8d2e642): 824 unit and contract tests green, config docs
+  regenerated. Full integration run on main after W1F started (instance 0).
+- S16 timing decided: the maintainer first pushes the current `main` normally so the new CI runs once
+  on GitHub, then the scrub is prepared on a mirror clone and the maintainer force-pushes `main` and
+  all tags. Wave 2 starts after the scrub (or is rebased onto the rewritten `main`).
 - Next: merge W1F (CHANGELOG lines, regenerate config docs since descriptions change, status table),
   one full integration run on main, then S16 (no open branches) and wave 2 (S3, S4, S11).
 - Still open for later: S9 (D8 design, once the MAS admin API behaviour is known). The S15
