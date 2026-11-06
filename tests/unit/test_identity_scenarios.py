@@ -367,3 +367,41 @@ async def test_an_unreadable_binding_record_projects_no_memberships() -> None:
     await w.tick()
     _assert_untouched(w, before)
     assert sum("known_users" in r for r in w.identity_reports) == 1
+
+
+async def test_with_mas_a_guess_never_reaches_an_account_of_an_absent_never_bound_owner() -> None:
+    """Wave 3 review (D21): alice logged in through MAS once but onbot never saw her active in scope
+    (disabled from the start). carl's attribute names @alice: @alice never lands in carl's room."""
+    w = World(mas_identity=True, attribute="attributes.mx")
+    for pk in range(2, 8):
+        w.person(pk, f"user{pk}", "g1", mx=f"user{pk}")
+    await _settled(w)
+    w.person(1, "alice", "g9", mx="alice")
+    w.directory.users[1]["is_active"] = False
+    w.directory.add(30, "carl", "g2", mx="alice")
+    await w.tick()
+    await w.tick()
+    assert (ROOM2, mx("alice")) not in w.synapse.added
+    assert any("'carl' (pk 30)" in r and mx("alice") in r for r in w.identity_reports)
+
+
+async def test_while_mas_is_down_a_newcomer_is_neither_joined_nor_bound() -> None:
+    """Wave 3 review: during a MAS outage a user never seen is skipped; nothing is recorded, so the
+    guess cannot later outrank the MAS-linked owner. Bound users keep their rooms."""
+    w = World(mas_identity=True, attribute="attributes.mx")
+    for pk in range(2, 8):
+        w.person(pk, f"user{pk}", "g1", mx=f"user{pk}")
+    before = await _settled(w)
+    w.mas.calls.clear()
+
+    async def down(*, provider_id: str | None = None) -> list[Any]:
+        raise RuntimeError("MAS 502")
+
+    w.mas.list_upstream_links = down  # type: ignore[method-assign]
+    w.person(1, "alice", "g9", mx="alice")  # the owner, never seen active in scope
+    w.directory.users[1]["is_active"] = False
+    w.directory.add(30, "carl", "g2", mx="alice")
+    await w.tick()
+    await w.tick()
+    _assert_untouched(w, before)
+    assert "30" not in w.store.raw["org.company.onbot.known_users"]["users"]

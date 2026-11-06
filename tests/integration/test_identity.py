@@ -17,6 +17,7 @@ from onbot.app import run_reconcile_once
 from onbot.clients.matrix import ApiClientMatrix
 from onbot.clients.synapse_admin import ApiClientSynapseAdmin
 from onbot.config import OnbotConfig
+from onbot.lifecycle.accounts import known_users_account_data_type
 from onbot.reconciler.rooms import compute_room_attributes
 from tests.integration import stack_api as S
 
@@ -188,3 +189,42 @@ async def test_an_attribute_guess_does_not_take_a_mas_linked_account(
     await run_reconcile_once(config)  # marks her
     await run_reconcile_once(config)  # locks her: the conflict did not freeze her account
     assert S.mas_user(alice_name)["locked_at"] is not None
+
+
+async def test_a_guess_does_not_take_the_account_of_an_owner_onbot_never_saw(
+    make_config: Any,
+    authentik_admin: S.AuthentikAdmin,
+    matrix_client: ApiClientMatrix,
+    admin_client: ApiClientSynapseAdmin,
+) -> None:
+    """Wave 3 review (D21): alice logged in through MAS but is outside the sync scope, so onbot never
+    bound her and the room stage never sees her. carl's mapping attribute names her account: it must
+    not be joined to carl's rooms, and carl is not bound to it."""
+    prefix = S.uniq("absent")
+    team = authentik_admin.create_group(f"{prefix}-team", attributes={"is_chatroom": True})
+    alice_name = S.uniq("absalice")
+    S.provision(authentik_admin, alice_name, attributes={"matrix_name": alice_name})  # no synced group
+    bob_name = S.uniq("absbob")
+    _, bob_login = S.provision(
+        authentik_admin, bob_name, groups=[team["pk"]], attributes={"matrix_name": bob_name}
+    )
+    carl = authentik_admin.create_user(
+        S.uniq("abscarl"),
+        password=S.DEFAULT_PASSWORD,
+        groups=[team["pk"]],
+        attributes={"matrix_name": alice_name},
+    )
+    config = _config(make_config, prefix, [str(team["pk"])])
+    config.sync_authentik_users_with_matrix_rooms.authentik_username_mapping_attribute = (
+        "attributes.matrix_name"
+    )
+    await run_reconcile_once(config)
+    await run_reconcile_once(config)
+
+    team_room = await _room_of(team, config, matrix_client)
+    members = set(await admin_client.list_room_members(team_room))
+    assert bob_login.mxid in members  # MAS resolves the users it links
+    assert f"@{alice_name}:{S.SERVER_NAME}" not in members
+    known = await matrix_client.get_account_data(S.BOT_USER_ID, known_users_account_data_type(S.SERVER_NAME))
+    assert str(carl["pk"]) not in known.get("users", {})
+    _not_locked(alice_name)
