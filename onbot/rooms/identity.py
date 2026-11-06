@@ -31,6 +31,7 @@ incomplete; no room is then created or adopted on a guess, and obsolete-room tea
 A room upgraded by somebody other than the bot (``m.room.tombstone``) is reported and its role
 skipped. A replacement that the bot itself created as the room's successor (``predecessor`` in its
 create event) takes the role over and gets the marker (D20; the bot does not upgrade rooms itself yet).
+From then on the old room, which keeps its locked marker, no longer claims the role.
 
 Reads use the Synapse admin API (the room list and the full state of one room), which work whether or
 not the bot is a member. One state read per bot room and process: what a room is never changes once
@@ -197,7 +198,28 @@ class RoomIndex:
         return not self.unreadable
 
     def claims(self, key: RoomKey) -> list[RoomIdentity]:
-        return [i for i in self.identities.values() if i.key == key and i.problem is None]
+        """The rooms whose marker claims ``key``, without a predecessor whose upgrade was followed."""
+        return [
+            i
+            for i in self.identities.values()
+            if i.key == key and i.problem is None and not self.superseded(i)
+        ]
+
+    def superseded(self, identity: RoomIdentity) -> bool:
+        """Whether ``identity`` was upgraded to a trusted bot room that took over its role.
+
+        The old room keeps its locked marker; without this, the followed upgrade would read as two
+        rooms claiming one role on the next pass.
+        """
+        if identity.tombstone is None:
+            return False
+        successor = self.identities.get(identity.tombstone)
+        return (
+            successor is not None
+            and successor.trusted
+            and successor.predecessor == identity.room_id
+            and successor.key == identity.key
+        )
 
     def trusted(self, kinds: Collection[OnbotRoomType] = MANAGED_ROOM_TYPES) -> list[RoomIdentity]:
         return [
@@ -410,6 +432,8 @@ class RoomIdentityResolver:
         """``identity`` plays its role, unless it was upgraded to a room the bot did not create."""
         tombstone = identity.tombstone or await self._live_tombstone(identity.room_id)
         if tombstone:
+            # Remembered in the (cached) identity, so the next scan sees the upgrade as followed.
+            identity.tombstone = tombstone
             successor = index.identities.get(tombstone)
             if successor is None or successor.predecessor != identity.room_id:
                 assert identity.key is not None

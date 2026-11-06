@@ -503,3 +503,61 @@ async def test_a_locked_marker_rewritten_by_a_human_is_no_teardown_candidate(ver
     assert index.trusted() == []
     resolution = await rooms.resolve(index, RoomKey(OnbotRoomType.group_room, "vanished"), None)
     assert resolution.room is None
+
+
+def _upgraded_server() -> FakeServer:
+    server = FakeServer()
+    tombstone = {
+        "type": "m.room.tombstone",
+        "state_key": "",
+        "sender": BOT,
+        "content": {"replacement_room": "!new"},
+    }
+    server.add("!old", room_state(OnbotRoomType.group_room, "g1", extra=[tombstone]))
+    successor = room_state(locked=False)
+    successor[0]["content"]["predecessor"] = {"room_id": "!old"}
+    server.add("!new", successor)
+    return server
+
+
+async def test_a_followed_upgrade_stays_followed_on_the_next_pass() -> None:
+    """The old room keeps its locked marker; that is no conflict with the successor that took over."""
+    server = _upgraded_server()
+    rooms = _resolver(server)
+    first = await rooms.resolve(await rooms.scan(), G1, G1_ALIAS)
+    assert first.room is not None and first.room.room_id == "!new"
+    second = await rooms.resolve(await rooms.scan(), G1, G1_ALIAS)
+    assert second.problem is None
+    assert second.room is not None and second.room.room_id == "!new"
+
+
+async def test_a_followed_upgrade_stays_followed_after_a_restart() -> None:
+    server = _upgraded_server()
+    rooms = _resolver(server)
+    await rooms.resolve(await rooms.scan(), G1, G1_ALIAS)
+    fresh = _resolver(server)
+    resolution = await fresh.resolve(await fresh.scan(), G1, G1_ALIAS)
+    assert resolution.problem is None
+    assert resolution.room is not None and resolution.room.room_id == "!new"
+
+
+async def test_an_upgrade_seen_only_live_stays_followed_on_the_next_pass() -> None:
+    """The old room was cached before its upgrade; the tombstone is only read live."""
+    server = FakeServer()
+    server.add("!old", room_state(OnbotRoomType.group_room, "g1"))
+    rooms = _resolver(server)
+    await rooms.resolve(await rooms.scan(), G1, G1_ALIAS)  # cached as trusted, no tombstone
+    tombstone = {
+        "type": "m.room.tombstone",
+        "state_key": "",
+        "sender": BOT,
+        "content": {"replacement_room": "!new"},
+    }
+    server.rooms["!old"].append(tombstone)
+    successor = room_state(locked=False)
+    successor[0]["content"]["predecessor"] = {"room_id": "!old"}
+    server.add("!new", successor)
+    first = await rooms.resolve(await rooms.scan(), G1, G1_ALIAS)
+    assert first.room is not None and first.room.room_id == "!new"
+    second = await rooms.resolve(await rooms.scan(), G1, G1_ALIAS)
+    assert second.room is not None and second.room.room_id == "!new", second.problem
