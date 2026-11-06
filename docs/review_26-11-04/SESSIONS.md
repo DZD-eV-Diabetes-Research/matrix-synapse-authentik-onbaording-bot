@@ -31,7 +31,7 @@ Start a session by pointing Claude at this file and the session ID, for example:
 | 1 | S0 | Tooling baseline | S | | done (e3282ef) |
 | 2 | S1 | Offboarding fails open (critical hotfix) | M | S0 | done (merged in wave 1a) |
 | 3 | S2 | Reconciler pass robustness | M | S0 | done (merged in wave 1a) |
-| 3a | W1F | Wave 1 review fixups (D14, startup 4xx, reconcile-once, base image) | S | S1, S10 | open |
+| 3a | W1F | Wave 1 review fixups (D14, startup 4xx, reconcile-once, base image) | S | S1, S10 | done (merged in wave 1c) |
 | 4 | S3 | Guard layers 1 and 2, reconciler dry-run | M | S2 | open |
 | 5 | S16 | Git history scrub | S | S0, no open branches | open |
 | 6 | S4 | Offboarding completeness | M | S1 | open |

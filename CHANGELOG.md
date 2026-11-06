@@ -66,8 +66,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `delete_disabled_rooms` without disabling rooms, and onboarding rooms inside a space without a space,
   are rejected; `log_level` accepts all standard levels. An invalid config exits with code 2 and lists
   one line per field, without values.
-- **`reconcile-once` lifts the bot's Synapse rate limit again**, like the service does. A pass creates
-  rooms and sends messages, and a cron-driven deployment never runs the service steps.
+- **`reconcile-once` runs every startup step of the service once** (device, rate-limit override, bot
+  avatar, admin room and its admin invites), then one pass. A cron-driven deployment never runs the
+  service, so it needs all of them; earlier in this cycle the avatar and the admin room were skipped.
+- **Offboarding of a known user who is disabled and leaves the scope at once (D14):** a user onbot
+  has seen active, in scope and mapped is now offboarded when disabled in Authentik even if they left
+  the sync scope at the same time (moved to another path, removed from the synced group, opt-in
+  attribute removed). Before, nothing happened and nothing was reported. Users who leave the scope
+  while active stay frozen (D9), and accounts onbot never mapped stay untouched.
+- **The Docker image is based on Debian trixie** (`python:3.14.10-slim-trixie`) instead of bookworm.
 - **`sync_authentik_users_with_matrix_rooms.enabled: false` no longer kicks anyone (review S2):** it
   stops membership and power-level management instead of treating every member as unwanted. A pass in
   which no group room has any desired member skips all kicks and reports it.
@@ -89,8 +96,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   previous upstream probe is `onbot healthcheck --deep`. A long Authentik outage now marks the
   container unhealthy.
 - **The image runs `tini` as PID 1** and the `HEALTHCHECK` uses a 10 s timeout and a 60 s start period.
-- **`reconcile-once` and `broadcast` skip startup side effects** they do not need (bot avatar, admin
-  room). `onbot run` exits 1 when one of its loops crashes.
+- **`broadcast` skips startup side effects** it does not need (bot avatar, admin room). `onbot run`
+  exits 1 when one of its loops crashes.
 - **Development tooling (review S0):** `pdm.lock` is the only lockfile and CI fails when it is stale;
   the gitleaks secret scan runs in CI again (tree plus new commits); the pre-commit hooks run again and
   take ruff, mypy and the config-docs check from the pdm environment.
@@ -109,6 +116,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   troubleshooting.
 
 ### Fixed
+- **Startup behind a reverse proxy:** a 403 or 404 without a Matrix error body while the homeserver
+  boots no longer makes startup give up device registration and open onboarding without a device;
+  such answers are retried.
+- **The avatar fetcher's HTTP client is closed on shutdown.**
+- **`provision-bot-account.sh --revoke-previous`** no longer ends all sessions before it knows a new
+  token can be issued: it issues a probe token first and changes nothing if that fails. If the final
+  token then fails, it says that all sessions were ended and to rerun without `--revoke-previous`.
 - **Users on `matrix_user_ignore_list` were kicked** from group rooms; the bot's own MXID could be
   written into the power-level users map; a failed lookup of the global admin group kicked and demoted
   the admins everywhere; a per-group `keep_updating_matrix_attributes_from_authentik` override was
