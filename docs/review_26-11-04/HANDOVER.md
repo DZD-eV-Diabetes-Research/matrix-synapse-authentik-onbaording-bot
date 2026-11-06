@@ -4,7 +4,26 @@ Start a fresh session with: "Read docs/review_26-11-04/HANDOVER.md and continue 
 This file is the entry point; `SESSIONS.md` holds the session briefs and the status table,
 `DECISIONS.md` the maintainer decisions (D1 to D12), `SUMMARY.md` the consolidated findings.
 
-## Where things stand
+## Update 2026-11-06 (read this first)
+
+- Worktrees and `worktree-agent-*` branches of wave 1 are removed; `review/*` branches are kept.
+- Cold wave review of waves 0 and 1 done (two reviewers, S1/S2 and S0/S10/S13/S15). Everything listed
+  is fixed except the items now in the new session **W1F** (see `SESSIONS.md`) and handover notes added
+  to the S3, S4, S5 and S11 briefs. Most important find: D14 (known user disabled and out of scope at
+  the same time was never offboarded, a regression from S1).
+- Maintainer decisions D13 (guard confirmation with `!confirm <id>`, `!pending`, `!reject <id>`, 20 %,
+  10 per pass, 3 irreversible, 72 h; S3 builds it), D14, D15 (confirmations, trixie, fixed healthcheck
+  thresholds) and D16 (manually closed lobby) are recorded. D12 amended: no extra monitoring for
+  Python dependencies.
+- Running when this was written: the full integration run on main (instance 0, started before the
+  docs commits; code unchanged since 556c41b) and the W1F session agent on `review/w1f-fixups`
+  (instance 1).
+- Next: merge W1F (CHANGELOG lines, regenerate config docs since descriptions change, status table),
+  one full integration run on main, then S16 (no open branches) and wave 2 (S3, S4, S11).
+- Still open for later: S9 (D8 design, once the MAS admin API behaviour is known). The S15
+  maintainer checklist in `docs/development.md` is still the maintainer's to do.
+
+## Where things stand (2026-11-04)
 
 Local `main` (not pushed) contains the review docs and all six sessions of waves 0 and 1:
 
