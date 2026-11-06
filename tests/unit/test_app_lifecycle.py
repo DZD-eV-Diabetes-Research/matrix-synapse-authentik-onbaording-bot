@@ -446,18 +446,39 @@ async def test_broadcast_touches_only_what_a_broadcast_needs() -> None:
     }
 
 
-async def test_reconcile_once_skips_avatar_and_admin_room_but_lifts_the_ratelimit(
+async def test_reconcile_once_runs_every_startup_step_before_its_pass(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A pass creates rooms and sends messages, so a cron-driven reconcile-once needs the lifted limit."""
+    """A cron-driven reconcile-once never runs the service, so it needs the whole startup: the lifted
+    rate limit (a pass creates rooms and sends messages), the bot avatar, the admin room, and the
+    re-invite of new admins after the pass."""
     config = _config()
     config.admin_room.enabled = True
     config.synapse_server.bot_avatar_url = "https://cdn.test/bot.png"
-    passes: list[int] = []
+    calls: list[str] = []
 
-    async def one_pass(_self: object) -> None:
-        passes.append(1)
+    async def avatar(*_a: object, **_k: object) -> None:
+        calls.append("avatar")
 
+    async def ensure(self: AdminRoomProvisioner) -> str:
+        calls.append("admin room")
+        self.room_id = "!control:example.test"
+        return self.room_id
+
+    async def invite(_self: AdminRoomProvisioner) -> None:
+        calls.append("re-invite")
+
+    async def start(self: ControlRoomHandler, room_id: str) -> None:
+        self.room_id = room_id
+
+    async def one_pass(self: Any) -> None:
+        calls.append("pass")
+        await self.events.emit(Signal.reconcile_completed)
+
+    monkeypatch.setattr(app_module, "ensure_bot_avatar", avatar)
+    monkeypatch.setattr(AdminRoomProvisioner, "ensure", ensure)
+    monkeypatch.setattr(AdminRoomProvisioner, "ensure_admins_invited", invite)
+    monkeypatch.setattr(ControlRoomHandler, "start", start)
     monkeypatch.setattr(app_module.ReconcilerEngine, "reconcile_once", one_pass)
     with respx.mock(assert_all_mocked=False, assert_all_called=False) as router:
         router.get(f"{HS}/_matrix/client/versions").respond(200, json={"versions": ["v1.11"]})
@@ -467,13 +488,19 @@ async def test_reconcile_once_skips_avatar_and_admin_room_but_lifts_the_ratelimi
         await run_reconcile_once(config)
         called = _called_paths(router)
 
-    assert passes == [1]
+    assert calls == ["avatar", "admin room", "pass", "re-invite"]
     assert called == {
         "GET /_matrix/client/versions",
         "GET /_matrix/client/v3/account/whoami",
         "POST /_matrix/client/v3/keys/upload",
         "POST /_synapse/admin/v1/users/@bot:example.test/override_ratelimit",
     }
+
+
+async def test_reconcile_once_without_avatar_and_admin_room_skips_both() -> None:
+    async with build_app(_config()) as app:
+        names = [step.name for step in app.reconcile_once_steps()]
+    assert names == ["version negotiation", "device registration", "onboarding", "rate-limit override"]
 
 
 # --- RUN-09: bounded shutdown ------------------------------------------------------------------

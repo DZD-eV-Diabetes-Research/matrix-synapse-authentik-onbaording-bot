@@ -177,3 +177,30 @@ async def test_an_authentik_group_grants_commands_and_leaving_it_revokes_them(
     assert "Revoked" not in await _messages_in(matrix_client, notice_board)
     replies = await _messages_in(matrix_client, control_room)
     assert any("not on the bot's admin allowlist" in r for r in replies)
+
+
+async def test_reconcile_once_provisions_the_admin_room_and_invites_new_admins(
+    make_config, authentik_admin: S.AuthentikAdmin, matrix_client: ApiClientMatrix
+) -> None:
+    """A cron-only deployment never runs the service, so reconcile-once must keep the room going."""
+    group = authentik_admin.create_group(S.uniq("cron-admins"))
+    _f, first = S.provision(authentik_admin, S.uniq("cronadmin"), groups=[group["pk"]])
+
+    config = make_config()
+    config.admin_room.enabled = True
+    config.admin_room.alias = S.uniq("onbot-admin")
+    config.admin_room.admin_user_ids = []
+    config.admin_room.authentik_group_pks_granting_bot_admin = [group["pk"]]
+
+    alias = f"#{config.admin_room.alias}:{config.synapse_server.server_name}"
+    assert await matrix_client.resolve_room_alias(alias) is None
+
+    await run_reconcile_once(config)
+    control_room = await matrix_client.resolve_room_alias(alias)
+    assert control_room is not None
+    assert await matrix_client.get_membership(control_room, first.mxid) == "invite"
+
+    second_user, second = S.provision(authentik_admin, S.uniq("cronadmin"))
+    authentik_admin.add_user_to_group(group["pk"], second_user["pk"])
+    await run_reconcile_once(config)
+    assert await matrix_client.get_membership(control_room, second.mxid) == "invite"
