@@ -25,6 +25,8 @@ classifiers = [
 # suite. The lower bounds are not tested in CI (CI runs the locked versions only).
 dependencies = [
     "httpx>=0.27,<1",
+    # Imported directly by onbot.safe_fetch (the network backend of the avatar fetch guard).
+    "httpcore>=1.0,<2",
     "tenacity>=9.0,<10",
     "pydantic>=2.7,<3",
     "pydantic-settings>=2.3,<3",

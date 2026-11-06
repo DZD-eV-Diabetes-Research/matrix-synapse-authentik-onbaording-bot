@@ -222,10 +222,22 @@ class _GuardedTransport(httpx.AsyncHTTPTransport):
 
     httpx does not take a network backend as a parameter, so the pool it built is replaced (it has
     opened nothing yet). ``trust_env=False``: no proxy, see the module docstring.
+
+    ``_pool`` is private to httpx. If a future httpx renamed it, assigning ``self._pool`` would
+    silently leave the real, unguarded pool in use, so the constructor checks that the attribute is
+    there and is what it replaces, and refuses to build otherwise. The tests that fetch through a
+    fake resolver (``test_hostname_resolving_to_loopback_is_refused_at_connect`` and
+    ``test_allowlisted_internal_destination_is_fetched`` in ``tests/unit/test_safe_fetch.py``) prove
+    the swap end to end; run them after every httpx or httpcore update.
     """
 
     def __init__(self, backend: httpcore.AsyncNetworkBackend) -> None:
         super().__init__(trust_env=False, retries=0)
+        if not isinstance(getattr(self, "_pool", None), httpcore.AsyncConnectionPool):
+            raise RuntimeError(
+                "this httpx version keeps its connection pool elsewhere; the avatar fetch guard "
+                "(onbot.safe_fetch) cannot be installed. Pin the previous httpx and report this."
+            )
         self._pool = httpcore.AsyncConnectionPool(
             ssl_context=httpx.create_ssl_context(),
             max_connections=10,
