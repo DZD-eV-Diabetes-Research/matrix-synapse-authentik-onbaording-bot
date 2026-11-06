@@ -434,3 +434,22 @@ async def test_a_legacy_space_is_adopted_by_alias_and_learns_its_configured_alia
     fresh = _resolver(server)
     resolution = await fresh.resolve(await fresh.scan(), key, "#OnBotSpace:company.org")
     assert resolution.room is not None and resolution.room.room_id == "!space"
+
+
+async def test_a_successor_with_another_role_does_not_take_over() -> None:
+    server = FakeServer()
+    tombstone = {
+        "type": "m.room.tombstone",
+        "state_key": "",
+        "sender": BOT,
+        "content": {"replacement_room": "!new"},
+    }
+    server.add("!old", room_state(OnbotRoomType.group_room, "g1", extra=[tombstone]))
+    successor = room_state(OnbotRoomType.group_room, "g2")
+    successor[0]["content"]["predecessor"] = {"room_id": "!old"}
+    server.add("!new", successor)
+    rooms = _resolver(server)
+
+    resolution = await rooms.resolve(await rooms.scan(), G1, G1_ALIAS)
+    assert resolution.room is None and resolution.problem is not None
+    assert server.state_writes == []

@@ -414,15 +414,15 @@ class RoomIdentityResolver:
     async def _follow_upgrade(self, index: RoomIndex, old: RoomIdentity, new: RoomIdentity) -> Resolution:
         """Hand the role to the bot's own successor room and mark it there."""
         assert old.key is not None and old.marker_type is not None
-        if not new.trusted:
-            if new.key is None:
-                await self.writer.put_room_state(new.room_id, old.marker_type, dict(old.marker_content or {}))
-                new.key, new.marker_type, new.marker_content = old.key, old.marker_type, old.marker_content
-            if new.key != old.key:
-                return Resolution(
-                    problem=f"room {old.room_id} was upgraded to {new.room_id}, which cannot take over "
-                    f"as the {old.key.describe()}"
-                )
+        if new.key is None and new.problem is None:
+            await self.writer.put_room_state(new.room_id, old.marker_type, dict(old.marker_content or {}))
+            new.key, new.marker_type, new.marker_content = old.key, old.marker_type, old.marker_content
+        if new.key != old.key or new.problem is not None:
+            return Resolution(
+                problem=f"room {old.room_id} was upgraded to {new.room_id}, which cannot take over "
+                f"as the {old.key.describe()}"
+            )
+        if not new.locked:
             await self._lock(new)
             log.warning(
                 "room identity: the %s moved to its upgraded room %s", old.key.describe(), new.room_id
