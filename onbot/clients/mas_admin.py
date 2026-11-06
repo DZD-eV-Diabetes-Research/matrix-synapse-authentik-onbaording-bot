@@ -75,10 +75,11 @@ class ApiClientMasAdmin(BaseApiClient):
 
         Per the MAS admin API a lock does not end sessions: they work again after :meth:`unlock_user`.
         """
-        await self.post_json(f"users/{user_id}/lock")
+        # Locking a locked user (and unlocking an unlocked one) answers 200, so retries are safe.
+        await self.post_json(f"users/{user_id}/lock", idempotent=True)
 
     async def unlock_user(self, user_id: str) -> None:
-        await self.post_json(f"users/{user_id}/unlock")
+        await self.post_json(f"users/{user_id}/unlock", idempotent=True)
 
     async def deactivate_user(self, user_id: str) -> None:
         """Deactivate the user: revokes sessions and permanently disables the account."""

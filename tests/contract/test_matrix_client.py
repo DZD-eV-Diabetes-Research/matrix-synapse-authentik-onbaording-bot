@@ -8,6 +8,7 @@ import respx
 
 from onbot.clients.base import ApiError
 from onbot.clients.matrix import (
+    CREATION_NONCE_KEY,
     ApiClientMatrix,
     CSApiEffectors,
     SyncNotSupportedError,
@@ -150,7 +151,9 @@ async def test_create_space_marks_creation_content() -> None:
         await client.aclose()
     assert space_id == "!s:matrix.test"
     body = json.loads(route.calls[0].request.content)
-    assert body["creation_content"] == {"type": "m.space"}
+    assert body["creation_content"]["type"] == "m.space"
+    # Every created room carries a creation nonce, so a failed call can find what it created (RUN-05).
+    assert len(body["creation_content"][CREATION_NONCE_KEY]) == 32
     assert body["visibility"] == "private"
 
 
@@ -359,6 +362,9 @@ async def test_link_room_to_space_writes_child_and_parent() -> None:
 async def test_create_direct_message_room_is_direct_and_invites() -> None:
     route = respx.post("https://matrix.test/_matrix/client/v3/createRoom").mock(
         return_value=httpx.Response(200, json={"room_id": "!dm:matrix.test"})
+    )
+    respx.get("https://matrix.test/_matrix/client/v3/joined_rooms").mock(
+        return_value=httpx.Response(200, json={"joined_rooms": []})
     )
     client = _client()
     try:
