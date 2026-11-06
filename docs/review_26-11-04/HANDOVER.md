@@ -27,6 +27,17 @@ This file is the entry point; `SESSIONS.md` holds the session briefs and the sta
 - Still open for later: S9 (D8 design, once the MAS admin API behaviour is known). The S15
   maintainer checklist in `docs/development.md` is still the maintainer's to do.
 
+**S16 done (2026-11-06).** The history was rewritten with `git filter-repo` (both `syt_` tokens
+replaced by `REDACTED_TOKEN`, `onbot/test.py` and `onbot/readme_feat_room_avatar.txt` removed), verified
+with gitleaks, and force-pushed by the maintainer: `main` 771cdaa became 89afecf, all 14 tags moved.
+**Every commit SHA quoted in this directory from before 2026-11-06 refers to the old history and no
+longer resolves.** The workstation clone was rebased onto the new `main`; all old `review/*` branches
+are deleted. Still open for the maintainer: GitHub Support purge request (old commits b16af39,
+4a7488f, 6f7a00c and descendants) and protection of `main` and tags (A5 in `02-supply-chain.md`).
+The first real CI run on GitHub (old 771cdaa) was fully green, 23 minutes.
+
+**Next:** CI1 (D17) and wave 2 (S3, S4, S11).
+
 ## Where things stand (2026-11-04)
 
 Local `main` (not pushed) contains the review docs and all six sessions of waves 0 and 1:
