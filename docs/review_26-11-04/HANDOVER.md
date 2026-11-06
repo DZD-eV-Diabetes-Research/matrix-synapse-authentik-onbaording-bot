@@ -15,9 +15,9 @@ This file is the entry point; `SESSIONS.md` holds the session briefs and the sta
   10 per pass, 3 irreversible, 72 h; S3 builds it), D14, D15 (confirmations, trixie, fixed healthcheck
   thresholds) and D16 (manually closed lobby) are recorded. D12 amended: no extra monitoring for
   Python dependencies.
-- Running when this was written: the full integration run on main (instance 0, started before the
-  docs commits; code unchanged since 556c41b) and the W1F session agent on `review/w1f-fixups`
-  (instance 1).
+- Full integration run on main (556c41b): 820 passed, 1 failed. The failure was a test written by S2
+  that passed the S13 `SecretStr` token unwrapped (401); fixed in 0173aa6, file rerun green (4 passed).
+- Running when this was written: the W1F session agent on `review/w1f-fixups` (instance 1).
 - Next: merge W1F (CHANGELOG lines, regenerate config docs since descriptions change, status table),
   one full integration run on main, then S16 (no open branches) and wave 2 (S3, S4, S11).
 - Still open for later: S9 (D8 design, once the MAS admin API behaviour is known). The S15
