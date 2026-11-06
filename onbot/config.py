@@ -628,7 +628,18 @@ class SyncAuthentikUsersWithMatrix(_StrictModel):
         bool,
         Field(
             title="Enable user synchronisation",
-            description="Master switch for projecting Authentik group membership into Matrix rooms.",
+            description=inspect.cleandoc(
+                """Master switch for projecting Authentik group membership into Matrix rooms.
+
+                With `false` the bot does not manage membership at all: it maps no users, so it
+                joins nobody, kicks nobody (also with
+                `kick_matrix_room_members_not_in_mapped_authentik_group_anymore`), leaves power
+                levels and the space's membership alone, and a pass triggers no welcome messages.
+                Turning it off never empties a room. The rooms themselves still converge (created,
+                named, topic, lobby join rule, avatars), and offboarding
+                (`deactivate_disabled_authentik_users_in_matrix`) runs on its own switch, with the
+                same scope filters below."""
+            ),
         ),
     ] = True
     authentik_username_mapping_attribute: Annotated[
@@ -1515,6 +1526,9 @@ class OnbotConfig(BaseSettings):
                 bot manages, and into the parent space, regardless of their Authentik group
                 membership. Each one is held at power level 100 (room admin) in those rooms, so they
                 can read, moderate and repair any room without being a member of the group behind it.
+                In rooms older than room version 12 the bot only grants up to one below its own level
+                (99 when the bot holds 100), so that it can still demote or remove the account later;
+                such an admin can moderate but cannot change the bot's own level.
 
                 Matched against the raw `username` field, exactly like `authentik_user_ignore_list`,
                 not against `authentik_username_mapping_attribute` (that attribute is still what maps
