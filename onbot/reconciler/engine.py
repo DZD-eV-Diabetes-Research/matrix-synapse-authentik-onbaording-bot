@@ -1106,9 +1106,9 @@ class ReconcilerEngine:
         below the bot's own level where that level is finite. A steady state costs one state read, one
         account data read and one power-level read, and no writes.
 
-        A withdrawal is destructive and goes through the guard (D13): only the users in ``withdraw``
-        lose their level here. Every other withdrawal is held: the entry stays at its level and in the
-        record, and its MXID is returned so the caller can ask the guard about it.
+        A withdrawal or demotion is destructive and goes through the guard (D13): only the users in
+        ``withdraw`` get a lower level here. Every other one is held: the entry stays at its level
+        (see :func:`hold_withdrawals`), and its MXID is returned so the caller can ask the guard.
         """
         room_id = room.room_id
         bot_id = self.config.synapse_server.bot_user_id

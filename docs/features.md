@@ -661,16 +661,17 @@ lock every account that now looks deleted.
 ### What an admin should know
 
 - **Two checks, before anything is removed.** Each pass first works out everything it would remove:
-  kicks, withdrawals of power levels Onbot granted, teardowns of rooms whose group disappeared,
-  account locks and erasures. Then:
+  kicks, withdrawals of power levels Onbot granted, lowered power levels of members who stay (for
+  example 100 to 50 when a power-level group drops out of the answer), teardowns of rooms whose group
+  disappeared, account locks and erasures. Then:
   - *Plausibility:* the number of active users in the sync scope and the number of groups mapped to
     rooms are compared with the last answer Onbot trusted. An empty answer, or a drop of more than
     `max_drop_percent` (20 % by default), pauses removals: fewer users pauses *every* removal of the
-    pass, fewer groups pauses what happens in rooms (kicks, withdrawals, teardowns) but not account
+    pass, fewer groups pauses what happens in rooms (kicks, lowered levels, teardowns) but not account
     locks, which do not depend on groups. Each number moves with every pass in which it looked
     normal, so removing people a few at a time never trips it.
   - *Volume:* more than `max_reversible_actions_per_pass` (10 by default) kicks, locks, teardowns and
-    withdrawals in one pass pauses all of them.
+    lowered or withdrawn power levels in one pass pauses all of them.
 - **Everything else goes on.** Rooms are still created and named, users still added and welcomed,
   locked users who come back still unlocked.
 - **Paused actions become a batch with a short id**, for example `k7m3qp`, posted in the admin control

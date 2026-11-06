@@ -76,6 +76,7 @@ def normalize_batch_id(text: str) -> str:
 
 class ActionKind(StrEnum):
     kick = "kick"
+    # Lowering a level, whether the entry goes or a still-desired user gets a lower one (D10).
     withdraw_power_level = "withdraw_power_level"
     room_teardown = "room_teardown"
     lock = "lock"
@@ -89,7 +90,7 @@ REVERSIBLE_KINDS = frozenset(
 
 _KIND_PLURAL = {
     ActionKind.kick: "kick {n} room member(s)",
-    ActionKind.withdraw_power_level: "withdraw {n} power level(s)",
+    ActionKind.withdraw_power_level: "lower or withdraw {n} power level(s)",
     ActionKind.room_teardown: "tear down {n} room(s)",
     ActionKind.lock: "lock {n} account(s)",
     ActionKind.erase: "erase {n} account(s)",
@@ -119,7 +120,7 @@ class DestructiveAction(BaseModel):
         if self.kind is ActionKind.kick:
             return f"kick {self.target} from {self.room_id}{group}"
         if self.kind is ActionKind.withdraw_power_level:
-            return f"withdraw the power level of {self.target} in {self.room_id}{group}"
+            return f"lower or withdraw the power level of {self.target} in {self.room_id}{group}"
         if self.kind is ActionKind.room_teardown:
             return f"tear down room {self.target}{group}"
         if self.kind is ActionKind.lock:

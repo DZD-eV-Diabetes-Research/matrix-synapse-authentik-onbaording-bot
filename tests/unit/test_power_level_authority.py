@@ -185,6 +185,33 @@ def test_held_withdrawals_keep_the_entry_and_the_record() -> None:
     assert held.granted == {BOB: 100}  # and stays recorded, so it can be withdrawn once permitted
 
 
+def test_held_demotions_keep_the_level_and_the_record_as_it_was() -> None:
+    """Wave 2 review: lowering a still-desired user bypassed the guard (100 to 50 on a lost group)."""
+    current = {BOT: 100, ALICE: 100, BOB: 75, MALLORY: 50}
+    # Alice's 100 is the bot's grant; Bob's 75 was set by a human; Mallory stays where she is.
+    recorded: dict[str, int | None] = {ALICE: 100, MALLORY: 50}
+    desired = {ALICE: 50, BOB: 50, MALLORY: 50}
+    authority = RoomAuthority(bot_level=None, creators=frozenset(), users_default=0)
+    plan = plan_power_levels(current, desired, recorded, authority, bot_id=BOT)
+    assert plan.users[ALICE] == 50 and plan.users[BOB] == 50
+
+    held = hold_withdrawals(plan, current, recorded, withdraw=frozenset(), users_default=0)
+    assert held.held == (ALICE, BOB)
+    assert held.users == current
+    assert held.granted == {ALICE: 100, MALLORY: 50}  # Bob's level is not claimed as the bot's
+
+    released = hold_withdrawals(plan, current, recorded, withdraw=frozenset({ALICE}), users_default=0)
+    assert released.held == (BOB,)
+    assert released.users[ALICE] == 50
+    assert released.granted[ALICE] == 50
+
+
+def test_raising_a_level_is_never_held() -> None:
+    current = {BOT: 100, ALICE: "50"}  # a pre-v10 room may store levels as strings
+    plan = plan_power_levels(current, {ALICE: 100}, {ALICE: 50}, V12, bot_id=BOT)
+    assert hold_withdrawals(plan, current, {ALICE: 50}, withdraw=frozenset(), users_default=0) == plan
+
+
 def test_nothing_held_leaves_the_plan_alone() -> None:
     current = {BOT: 100, ALICE: 50}
     plan = plan_power_levels(current, {}, {ALICE: 50}, V12, bot_id=BOT)

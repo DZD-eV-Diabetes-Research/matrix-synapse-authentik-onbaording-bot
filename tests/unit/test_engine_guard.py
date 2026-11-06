@@ -260,6 +260,28 @@ async def test_more_kicks_than_the_limit_wait_for_a_confirmation() -> None:
     assert "22 reversible destructive actions" in proposed.payload["reason"]  # kicks plus withdrawals
 
 
+async def test_demotions_of_members_who_stay_go_through_the_guard() -> None:
+    """Wave 2 review: plan_power_levels wrote 100 to 50 directly, so the limit never saw it."""
+    staff = [f"u{n:02d}" for n in range(12)]
+    engine, directory, _rooms, effectors, seen = world(staff, ["carol"])
+    directory.groups[0]["attributes"][PL_ATTR] = 100
+    await engine.reconcile_once()
+    assert set(levels(effectors, ROOM1).values()) == {100}
+
+    directory.groups[0]["attributes"][PL_ATTR] = 50  # everybody stays, at a lower level
+    await engine.reconcile_once()
+    assert set(levels(effectors, ROOM1).values()) == {100}
+    [proposed] = [e for e in seen if e.signal is Signal.destructive_actions_suppressed]
+    assert proposed.payload["action"] == "withdraw_power_level"
+    assert "12 reversible destructive actions" in proposed.payload["reason"]
+
+    await engine.guard.confirm(proposed.payload["batch_id"], "@admin:company.org")
+    await engine.reconcile_once()
+    assert set(levels(effectors, ROOM1).values()) == {50}
+    record = effectors.account_data[(ROOM1, granted_power_levels_type("company.org"))]
+    assert set(record["users"].values()) == {50}
+
+
 async def test_up_to_the_limit_runs_without_a_confirmation() -> None:
     staff = [f"u{n:02d}" for n in range(30)]
     engine, directory, _rooms, effectors, seen = world(
