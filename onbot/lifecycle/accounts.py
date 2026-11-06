@@ -11,6 +11,8 @@ is built around these safety principles:
   Authentik user is present, active and in the sync scope. Dropping out of a query (deletion, a lost
   attribute, an ignore-list edit, a mapping change, an empty API answer) never unlocks anybody. A
   tracked user who leaves the sync scope is *frozen* (no unlock, no further step) and reported (D9).
+  The one exception (D14): a *known* user who is disabled is offboarded normally even outside the
+  scope, because "disable, archive and strip the groups" is the usual way to remove somebody.
 * **Dry-run + audit by default (Q6, AD-5).** While ``dry_run`` is on, no effector is called at all,
   not even the restorative unlock; the manager only records bookkeeping timestamps and logs an audit
   line describing what *would* happen.
@@ -28,7 +30,8 @@ which suspends every session and blocks new logins, reversibly (ADR-0005 §7 Q1)
 **Who is tracked.** Disabled Authentik users in the sync scope whose Matrix account exists, plus
 *known users*: every in-scope, active, mapped user is recorded once as ``authentik pk -> MXID``
 (:class:`KnownUsers`). A known user who later disappears from Authentik is treated as deleted and goes
-through the same cooldowns (LIF-02). A Matrix account that was never mapped (service accounts, MAS-only
+through the same cooldowns (LIF-02); a known user who is disabled is offboarded in or out of the scope
+(D14). A Matrix account that was never mapped (service accounts, MAS-only
 users) is never touched.
 
 There is no database (AD-1): the ledger and the known-users record are blobs in the bot's Matrix
@@ -226,10 +229,22 @@ def classify_accounts(
         if entry.authentik_pk is not None:
             bound[mxid].add(entry.authentik_pk)
 
+    known_pks: dict[str, set[str]] = defaultdict(set)
+    for pk, known_user in known.users.items():
+        known_pks[known_user.mxid].add(pk)
+
     candidates = set(ledger.entries) | set(bound)
     candidates |= {u.mxid for u in snapshot.users if u.mxid is not None and u.in_scope and not u.is_active}
     return {
-        mxid: _classify_one(mxid, snapshot, by_pk, computed.get(mxid, []), bound.get(mxid, set()), ledger)
+        mxid: _classify_one(
+            mxid,
+            snapshot,
+            by_pk,
+            computed.get(mxid, []),
+            bound.get(mxid, set()),
+            known_pks.get(mxid, set()),
+            ledger,
+        )
         for mxid in candidates
     }
 
@@ -240,8 +255,12 @@ def _classify_one(
     by_pk: dict[str, DirectoryUser],
     computed: list[DirectoryUser],
     bound_pks: set[str],
+    known_pks: set[str],
     ledger: LifecycleLedger,
 ) -> Classification:
+    """Classify one account. ``bound_pks`` come from the known users record and the ledger,
+    ``known_pks`` from the known users record alone (the D14 exception needs that stronger evidence).
+    """
     tracked = mxid in ledger.entries
     if bound_pks:
         primary = [by_pk[pk] for pk in sorted(bound_pks) if pk in by_pk]
@@ -269,9 +288,16 @@ def _classify_one(
     if any(u.is_active for u in others) or mxid in snapshot.synced_mxids:
         return frozen("another active Authentik user maps to this Matrix account")
     if primary:
-        if not any(u.in_scope for u in primary):
+        if any(u.in_scope for u in primary):
+            status = Classification(AccountStatus.orphaned, "disabled in Authentik", pk)
+        elif any(u.pk in known_pks for u in primary):
+            # D14: a known user (seen active, in scope and mapped earlier) who is disabled and left the
+            # scope in the same go ("disable, archive, strip the groups") is offboarded normally.
+            status = Classification(
+                AccountStatus.orphaned, "disabled in Authentik and outside the sync scope (known user)", pk
+            )
+        else:
             return frozen("disabled in Authentik but outside the sync scope")
-        status = Classification(AccountStatus.orphaned, "disabled in Authentik", pk)
     elif bound_pks or tracked:
         status = Classification(AccountStatus.orphaned, "deleted from Authentik", pk)
     else:
