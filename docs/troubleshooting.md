@@ -101,7 +101,8 @@ itself above them either, because nothing outranks 100. Synapse's `make_room_adm
 not help; it also tops out at 100.
 
 Those rooms therefore stay writable by their user. The only way out is to delete the room
-(`DELETE /_synapse/admin/v1/rooms/<room_id>` with `purge`) and drop its entry from the bot's
-`m.direct` account data, after which the next reconcile recreates it correctly. Be aware that this
+(`DELETE /_synapse/admin/v1/rooms/<room_id>` with `purge`). The bot notices on the next check of
+that user (after a restart, or when they leave a room) that it is no longer in the room, drops the
+entry from its `m.direct` account data and creates a new notice board. Be aware that this
 also re-sends every welcome message, because the per-message bookkeeping lives in the state of the
 room being destroyed — on a live server it pages every user it touches.

@@ -383,8 +383,17 @@ hand.
   than through a direct-message invitation, and without one the client would show it as an untitled
   room.
 - **Users are force-joined by default** (`force_join_onboarding_room`), so the notices land somewhere
-  they actually see. The join happens exactly once — a user who leaves is not dragged back — and
+  they actually see. The join happens exactly once, so a user who leaves is not dragged back, and
   Onbot falls back to a plain invitation if the join is refused.
+- **A user who leaves gets one invitation back.** The room is invite-only, so without it a single
+  click on "Leave" would cut them off from every later announcement. Onbot notices the leave and
+  invites them once; whether they accept is up to them, and a user who declines or leaves again is
+  not invited a second time. Broadcasts skip rooms whose user is no longer in them. An admin can
+  always put a user back with Synapse's admin join API.
+- **A notice board the bot is no longer in is replaced.** If such a room was purged by hand, or the
+  user of a very old room removed the bot, Onbot drops it from its `m.direct` and opens a new notice
+  board (which sends the welcome messages again). A notice board whose onbot state event was edited
+  into something unreadable is reported in the log once per start and left alone.
 - **The welcome room is deliberately separate and unencrypted**, even when your group rooms are
   encrypted: the bot posts here, and it stays outside encryption everywhere it writes messages.
 - **A gotcha for old deployments:** welcome rooms created by a much earlier Onbot granted the user the

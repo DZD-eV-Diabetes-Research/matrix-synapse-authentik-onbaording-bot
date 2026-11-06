@@ -44,6 +44,8 @@ from collections.abc import Collection
 from datetime import UTC, datetime
 from urllib.parse import quote
 
+from pydantic import ValidationError
+
 from onbot.clients.base import ApiError
 from onbot.clients.matrix import ApiClientMatrix
 from onbot.clients.synapse_admin import ApiClientSynapseAdmin
@@ -69,6 +71,9 @@ M_DIRECT = "m.direct"
 # Placeholders a welcome message can only use when a parent space is configured. A message using one
 # of these without a space is held back rather than sent with a hole in it.
 _SPACE_PLACEHOLDERS = frozenset({"space_link", "space_alias", "space_name"})
+
+# How the homeserver answers a read of a room the bot is not in (any more).
+_NOT_IN_ROOM = (403, 404)
 
 # A force-join the homeserver refuses for a reason of its own (the user is gone, the room is not
 # joinable): degrade to the standing invite rather than failing the whole welcome.
@@ -196,8 +201,25 @@ class WelcomeService:
         if created:
             state = DirectRoomState(user_id=mxid, setup_complete=False)
         else:
-            state = await self._load_direct_state(room_id, mxid)
-            await self._heal_power_levels(room_id)
+            try:
+                state = await self._load_direct_state(room_id, mxid)
+                await self._heal_power_levels(room_id)
+            except ApiError as exc:
+                if exc.status_code not in _NOT_IN_ROOM or room_id in await self.client.joined_rooms():
+                    raise
+                # The bot is no longer in it (purged by hand, or kicked by a user of a room from
+                # before the notice boards): a room nobody can post into is no notice board (ONB-08).
+                log.warning(
+                    "the bot is no longer in %s, the notice board of %s (HTTP %s); opening a new one",
+                    room_id,
+                    mxid,
+                    exc.status_code,
+                )
+                await self._forget_direct_room(mxid, room_id)
+                room_id, created = await self._ensure_direct_room(mxid)
+                state = DirectRoomState(user_id=mxid, setup_complete=False)
+            else:
+                await self._maybe_reinvite(room_id, mxid, state)
         if not state.setup_complete:
             await self._finish_setup(room_id, mxid, state)
 
@@ -442,6 +464,53 @@ class WelcomeService:
         content = await self.client.get_room_state_event(room_id, self._direct_event_type)
         if content is None:
             return DirectRoomState(user_id=mxid)
-        parsed = parse_room_state(OnbotRoomType.direct_room, content)
+        try:
+            parsed = parse_room_state(OnbotRoomType.direct_room, content)
+        except ValidationError as exc:
+            # Guessing would either re-send every message or none; neither is the bot's call (ONB-08).
+            raise NoticeBoardUnreadable(
+                f"the onbot state of their notice board {room_id} cannot be read ({exc.error_count()} "
+                f"problem(s), first: {exc.errors()[0]['msg']}); correct or remove the "
+                f"{self._direct_event_type} state event by hand"
+            ) from exc
         assert isinstance(parsed, DirectRoomState)
         return parsed
+
+    async def _forget_direct_room(self, mxid: str, room_id: str) -> None:
+        """Drop ``room_id`` from ``mxid``'s ``m.direct`` entry (and the entry, once it is empty)."""
+        async with self._direct_lock:
+            direct = await self.client.get_account_data(self.bot_id, M_DIRECT)
+            rooms = [r for r in direct.get(mxid) or [] if r != room_id]
+            if rooms:
+                direct[mxid] = rooms
+            else:
+                direct.pop(mxid, None)
+            await self.client.set_account_data(self.bot_id, M_DIRECT, direct)
+
+    async def _maybe_reinvite(self, room_id: str, mxid: str, state: DirectRoomState) -> None:
+        """Invite a user who left their notice board back, once (ONB-07).
+
+        The room is invite-only and the original invitation is used up, so a user who clicked
+        "Leave" would otherwise never get announcements again. One fresh invitation lets them return
+        when they want to; they are not dragged back in. A user who leaves (or declines) again stays
+        out. A banned user is never invited.
+        """
+        if state.reinvited_at is not None:
+            return
+        if await self.client.get_membership(room_id, mxid) != "leave":
+            return
+        try:
+            await self.client.invite_user(room_id, mxid)
+        except ApiError as exc:
+            if exc.status_code >= 500:
+                raise
+            log.warning(
+                "could not invite %s back into their notice board %s (HTTP %s)",
+                mxid,
+                room_id,
+                exc.status_code,
+            )
+            return
+        state.reinvited_at = int(datetime.now(UTC).timestamp())
+        await self._persist(room_id, state)
+        log.info("%s had left their notice board %s; invited them back once", mxid, room_id)

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -20,12 +21,13 @@ from onbot.config import (
     WelcomeMessage,
 )
 from onbot.onboarding.notice_board import notice_board_power_levels
-from onbot.onboarding.welcome import WelcomeService, welcome_txn_id
+from onbot.onboarding.welcome import NoticeBoardUnreadable, WelcomeService, welcome_txn_id
 from onbot.reconciler.state import OnbotRoomType
 from onbot.rooms.identity import RoomIdentity, RoomKey
 
 BOT = "@bot:matrix.test"
 ALICE = "@alice:matrix.test"
+BOB = "@bob:matrix.test"
 
 
 class FakeSynapseAdmin:
@@ -66,8 +68,26 @@ class FakeMatrixClient:
         self.avatars: dict[str, str] = {}
         self.create_calls: list[dict[str, Any]] = []
         self.txn_ids: list[str | None] = []
+        # (room, user) -> membership; a user is joined unless a test says otherwise.
+        self.memberships: dict[tuple[str, str], str | None] = {}
+        self.invites: list[tuple[str, str]] = []
+        # Rooms the bot has left (purged or kicked): reading their state answers 403.
+        self.gone: set[str] = set()
+
+    async def get_membership(self, room_id: str, user_id: str) -> str | None:
+        return self.memberships.get((room_id, user_id), "join")
+
+    async def invite_user(self, room_id: str, user_id: str) -> None:
+        self.invites.append((room_id, user_id))
+        self.memberships[(room_id, user_id)] = "invite"
+
+    async def joined_rooms(self) -> list[str]:
+        rooms = {room for room, _ in self.room_state} | set(self.power_levels)
+        return sorted(rooms - self.gone)
 
     async def get_room_power_levels(self, room_id: str) -> dict[str, Any]:
+        if room_id in self.gone:
+            raise ApiError("GET", f"/rooms/{room_id}/state", 403, {"errcode": "M_FORBIDDEN"})
         return dict(self.power_levels.get(room_id, {}))
 
     async def set_room_power_levels(self, room_id: str, power_levels: dict[str, Any]) -> None:
@@ -106,6 +126,8 @@ class FakeMatrixClient:
     async def get_room_state_event(
         self, room_id: str, event_type: str, state_key: str = ""
     ) -> dict[str, Any] | None:
+        if room_id in self.gone:
+            raise ApiError("GET", f"/rooms/{room_id}/state", 403, {"errcode": "M_FORBIDDEN"})
         return self.room_state.get((room_id, event_type))
 
     async def put_room_state_event(
@@ -684,3 +706,83 @@ async def test_prune_writes_nothing_when_nothing_is_gone() -> None:
 
     assert await svc.prune_direct({ALICE}) == []
     assert writes == []
+
+
+# --- ONB-07: a user who left their notice board is invited back once ---
+
+
+async def test_a_user_who_left_is_invited_back_once_and_not_force_joined() -> None:
+    client = FakeMatrixClient()
+    admin = FakeSynapseAdmin()
+    svc = WelcomeService(client, _config(["hi"]), admin=admin)  # type: ignore[arg-type]
+    await svc.welcome_user(ALICE)
+    client.memberships[("!dm-1:matrix.test", ALICE)] = "leave"
+
+    await svc.welcome_user(ALICE)  # after a restart, or the listener saw the leave
+    assert client.invites == [("!dm-1:matrix.test", ALICE)]
+    assert isinstance(_direct_state(client, "!dm-1:matrix.test")["reinvited_at"], int)
+
+    client.memberships[("!dm-1:matrix.test", ALICE)] = "leave"  # declined, or left again
+    await svc.welcome_user(ALICE)
+    assert client.invites == [("!dm-1:matrix.test", ALICE)]  # once only
+    assert len(admin.joined) == 1  # never dragged back in
+
+
+async def test_a_banned_or_joined_user_is_not_invited() -> None:
+    client = FakeMatrixClient()
+    svc = WelcomeService(client, _config(["hi"]))  # type: ignore[arg-type]
+    await svc.welcome_user(ALICE)
+    await svc.welcome_user(ALICE)
+    client.memberships[("!dm-1:matrix.test", ALICE)] = "ban"
+    await svc.welcome_user(ALICE)
+
+    assert client.invites == []
+
+
+# --- ONB-08: a notice board the bot cannot read any more ---
+
+
+async def test_a_notice_board_the_bot_left_is_replaced_by_a_new_one() -> None:
+    """Before the fix the 403 failed the welcome on every pass, forever."""
+    client = FakeMatrixClient()
+    client.account_data[(BOT, "m.direct")] = {ALICE: ["!purged:matrix.test"], BOB: ["!b:matrix.test"]}
+    client.gone.add("!purged:matrix.test")
+    svc = WelcomeService(client, _config(["hi"]))  # type: ignore[arg-type]
+
+    await svc.welcome_user(ALICE)
+
+    direct = client.account_data[(BOT, "m.direct")]
+    assert direct[ALICE] == ["!dm-1:matrix.test"]
+    assert direct[BOB] == ["!b:matrix.test"]
+    assert client.sent == [("!dm-1:matrix.test", "hi")]
+
+
+async def test_a_403_in_a_room_the_bot_is_still_in_is_not_taken_for_a_lost_room() -> None:
+    client = FakeMatrixClient()
+    client.account_data[(BOT, "m.direct")] = {ALICE: ["!dm:matrix.test"]}
+    client.power_levels["!dm:matrix.test"] = {}
+
+    async def refused(room_id: str) -> dict[str, Any]:
+        raise ApiError("GET", "/state/m.room.power_levels", 403)
+
+    client.get_room_power_levels = refused  # type: ignore[method-assign]
+    svc = WelcomeService(client, _config(["hi"]))  # type: ignore[arg-type]
+
+    with pytest.raises(ApiError):
+        await svc.welcome_user(ALICE)
+    assert client.account_data[(BOT, "m.direct")] == {ALICE: ["!dm:matrix.test"]}
+    assert client.created_dms == 0
+
+
+async def test_unparsable_notice_board_state_is_reported_not_guessed() -> None:
+    client = FakeMatrixClient()
+    client.account_data[(BOT, "m.direct")] = {ALICE: ["!dm:matrix.test"]}
+    client.room_state[("!dm:matrix.test", "test.matrix.onbot.direct_room")] = {
+        "user_id": ALICE,
+        "welcome_messages_sent": "hand-edited",
+    }
+    svc = WelcomeService(client, _config(["hi"]))  # type: ignore[arg-type]
+
+    with pytest.raises(NoticeBoardUnreadable, match=re.escape("!dm:matrix.test")):
+        await svc.welcome_user(ALICE)
+    assert client.sent == []

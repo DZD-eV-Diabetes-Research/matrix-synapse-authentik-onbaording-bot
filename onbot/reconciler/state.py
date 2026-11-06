@@ -79,6 +79,9 @@ class DirectRoomState(_OnbotRoomState):
     # event carrying one with M_BAD_JSON.
     # https://spec.matrix.org/latest/appendices/#canonical-json
     force_joined_at: int | None = None
+    # Set once, when the bot invited a user who had left the notice board back in (ONB-07). Whole
+    # seconds, like `force_joined_at`. A user who leaves again is not invited a second time.
+    reinvited_at: int | None = None
     # False from creation until the room is fully set up (space link, avatar, force-join). The marker
     # is written in the room's `initial_state`, so a failure or a restart after `createRoom` leaves
     # it False, and the next welcome finishes the setup instead of skipping it forever (ONB-02).
