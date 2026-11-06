@@ -26,9 +26,13 @@ id, reported to the admin room; an allowlisted admin releases exactly that batch
 or closes it with ``!reject <id>``. Released actions run on the next pass, and only those that still
 apply then: a confirmation never covers more than the admin saw. A batch expires after
 ``confirmation_expiry_sec``; if its actions still apply, a later pass proposes them again. A
-rejected batch holds its actions until the condition that created it is gone (the input looks
-plausible again, or the pass no longer exceeds the limit with them), at the latest until it expires;
-then they are judged again like any others.
+confirmed batch has the same time, counted from its confirmation, to run (a room deletion can wait
+for the teardown of its room); one that has not run by then is closed and reported, and its actions
+are judged again. A rejected batch holds its actions until the condition that created it is gone (the
+input looks plausible again, or the pass no longer exceeds the limit with them), at the latest until
+it expires; then they are judged again like any others. Its irreversible actions (erasures, room
+deletions) stay held until it expires, whatever the pass looks like: that fewer of them remain than
+``confirm_irreversible_actions_from`` is no reason to carry out what an admin rejected.
 
 The guard fails closed on its own memory: a stored state it cannot read holds every destructive action
 of the pass, is reported once in the admin room and is never overwritten. An allowlisted admin resets
@@ -253,6 +257,11 @@ class GuardDecision:
     after_prerequisite: frozenset[str] = frozenset()
     # Rejected batches that end with this pass (id, why); their actions were judged afresh.
     ended_rejections: tuple[tuple[str, str], ...] = ()
+    # Rejected batches whose condition is gone but whose irreversible actions stay held until they
+    # expire (id, why): the other actions were judged afresh.
+    narrowed_rejections: tuple[tuple[str, str], ...] = ()
+    # Confirmed batches that expired before they could run; their actions were judged afresh.
+    expired_confirmations: tuple[str, ...] = ()
     # The stored guard state could not be read: everything is held and nothing is recorded.
     state_unreadable: bool = False
 
@@ -381,11 +390,13 @@ def decide(
 ) -> GuardDecision:
     """Decide which planned actions may run this pass (pure).
 
-    * Actions of a confirmed batch run if they are still planned (the re-check of D13).
+    * Actions of a confirmed batch run if they are still planned (the re-check of D13), until the
+      batch expires; then they are judged afresh.
     * Actions of a pending batch stay paused until it expires: only confirming *that* batch releases
       them, never a later pass that happens to look normal.
     * Actions of a rejected batch stay paused while the condition that created the batch lasts (see
-      :func:`_rejection_end`). Once it ends they are judged afresh, like everything else.
+      :func:`_rejection_end`). Once it ends they are judged afresh, like everything else, except its
+      irreversible actions: they stay paused until the batch expires.
     * Everything else passes layer 1 (implausible input pauses all of it), layer 2 (too many
       reversible actions pauses those) and layer 3 (from a small number on, irreversible actions
       pause).
@@ -401,9 +412,14 @@ def decide(
     confirmed: dict[str, str] = {}
     waiting: dict[str, str] = {}
     rejected: list[GuardBatch] = []
+    expired_confirmations: list[str] = []
     for batch in state.batches.values():
         if batch.status is BatchStatus.confirmed:
-            confirmed.update(dict.fromkeys(batch.keys, batch.id))
+            if now >= batch.expires_at:
+                # Not run within its time (a deletion whose teardown kept waiting): judged afresh.
+                expired_confirmations.append(batch.id)
+            else:
+                confirmed.update(dict.fromkeys(batch.keys, batch.id))
         elif batch.status is BatchStatus.rejected:
             rejected.append(batch)
         elif now < batch.expires_at:
@@ -418,6 +434,7 @@ def decide(
         fresh_irreversible=len(irreversible_keys - covered),
     )
     ended: list[tuple[str, str]] = []
+    narrowed: list[tuple[str, str]] = []
     for batch in rejected:
         why = _rejection_end(
             batch,
@@ -427,9 +444,17 @@ def decide(
             limits=limits,
             now=now,
         )
+        irreversible_held = {a.key for a in batch.actions if a.irreversible}
         if why is None:
             for key in batch.keys:
                 waiting.setdefault(key, batch.id)
+        elif now < batch.expires_at and irreversible_held:
+            # An admin rejected these erasures or room deletions: they wait for the expiry, even when
+            # fewer of them remain than the limit (layer 3 would let one or two run on their own).
+            for key in irreversible_held:
+                waiting.setdefault(key, batch.id)
+            if batch.keys - irreversible_held:
+                narrowed.append((batch.id, why))
         else:
             ended.append((batch.id, why))
 
@@ -499,6 +524,8 @@ def decide(
         over_limit=over_limit,
         irreversible_over_limit=irreversible_over_limit,
         ended_rejections=tuple(ended),
+        narrowed_rejections=tuple(narrowed),
+        expired_confirmations=tuple(sorted(expired_confirmations)),
         after_prerequisite=frozenset(a.key for a in blocked),
     )
 
@@ -546,16 +573,31 @@ def _utc(ts: float) -> str:
     return time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(ts))
 
 
+def _rejection_hold_text(batch: GuardBatch) -> str:
+    """How long a rejected batch holds its actions."""
+    until = _utc(batch.expires_at)
+    irreversible = any(a.irreversible for a in batch.actions)
+    reversible = any(not a.irreversible for a in batch.actions)
+    if irreversible and reversible:
+        return (
+            "holds its irreversible actions until "
+            f"{until} and the others until the condition that created it is gone, at the latest until then"
+        )
+    if irreversible:
+        return f"holds its irreversible actions until {until}"
+    return f"holds its actions until the condition that created it is gone, at the latest until {until}"
+
+
 def _batch_status_text(batch: GuardBatch) -> str:
     if batch.status is BatchStatus.rejected:
-        return (
-            f"rejected by {batch.decided_by}; holds its actions until the condition that created it is "
-            f"gone, at the latest until {_utc(batch.expires_at)}"
-        )
+        return f"rejected by {batch.decided_by}; {_rejection_hold_text(batch)}"
     if batch.status is BatchStatus.confirmed:
-        # Confirmed batches do not expire; one whose room deletions wait for a paused teardown of
-        # the same room stays listed until they can run.
-        return f"confirmed by {batch.decided_by}; runs on the next pass that may carry it out"
+        # One whose room deletions wait for a paused teardown of the same room stays listed until
+        # they can run, at the latest until it expires.
+        return (
+            f"confirmed by {batch.decided_by}; runs on the next pass that may carry it out, at the "
+            f"latest until {_utc(batch.expires_at)}, then it is closed and its actions are judged again"
+        )
     return f"{batch.status.value}, expires {_utc(batch.expires_at)}"
 
 
@@ -602,6 +644,21 @@ def record(
         if batch.status is not BatchStatus.confirmed:
             continue
         if batch.decided_at is None or batch.decided_at > decision.decided_at:
+            continue
+        if batch_id in decision.expired_confirmations:
+            del state.batches[batch_id]
+            text = (
+                f"Confirmed batch {batch.id} ({summarize_actions(batch.actions)}, confirmed by "
+                f"{batch.decided_by}) expired before it could run, for example a room deletion that "
+                "kept waiting for the teardown of its room. Its actions that still apply are judged "
+                "again like any others: what still needs a confirmation is proposed again under a new id."
+            )
+            notices.append(
+                GuardNotice(
+                    Signal.guard_batch_closed,
+                    {"batch_id": batch.id, "outcome": "confirmation_expired", "text": text},
+                )
+            )
             continue
         if not complete and batch_id not in decision.confirmed_batches:
             continue  # a failed pass may just not have seen its actions; try again
@@ -650,6 +707,24 @@ def record(
         if ended is not None and ended.status is BatchStatus.rejected:
             del state.batches[batch_id]
             notices.append(_rejection_ended(ended, why))
+
+    for batch_id, why in decision.narrowed_rejections:
+        narrowed = state.batches.get(batch_id)
+        if narrowed is not None and narrowed.status is BatchStatus.rejected:
+            released = [a for a in narrowed.actions if not a.irreversible]
+            narrowed.actions = [a for a in narrowed.actions if a.irreversible]
+            text = (
+                f"Rejected batch {narrowed.id} (rejected by {narrowed.decided_by}) partly ended: {why}. "
+                f"Its other actions ({summarize_actions(released)}) are judged again like any others. "
+                f"Its irreversible actions ({summarize_actions(narrowed.actions)}) stay held until "
+                f"{_utc(narrowed.expires_at)}."
+            )
+            notices.append(
+                GuardNotice(
+                    Signal.guard_batch_closed,
+                    {"batch_id": narrowed.id, "outcome": "rejection_narrowed", "text": text},
+                )
+            )
 
     for batch_id in list(state.batches):
         batch = state.batches[batch_id]
@@ -938,17 +1013,14 @@ class DestructiveActionGuard:
         return [GuardNotice(Signal.guard_state_unreadable, {"detail": problem, "text": text})]
 
     async def open_batches(self) -> list[GuardBatch]:
-        """Pending and rejected batches that have not expired, and confirmed ones waiting for a pass.
+        """Batches that have not expired: pending, rejected, and confirmed ones waiting for a pass.
 
         Raises :class:`GuardStateUnreadable` when the state cannot be read.
         """
         async with self._lock:
             state = await self.store.load()
         now = self.clock()
-        return sorted(
-            (b for b in state.batches.values() if b.status is BatchStatus.confirmed or now < b.expires_at),
-            key=lambda b: b.created_at,
-        )
+        return sorted((b for b in state.batches.values() if now < b.expires_at), key=lambda b: b.created_at)
 
     async def confirm(self, batch_id: str, admin: str) -> tuple[bool, str]:
         """Release one batch; returns (released, reply text)."""
@@ -985,9 +1057,8 @@ class DestructiveActionGuard:
                 return False, f"There is no open batch {batch_id!r}. !pending lists the open batches."
             if batch.status is BatchStatus.rejected:
                 return False, (
-                    f"Batch {batch_id} was rejected by {batch.decided_by}. It holds its actions until "
-                    f"the condition that created it is gone, at the latest until {_utc(batch.expires_at)}; "
-                    "then they are judged again."
+                    f"Batch {batch_id} was rejected by {batch.decided_by}. It "
+                    f"{_rejection_hold_text(batch)}; then they are judged again."
                 )
             if batch.status is BatchStatus.confirmed:
                 return False, f"Batch {batch_id} is already confirmed; it runs on the next pass."
@@ -999,6 +1070,10 @@ class DestructiveActionGuard:
             batch.status = status
             batch.decided_by = admin
             batch.decided_at = now
+            if status is BatchStatus.confirmed:
+                # A confirmation in the last minute must not be lost: the batch gets the full time
+                # to run from now (a room deletion may wait for the teardown of its room).
+                batch.expires_at = now + self.limits.confirmation_expiry_sec
             await self.store.save(state)
         if status is BatchStatus.confirmed:
             log.warning(
@@ -1006,11 +1081,22 @@ class DestructiveActionGuard:
             )
             return True, (
                 f"Batch {batch_id} confirmed ({summarize_actions(batch.actions)}). It runs on the next "
-                "pass, which starts now; only actions that still apply are carried out."
+                "pass, which starts now; only actions that still apply are carried out. If it cannot "
+                f"run by {_utc(batch.expires_at)}, it is closed and its actions are judged again."
             )
         log.warning("guard: %s rejected batch %s (%s)", admin, batch_id, summarize_actions(batch.actions))
+        if any(a.irreversible for a in batch.actions):
+            held = f"Its irreversible actions do not run before {_utc(batch.expires_at)}; " + (
+                "the others not while the condition that created it lasts, at the latest until then. "
+                if any(not a.irreversible for a in batch.actions)
+                else ""
+            )
+        else:
+            held = (
+                "None of its actions runs while the condition that created it lasts, at the latest until "
+                f"{_utc(batch.expires_at)}. "
+            )
         return True, (
-            f"Batch {batch_id} rejected: none of its actions runs while the condition that created it "
-            f"lasts, at the latest until {_utc(batch.expires_at)}. Then its actions are judged again "
-            "like any others; !pending shows it meanwhile."
+            f"Batch {batch_id} rejected. {held}Then its actions are judged again like any others; "
+            "!pending shows it meanwhile."
         )

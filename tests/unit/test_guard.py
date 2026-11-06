@@ -459,6 +459,32 @@ async def test_confirm_and_reject_refuse_unknown_expired_and_repeated_ids() -> N
     assert not ok and "expired" in reply
 
 
+async def test_a_confirmation_gets_the_full_time_to_run_and_then_expires() -> None:
+    guard, clock, seen = _service(MemoryGuardStore(state_with_baseline()))
+    batch_id = await _pause(guard, [kick(1)])
+    clock.now += 90  # confirmed shortly before the batch would have expired
+    ok, reply = await guard.confirm(batch_id, "@admin:x")
+    assert ok and "If it cannot run by" in reply
+    [batch] = await guard.open_batches()
+    assert batch.expires_at == clock.now + 100
+
+    clock.now += 100  # it never ran (no pass): closed, and no longer listed
+    assert await guard.open_batches() == []
+    decision = await guard.decide(counts(1, 10), [kick(1)])
+    assert decision.expired_confirmations == (batch_id,)
+    await guard.record(decision, [kick(1)], complete=True)
+    assert any(e.payload.get("outcome") == "confirmation_expired" for e in seen)
+
+
+async def test_rejecting_irreversible_actions_says_they_wait_for_the_expiry() -> None:
+    guard, _, _ = _service(MemoryGuardStore(state_with_baseline()))
+    batch_id = await _pause(guard, [kick(1), erase(2)])
+    ok, reply = await guard.reject(batch_id, "@admin:x")
+    assert ok and "Its irreversible actions do not run before" in reply
+    ok, reply = await guard.confirm(batch_id, "@admin:x")
+    assert not ok and "holds its irreversible actions until" in reply
+
+
 async def test_rejecting_closes_the_batch_without_running_it() -> None:
     guard, _, _ = _service(MemoryGuardStore(state_with_baseline()))
     batch_id = await _pause(guard, [kick(1)])
@@ -722,7 +748,8 @@ def test_a_layer_3_batch_expires_and_is_proposed_again_if_it_still_applies() -> 
     assert state.batches["zzzzzz"].irreversible_over_limit
 
 
-def test_a_rejected_layer_3_batch_holds_while_its_pass_still_has_three_then_ends() -> None:
+def test_a_rejected_layer_3_batch_holds_its_irreversible_actions_until_it_expires() -> None:
+    """Wave 3 review: one user coming back must not erase the other two an admin rejected."""
     state = state_with_baseline()
     planned = [erase(n) for n in range(3)]
     batch_id = _proposed(state, planned, counts())
@@ -736,10 +763,72 @@ def test_a_rejected_layer_3_batch_holds_while_its_pass_still_has_three_then_ends
     assert decision.permitted == frozenset({erase(50).key})  # one fresh one alone runs
     assert decision.ended_rejections == ()
 
-    # One of them came back: two remain, below the limit, so the batch ends and they are judged afresh.
+    # One of them came back: two remain, below the limit, and they still wait for the expiry.
     decision = decide(state, counts(), planned[:2], LIMITS, now=2)
+    assert decision.permitted == frozenset()
+    assert decision.ended_rejections == () and decision.narrowed_rejections == ()
+    record(state, decision, planned[:2], LIMITS, now=2, complete=True)
+    assert state.batches[batch_id].status is BatchStatus.rejected
+    assert "holds its irreversible actions until" in describe_batch(state.batches[batch_id])
+
+    # At the expiry the batch ends and they are judged afresh: two run on their own.
+    decision = decide(state, counts(), planned[:2], LIMITS, now=100)
     assert decision.permitted == {a.key for a in planned[:2]}
     assert [b for b, _ in decision.ended_rejections] == [batch_id]
+
+
+def test_a_rejected_mixed_batch_releases_its_reversible_part_and_holds_the_irreversible_one() -> None:
+    """Layer 1 and layer 2 parts keep their end rule; the erasure waits for the expiry."""
+    state = state_with_baseline()
+    planned = [kick(1), lock(2), erase(3)]
+    batch_id = _proposed(state, planned, counts(1, 10))  # a broken token: layer 1
+    _reject(state, batch_id)
+
+    # The input is plausible again: the kick and the lock are judged afresh, the erasure is not.
+    decision = decide(state, counts(), planned, LIMITS, now=5)
+    assert decision.permitted == {kick(1).key, lock(2).key}
+    assert [b for b, _ in decision.narrowed_rejections] == [batch_id]
+    assert decision.ended_rejections == ()
+    notices = record(state, decision, planned, LIMITS, now=5, complete=True)
+    narrowed = [n for n in notices if n.payload.get("outcome") == "rejection_narrowed"]
+    assert len(narrowed) == 1 and "erase 1 account(s)" in narrowed[0].payload["text"]
+    assert state.batches[batch_id].keys == {erase(3).key}
+    assert len(state.batches) == 1  # nothing new proposed
+
+    decision = decide(state, counts(), [erase(3)], LIMITS, now=50)
+    assert decision.permitted == frozenset()
+    record(state, decision, [erase(3)], LIMITS, now=50, complete=True)
+    decision = decide(state, counts(), [erase(3)], LIMITS, now=100)
+    assert decision.permitted == {erase(3).key}
+    notices = record(state, decision, [erase(3)], LIMITS, now=100, complete=True)
+    assert _ended(notices) == [batch_id] and state.batches == {}
+
+
+def test_a_confirmed_batch_that_cannot_run_expires_and_is_judged_afresh() -> None:
+    """Wave 3 review: a confirmed deletion waiting for its paused teardown no longer waits forever."""
+    state = state_with_baseline()
+    first_pass = [x for n in range(3) for x in (teardown(n), room_delete(n))]
+    first = _proposed(state, first_pass, counts())
+    _confirm(state, first, at=1)
+    state.batches[first].expires_at = 60
+
+    # The teardowns are over the layer-2 limit now, so the confirmed deletions keep waiting...
+    stuck = [x for n in range(11) for x in (teardown(n), room_delete(n))]
+    decision = decide(state, counts(), stuck, LIMITS, now=2)
+    record(state, decision, stuck, LIMITS, now=2, complete=True, id_factory=lambda: "bbbbbb")
+    assert state.batches[first].status is BatchStatus.confirmed
+    assert "at the latest until" in describe_batch(state.batches[first])
+
+    # ...until the confirmation expires: closed, reported, and its deletions judged afresh (they still
+    # wait for their teardown, so they are proposed again under a new id).
+    decision = decide(state, counts(), stuck, LIMITS, now=60)
+    assert decision.expired_confirmations == (first,)
+    assert not decision.permitted & {room_delete(n).key for n in range(3)}
+    notices = record(state, decision, stuck, LIMITS, now=60, complete=True, id_factory=lambda: "cccccc")
+    assert first not in state.batches
+    expired = [n for n in notices if n.payload.get("outcome") == "confirmation_expired"]
+    assert len(expired) == 1 and first in expired[0].payload["text"]
+    assert {room_delete(n).key for n in range(3)} <= state.batches["cccccc"].keys
 
 
 def test_a_room_deletion_never_runs_while_its_teardown_is_paused() -> None:
