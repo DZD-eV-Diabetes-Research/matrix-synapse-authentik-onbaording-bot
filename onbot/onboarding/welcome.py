@@ -13,7 +13,7 @@ reconciler signal *and* a join event):
   message (G4.3). Already-sent messages are skipped; only new/changed ones go out.
 * **One force-join ever** — recorded as ``force_joined_at`` in that same state event, so a user who
   leaves the notice board is not re-joined on the next reconcile tick.
-* **Setup finishes eventually** — the notice board is created with its marker in ``initial_state``
+* **Setup finishes eventually:** the notice board is created with its marker in ``initial_state``
   (:mod:`onbot.rooms.provision`), saying ``setup_complete: false``. Space link, avatar and force-join
   happen afterwards, and only then is the flag set. A failure or a restart in between leaves the flag
   unset, so the next welcome of that user finishes the setup instead of skipping it forever (ONB-02).
