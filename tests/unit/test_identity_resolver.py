@@ -247,11 +247,11 @@ async def test_links_that_match_nobody_point_at_the_subject_setting() -> None:
     users = [_user(1, "alice"), _user(2, "bob")]
     result = await resolver.resolve(users, bind=["1", "2"], matrix_mxids={mx("alice"), mx("bob")})
     assert any("upstream_subject_attribute" in r for r in reports)
-    # The links say nothing while no subject matches: alice is neither rejected as a stranger to her
-    # own account nor bound on the unchecked guess; bound users resolve as usual.
+    # A pass whose in-scope users have no link of their own cannot be told apart from a wrong
+    # setting: the guess of a MAS-linked account is skipped and never bound; bound users resolve.
     assert result.mxids == {"2": mx("bob")}
-    assert result.rejected == {}
-    assert result.deferred == {"1": mx("alice")}
+    assert result.rejected == {"1": mx("alice")}
+    assert result.deferred == {}
     assert store.mxids() == {"2": mx("bob")}
 
 
@@ -386,10 +386,11 @@ async def test_while_mas_cannot_be_read_users_never_seen_are_deferred_not_bound(
     mas.fail = True
     resolver, reports = _resolver(_config(mas=True), store, mas)
     renamed = _user(1, "alice2")  # never bound, the attribute names somebody else's account
-    users = [renamed, _user(3, "bob")]
+    newcomer = _user(4, "dora")  # never logged in: no account, so the guess touches nobody
+    users = [renamed, _user(3, "bob"), newcomer]
     existing = {mx("alice"), mx("alice2"), mx("bob")}
-    result = await resolver.resolve(users, bind=["1", "3"], matrix_mxids=existing)
-    assert result.mxids == {"3": mx("bob")}
+    result = await resolver.resolve(users, bind=["1", "3", "4"], matrix_mxids=existing)
+    assert result.mxids == {"3": mx("bob"), "4": mx("dora")}
     assert result.deferred == {"1": mx("alice2")}
     assert mx("alice2") in result.held_mxids  # no join, kick, lock or erase of that account
     assert store.mxids() == {"3": mx("bob")}
@@ -397,8 +398,8 @@ async def test_while_mas_cannot_be_read_users_never_seen_are_deferred_not_bound(
 
     mas.fail = False
     await resolver.refresh()
-    result = await resolver.resolve(users, bind=["1", "3"], matrix_mxids=existing)
-    assert result.mxids == {"1": mx("alice"), "3": mx("bob")}
+    result = await resolver.resolve(users, bind=["1", "3", "4"], matrix_mxids=existing)
+    assert result.mxids == {"1": mx("alice"), "3": mx("bob"), "4": mx("dora")}
     assert result.deferred == {}
     assert store.mxids() == {"1": mx("alice"), "3": mx("bob")}
 

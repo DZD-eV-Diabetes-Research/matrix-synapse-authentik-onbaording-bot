@@ -30,14 +30,18 @@ A guess never takes an account MAS links to somebody else, even when that owner 
 call and was never bound (disabled or outside the sync scope): the guesser is skipped and reported
 (D21, wave 3 review).
 
-While MAS is configured but cannot be read, or its links match no user of a full pass (a wrong
-``upstream_subject_attribute``), a guess cannot be checked against the links. Users onbot has never
-seen are then **deferred**: not resolved, not bound, and the account their mapping attribute names
-is left alone for the pass (no join, kick, power-level change, lock or erase), like an account in a
-conflict. Users with a recorded binding are resolved from it as usual. Recording a guess meanwhile
-would turn it into a binding, which later counts as authoritative evidence against the real,
-MAS-linked owner; rejecting every guess of a linked account instead would treat each user as a
-stranger to their own account while the subject setting is wrong.
+While MAS is configured but cannot be read, a guess cannot be checked against the links. Users onbot
+has never seen are then **deferred**: not resolved, not bound, and the account their mapping
+attribute names is left alone for the pass (no join, kick, power-level change, lock or erase), like
+an account in a conflict. Users with a recorded binding are resolved from it as usual. Recording a
+guess meanwhile would turn it into a binding, which later counts as authoritative evidence against
+the real, MAS-linked owner. A guess of an account that does not exist is not deferred (it touches
+nobody), so users who never logged in keep counting as users in scope for the guard.
+
+A wrong ``upstream_subject_attribute`` (links that match nobody) is only reported: telling it apart
+from a pass whose in-scope users simply have not logged in yet is not possible per pass. Meanwhile
+every user never seen whose attribute names a MAS-linked account is rejected as above (skipped, not
+bound); the guard's input check catches the mass effect on a deployment where nobody is bound yet.
 """
 
 from __future__ import annotations
@@ -383,21 +387,26 @@ class IdentityResolver:
             for mxid in mxids:
                 held.setdefault(mxid, tuple(sorted(claims[mxid])))
         held_pks = {pk for pks in held.values() for pk in pks}
-        # MAS has links, but none matches any user of a full pass: the subject setting is wrong, so
-        # the links say nothing about who owns what (reported below).
+        # MAS links, but none matches any user of a full pass: possibly a wrong subject setting
+        # (reported below). Possibly not: the active users in scope may just not have logged in yet
+        # while the one linked owner is disabled, so this changes nothing about the resolution.
         mas_no_match = bool(
             bind and self._mas_view is not None and self._mas_view.links and users and not mas_matches
         )
-        # MAS is configured but unreadable or not matching: a guess cannot be checked against the
-        # links, so a user never seen is deferred rather than resolved (and bound) on the attribute
-        # alone. A binding recorded now would later count as evidence against the MAS-linked owner.
-        mas_unchecked = self.mas is not None and (self._mas_view is None or mas_no_match)
+        # MAS is configured but unreadable: a guess cannot be checked against the links, so a user
+        # never seen is deferred rather than resolved (and bound) on the attribute alone. A binding
+        # recorded now would later count as evidence against the MAS-linked owner. A guess of an
+        # account that does not exist (when the caller says which do) touches nobody and still
+        # counts, so users who never logged in do not vanish from the guard's count.
+        mas_unreadable = self.mas is not None and self._mas_view is None
+        existing = set(matrix_mxids)
         deferred: dict[str, str] = {}
         for pk, mxid in candidates.items():
             if evidence[pk] != "guess" or pk in held_pks or pk in rejected:
                 continue
-            if mas_unchecked:
-                deferred[pk] = mxid
+            if mas_unreadable:
+                if not matrix_mxids or mxid in existing:
+                    deferred[pk] = mxid
             elif mxid in linked_mxids:
                 # MAS links the account to another upstream subject (the guesser's own subject has no
                 # link, else it would not be a guess). That owner may be absent from this call and
@@ -410,7 +419,6 @@ class IdentityResolver:
         }
 
         excluded = {self.config.synapse_server.bot_user_id, *self.config.matrix_user_ignore_list}
-        existing = set(matrix_mxids)
         now = self.clock()
         for pk in bind:
             target = resolved.get(pk)
@@ -439,12 +447,11 @@ class IdentityResolver:
                     f"attribute, but MAS links that account to {owner}. {tail}",
                 )
         if deferred:
-            # Every pass while MAS cannot be used (the cause itself is reported once); the users are
+            # Every pass while MAS cannot be read (the outage itself is reported once); the users are
             # retried on every pass.
             log.warning(
-                "identity: MAS cannot confirm who owns which account; %d Authentik user(s) onbot has "
-                "not seen before are skipped this pass and the accounts their mapping attribute names "
-                "are left alone: %s",
+                "identity: MAS cannot be read; %d Authentik user(s) onbot has not seen before are "
+                "skipped this pass and the accounts their mapping attribute names are left alone: %s",
                 len(deferred),
                 ", ".join(f"{names[pk]} -> {mxid}" for pk, mxid in sorted(deferred.items())),
             )
@@ -456,8 +463,8 @@ class IdentityResolver:
                 f"`{self.subject_attribute}` of any Authentik user. Check "
                 "`mas_admin.upstream_subject_attribute` against the subject mode of the Authentik "
                 "provider (and `mas_admin.upstream_provider_id`); until then users are resolved from "
-                "onbot's recorded bindings, and users onbot has not seen before are skipped (the "
-                "account their mapping attribute names is left alone)",
+                "onbot's recorded bindings and the mapping attribute, and a user onbot has not seen "
+                "before whose attribute names an account MAS links is skipped",
             )
         return Resolution(mxids=resolved, held=held, rejected=rejected, deferred=deferred)
 

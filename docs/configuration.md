@@ -178,13 +178,13 @@ What this means in practice:
   by hand (see below).
 - A user whose mapping attribute names an account MAS links to somebody else is skipped and
   reported, even when that owner is disabled or outside the sync scope and Onbot never saw them.
-- If MAS cannot be read (or none of its links matches any user, see `upstream_subject_attribute`
-  above), Onbot resolves users with a recorded binding from it and reports the problem. Users it
-  has never seen are skipped until MAS answers again: they are not joined or bound, and the account
-  their mapping attribute names is left alone for that pass (no join, kick, power-level change, lock
-  or erase). Recording an unchecked guess as a binding would later count against the account's
-  real, MAS-linked owner. If the binding record itself cannot be read, Onbot leaves memberships and
-  power levels alone and offboards nobody until it is repaired.
+- If MAS cannot be read, Onbot resolves users with a recorded binding from it and reports the
+  outage. Users it has never seen are skipped until MAS answers again: they are not joined or bound,
+  and the account their mapping attribute names is left alone for that pass (no join, kick,
+  power-level change, lock or erase). Recording an unchecked guess as a binding would later count
+  against the account's real, MAS-linked owner. (A user whose account does not exist yet is not
+  affected.) If the binding record itself cannot be read, Onbot leaves memberships and power levels
+  alone and offboards nobody until it is repaired.
 
 #### Resolving a conflict or a wrong binding by hand
 
