@@ -66,11 +66,24 @@ async def test_healthcheck_includes_mas_admin_when_configured() -> None:
         return_value=httpx.Response(200, json={"access_token": "mas-tok", "expires_in": 3600})
     )
     by_username = respx.get("https://mas.test/api/admin/v1/users/by-username/bot").mock(
-        # MAS's own "not found" document: the lookup answers None, which still proves auth worked.
-        return_value=httpx.Response(404, json={"errors": [{"title": "User not found"}]})
+        return_value=httpx.Response(200, json={"data": {"id": "01BOT", "type": "user"}})
     )
     assert await run_healthcheck(_config(with_mas=True)) == 0
     assert by_username.called
+
+
+@respx.mock
+async def test_healthcheck_fails_when_mas_does_not_know_the_bot() -> None:
+    """LIF-10: the bot is a MAS user itself, so "not found" for it means lookups cannot work (for
+    example a ``mas_admin.url`` pointing at another MAS). Every lock would then be skipped."""
+    _mock_core_endpoints()
+    respx.post("https://mas.test/oauth2/token").mock(
+        return_value=httpx.Response(200, json={"access_token": "mas-tok", "expires_in": 3600})
+    )
+    respx.get("https://mas.test/api/admin/v1/users/by-username/bot").mock(
+        return_value=httpx.Response(404, json={"errors": [{"title": "User not found"}]})
+    )
+    assert await run_healthcheck(_config(with_mas=True)) == 1
 
 
 @respx.mock

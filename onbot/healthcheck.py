@@ -73,11 +73,22 @@ async def _probe_authentik(authentik: ApiClientAuthentik) -> ProbeResult:
 
 
 async def _probe_mas_admin(mas: ApiClientMasAdmin, bot_user_id: str) -> ProbeResult:
-    """Confirm the MAS admin client-credentials token works (lifecycle enforcement path, §7 Q1)."""
-    # ``by-username`` returns the user or MAS's own JSON not-found answer (both prove auth). Any other
-    # 404 (admin API not mounted or not routed) raises, so the probe fails. The lookup never mutates.
-    await mas.get_user_id_by_username(mxid_localpart(bot_user_id))
-    return ProbeResult("mas-admin", True, "admin API authorized")
+    """Confirm the MAS admin client-credentials token works and resolves users (§7 Q1, LIF-10).
+
+    The bot is itself a MAS user (its compatibility token was issued for it), so its own lookup must
+    find it. "Not found" for the bot means the admin API answers for a different MAS than the one
+    behind the homeserver, or users cannot be resolved at all: every lock and deactivation would
+    then be skipped. A bare 404 (admin API not mounted or not routed) raises. The lookup never
+    mutates anything.
+    """
+    localpart = mxid_localpart(bot_user_id)
+    if await mas.get_user_id_by_username(localpart) is None:
+        return ProbeResult(
+            "mas-admin",
+            False,
+            f"admin API authorized, but MAS has no user {localpart!r} (the bot itself); check mas_admin.url",
+        )
+    return ProbeResult("mas-admin", True, f"admin API authorized, resolves {localpart!r}")
 
 
 async def run_healthcheck(config: OnbotConfig) -> int:
@@ -130,11 +141,14 @@ async def run_healthcheck(config: OnbotConfig) -> int:
 
     failed = False
     for name, result in zip(names, results, strict=True):
-        if isinstance(result, ProbeResult):
-            log.info("healthcheck %-14s OK   — %s", result.name, result.detail)
+        if isinstance(result, ProbeResult) and result.ok:
+            log.info("healthcheck %-14s OK:   %s", result.name, result.detail)
+        elif isinstance(result, ProbeResult):
+            failed = True
+            log.error("healthcheck %-14s FAIL: %s", result.name, result.detail)
         else:
             failed = True
-            log.error("healthcheck %-14s FAIL — %r", name, result)
+            log.error("healthcheck %-14s FAIL: %r", name, result)
 
     if failed:
         log.error("healthcheck: one or more dependencies are unhealthy")
