@@ -20,7 +20,7 @@ Local `main` is ahead of `origin/main` (the maintainer pushes; last push was the
 | between | S16, CI1 | history scrub (force-pushed by the maintainer), shorter CI (D17) | first GitHub CI run green |
 | 2 | S11, S3, S4, W2F, W2R | HTTP layer, guard layers 1 and 2 with `!confirm <id>`, offboarding completeness (D7), D19 fixups (MAS 1.28 and Synapse 1.164 in the test stack, admin room on by default), wave 2 review fixups | 1130 passed |
 | 3 | S5, S6, S9, W3R | guard layer 3, room identity by creator plus locked marker (D20), user identity across renames (D8, D21), wave 3 review fixups | 1277 passed (before W3R; W3R's own full run on its branch: 1295 passed) |
-| 4 | S8, S7 (merged), S12 (not started) | see below | final run on main: see "Wave 4" |
+| 4 | S8, S7 (merged), S12 (not started) | onboarding correctness, room repair | 1384 passed, 1 failed, fixed (see "Wave 4") |
 
 Status per session: the table in `SESSIONS.md`. Release notes: `CHANGELOG.md` (Unreleased) has a line
 for every merged session.
@@ -42,6 +42,10 @@ blocks a release from a safety point of view.
   room was torn down again every pass (from 11 closed rooms on, every kick waited for a confirmation).
   Its full run on a fresh stack: 1337 passed. After the merge: 1307 unit and contract tests green,
   config docs regenerated. Leftovers moved to the S14 brief.
+- **Full integration run on main after S8 and S7 (717ce6c): 1384 passed, 1 failed.** The failure was
+  an S7/S8 interaction in a test only: S7's lobby test built `BroadcastService` without the
+  `recipients` argument S8 made required. Fixed in the next commit, `test_room_repair.py` rerun: 9
+  passed. The code itself passed: the guard held the three deletions as intended.
 - **S12 Broadcast and admin room**: not started (moved from wave 3 to wave 4 because it builds on S8's
   broadcast target filtering). Start it after S8 is merged, with S8's handover notes.
 - If an S7 or S8 branch is still unmerged when a new session starts: check `git log main..<branch>`,
@@ -50,7 +54,8 @@ blocks a release from a safety point of view.
 
 ## Next steps
 
-1. Check the result of the full integration run on main after the S7 merge (see "Wave 4").
+1. Optional: one more full integration run on main to confirm the test fix in context (the
+   rerun of the affected file was green).
 2. Cold review of wave 4 (fresh reviewer agent over the wave's diff, without the orchestrator's
    summary), fixups as a W4R session if needed.
 3. S12, then wave 5: S14 (docs, dead code, cleanup; also the integration suite speed-up from D17).
