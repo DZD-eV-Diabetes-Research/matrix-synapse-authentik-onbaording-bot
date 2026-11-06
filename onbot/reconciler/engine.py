@@ -93,7 +93,11 @@ class ConfigurationError(RuntimeError):
     """Raised when the configuration cannot be satisfied (e.g. required space missing)."""
 
 
-_LIFECYCLE_ACTION_KINDS = {LifecycleAction.logout: ActionKind.lock, LifecycleAction.erase: ActionKind.erase}
+_LIFECYCLE_ACTION_KINDS = {
+    LifecycleAction.logout: ActionKind.lock,
+    LifecycleAction.erase: ActionKind.erase,
+    LifecycleAction.delete_media: ActionKind.delete_media,
+}
 
 
 @dataclass(slots=True)

@@ -106,6 +106,9 @@ class LifecycleAction(StrEnum):
     mark = "mark"  # newly detected orphan: start the cooldown clock (no destructive action)
     logout = "logout"  # cooldown elapsed: lock the account (G9.2)
     erase = "erase"  # further cooldown elapsed: deactivate/erase the account (G9.4/G9.5)
+    # The account is already deactivated: continue deleting its media (LIF-12). Not a new
+    # irreversible decision, so the guard's layer 3 does not ask for it again.
+    delete_media = "delete_media"
     wait = "wait"  # in a cooldown window: do nothing yet
     freeze = "freeze"  # tracked but out of scope or ambiguous: hold everything and report (D9)
     forget = "forget"  # locked, deleted upstream, erase disabled, retention over: drop the record
@@ -756,12 +759,14 @@ class PlannedAccountAction:
     """A destructive step the next :meth:`AccountLifecycleManager.reconcile_accounts` would take."""
 
     mxid: str
-    action: LifecycleAction  # logout or erase
+    action: LifecycleAction  # logout, erase or delete_media
     reason: str
 
 
 # The steps the destructive-action guard (onbot.guard) decides on. Only taken in live mode.
-GUARDED_ACTIONS = frozenset({LifecycleAction.logout, LifecycleAction.erase})
+GUARDED_ACTIONS = frozenset({LifecycleAction.logout, LifecycleAction.erase, LifecycleAction.delete_media})
+# The steps that finish an account's offboarding: its entry is gone afterwards.
+_FINAL_ACTIONS = frozenset({LifecycleAction.erase, LifecycleAction.delete_media, LifecycleAction.forget})
 
 # Whether the guard lets one step run this pass: a lock or erase it decided on, or ``forget``,
 # which drops a record because the user is gone from Authentik and so waits while the guard does not
@@ -915,7 +920,7 @@ class AccountLifecycleManager:
     def _decide(
         self, entry: LifecycleEntry | None, classification: Classification, now: float
     ) -> LifecycleAction:
-        return decide_account_action(
+        action = decide_account_action(
             status=classification.status,
             marked_ts=entry.marked_for_disabling_timestamp if entry else None,
             disabled_ts=entry.disabled_user_timestamp if entry else None,
@@ -923,6 +928,11 @@ class AccountLifecycleManager:
             deactivate_after_n_sec=self.cfg.deactivate_after_n_sec,
             delete_after_n_sec=self.cfg.delete_after_n_sec,
         )
+        if action is LifecycleAction.erase and entry is not None and entry.deactivated_timestamp is not None:
+            # The irreversible half ran in an earlier pass (confirmed, or below the guard's limit);
+            # what is left is the media cleanup, which never needs a new confirmation.
+            return LifecycleAction.delete_media
+        return action
 
     def _note_once(self, mxid: str, what: str) -> bool:
         """True the first time ``what`` is noted for ``mxid`` in a row (one audit line per transition)."""
@@ -1002,10 +1012,7 @@ class AccountLifecycleManager:
             if outcome is None:
                 continue
             outcomes.append(outcome)
-            if (
-                outcome.action in (LifecycleAction.erase, LifecycleAction.forget)
-                and mxid not in ledger.entries
-            ):
+            if outcome.action in _FINAL_ACTIONS and mxid not in ledger.entries:
                 finished.append(mxid)
 
         if finished:  # nothing left to offboard: drop the bindings, which keeps the record bounded
@@ -1266,6 +1273,7 @@ class AccountLifecycleManager:
             )
             return True
 
+        # erase, or delete_media: ``_erase`` resumes at whichever half is left.
         return await self._erase(ledger, mxid, now)
 
     async def _reenable(self, ledger: LifecycleLedger, mxid: str, reason: str) -> bool:
