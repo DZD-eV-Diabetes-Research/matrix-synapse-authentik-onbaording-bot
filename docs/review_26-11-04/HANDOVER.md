@@ -50,9 +50,24 @@ resolution in `onbot/lifecycle/accounts.py` (S4 and W2R), `onbot/app.py`, `onbot
 10.5 minutes. The deployment repo already uses Synapse's stable `matrix_authentication_service`
 block, which Synapse 1.164 requires.
 
-**Wave 3 started** from 0176886: S5 (instance 1), S6 (instance 2), S9 (instance 3); S12 moved to
-wave 4 (D8 confirmed). Maintainer still to do: push `main`, GitHub Support purge request, the S15
-repository settings checklist.
+**Wave 3 merged** (2026-11-06): S5 (guard layer 3, room deletion split from teardown, media
+continuation without re-confirmation), S6 (room identity by creator plus locked marker per the
+maintainer's D20, one provisioning path, squatting refused, SEC-11), S9 (identity anchored on the
+Authentik user via MAS link or recorded binding, D21 conflicts, SEC-08 path encoding). The S6 merge
+needed resolution in engine.py (teardown reason without the Authentik URL) and in S5's engine guard
+tests (rooms registered as bot-created marked rooms, identity resolver rewired). S9 merged main into
+its branch itself. After the merges: 1214 unit and contract tests green, hooks green, config docs
+regenerated. Running: full integration on main (instance 0) and a cold wave 3 review.
+
+Note: D20, S17 and the revised S6 brief were written by the maintainer and were swept into commit
+44346fe by a `git commit -a`; from now on commit explicit paths only.
+
+**Questions collected for the maintainer (ask with AskUserQuestion when back):**
+- D21 gap: without MAS (or when MAS does not link the account), a recorded binding against a
+  never-seen attribute guess currently fails closed for both users. Should the binding holder win
+  (as the MAS-linked owner does)?
+
+**Next:** act on the wave 3 review, then wave 4 (S7, S8, S12), then wave 5 (S14).
 
 ## Where things stand (2026-11-04)
 
