@@ -310,12 +310,15 @@ class ReconcilerEngine:
         prefix = "[dry-run] " if self.dry_run else ""
         if decision.held:
             log.warning(
-                "%sguard: paused %d destructive action(s) this pass (%s): %s. An admin releases them "
-                "with !confirm <batch id> in the admin control room (!pending lists the batches)",
+                "%sguard: paused %d destructive action(s) this pass (%s): %s.%s",
                 prefix,
                 len(decision.held),
                 summarize_actions(decision.held),
                 "; ".join(decision.reasons),
+                ""  # the reason already says what the admin does (!guard reset)
+                if decision.state_unreadable
+                else " An admin releases them with !confirm <batch id> in the admin control room "
+                "(!pending lists the batches)",
             )
             # A preview lists every one; a live pass has the batch report, so only at debug level.
             level = logging.INFO if self.dry_run else logging.DEBUG
