@@ -184,7 +184,11 @@ follows.
   Service this *must* agree with the localpart the login flow produces, or the computed Matrix IDs
   name accounts that do not exist and nobody is ever added. If users never land in their rooms, this
   is almost always why — see the first row of [troubleshooting.md](troubleshooting.md) and the
-  [configuration guide](configuration.md#the-mxid-localpart-contract).
+  [configuration guide](configuration.md#the-mxid-localpart-contract). With `mas_admin` configured,
+  Onbot asks MAS which account each user owns, and it records every user's account the first time it
+  sees it: a user renamed in Authentik keeps their account, rooms and power levels, and two
+  Authentik users claiming one account are both skipped and reported
+  ([details](configuration.md#renamed-users-keep-their-account)).
 - **Removals are gated by a switch.**
   `kick_matrix_room_members_not_in_mapped_authentik_group_anymore` is on by default; turn it off to
   make Onbot *add-only*, so it never kicks anyone and users keep rooms after losing the group that

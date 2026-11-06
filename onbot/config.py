@@ -654,7 +654,10 @@ class SyncAuthentikUsersWithMatrix(_StrictModel):
                 into the Authentik user object, e.g. `username` or `attributes.matrix_name`. On a
                 homeserver fronted by the Matrix Authentication Service this MUST agree with the
                 localpart template MAS derives from the upstream claim, or provisioned users will
-                never match the accounts they own."""
+                never match the accounts they own. It is only asked for users onbot has never seen:
+                with `mas_admin` MAS says which account a user owns, and once a user was seen with
+                an account onbot records that binding and keeps it when the attribute changes (a
+                rename). Such a change is reported in the admin room."""
             ),
             examples=["username", "attributes.matrix_name"],
         ),

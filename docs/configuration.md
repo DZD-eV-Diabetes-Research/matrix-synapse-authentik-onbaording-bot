@@ -134,6 +134,46 @@ If the two disagree, Onbot's computed MXIDs will not correspond to real accounts
 changes take effect and nobody is added to rooms. The integration suite has a dedicated
 localpart-contract test guarding this.
 
+### Renamed users keep their account
+
+MAS fixes a user's localpart at the first login and links the account to the upstream subject
+(Authentik's `sub` claim). A later rename in Authentik (marriage, a name change) does not change the
+Matrix account, so Onbot does not follow the mapping attribute blindly. It resolves every Authentik
+user in this order:
+
+1. **MAS**, when `mas_admin` is configured: the upstream link of the user's subject and the MAS user
+   it belongs to. This is authoritative. `mas_admin.upstream_subject_attribute` says where Authentik's
+   `sub` is found on the user object; it must match the subject mode of the Authentik OAuth2 provider
+   MAS uses:
+
+   | Authentik provider "Subject mode" | `upstream_subject_attribute` | Survives a rename |
+   |---|---|---|
+   | Based on the User's hashed ID (default) | `uid` (default) | yes |
+   | Based on the User's ID | `pk` | yes |
+   | Based on the User's username | `username` | no |
+   | Based on the User's Email | `email` | no |
+
+   With several upstream providers in MAS, set `mas_admin.upstream_provider_id` to the Authentik one.
+2. **The recorded binding.** The first time Onbot sees a user active, in the sync scope and with an
+   existing account, it records `Authentik pk -> MXID` in its account data (the `known_users` record
+   the offboarding lifecycle also uses). After that the binding wins over the attribute.
+3. **The mapping attribute**, only for users never seen before.
+
+What this means in practice:
+
+- A renamed user keeps their account, rooms and power levels. Nothing is kicked, locked, re-invited
+  or welcomed again. The rename is reported once in the admin room.
+- Changing `authentik_username_mapping_attribute` on a running deployment moves nobody who was
+  already seen; it only affects users who appear later. The changed mappings are reported.
+- When two Authentik users resolve to the same Matrix account (for example a new user whose
+  `attributes.matrix_name` names somebody else's account), Onbot skips both: no join, no kick, no
+  power-level change, no lock and no erase of that account, until an admin resolves the conflict in
+  Authentik or by editing the binding in the bot's `known_users` account data. The conflict is
+  reported in the admin room.
+- If MAS cannot be read, Onbot uses the bindings and the attribute for that pass and reports it.
+  If the binding record itself cannot be read, Onbot leaves memberships and power levels alone and
+  offboards nobody until it is repaired.
+
 ## Offboarding and the lifecycle
 
 Onbot runs a quarantined offboarding lifecycle. Two things to know:
