@@ -146,6 +146,9 @@ class LifecycleEntry(BaseModel):
     media_deleted_timestamp: float | None = None
     # Why the entry is on hold (D9); reported once when it is set.
     frozen_reason: str | None = None
+    # The Authentik username that put the entry on hold through ``authentik_user_ignore_list``. The
+    # ignore list names users, so a deleted user can only be checked against it through this record.
+    ignored_username: str | None = None
     # Backoff after a failed step (LIF-03).
     failures: int = 0
     retry_after_timestamp: float | None = None
@@ -199,6 +202,10 @@ class DirectorySnapshot:
     matrix_mxids: frozenset[str]  # Matrix accounts that exist
     excluded_mxids: frozenset[str]  # the bot and matrix_user_ignore_list
     synced_mxids: frozenset[str] = frozenset()  # accounts the room sync treats as active members
+    ignored_usernames: frozenset[str] = frozenset()  # authentik_user_ignore_list
+
+
+IGNORED_REASON = "the Authentik user is on authentik_user_ignore_list"
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,6 +213,7 @@ class Classification:
     status: AccountStatus
     reason: str
     pk: str | None = None  # the Authentik user this account is bound to, when unambiguous
+    ignored_username: str | None = None  # the ignore-listed Authentik username behind a freeze
 
 
 def classify_accounts(
@@ -279,8 +287,17 @@ def _classify_one(
 
     if mxid in snapshot.excluded_mxids:
         return frozen("the bot account or on matrix_user_ignore_list")
-    if any(u.ignored for u in everyone):
-        return frozen("the Authentik user is on authentik_user_ignore_list")
+    ignored = [u for u in everyone if u.ignored]
+    if ignored:
+        return Classification(AccountStatus.frozen, IGNORED_REASON, pk, ignored_username=ignored[0].username)
+    entry = ledger.entries.get(mxid)
+    if not primary and entry is not None and entry.frozen_reason == IGNORED_REASON:
+        # The ignore list names present users only, so deleting an ignored user would end the freeze
+        # and resume offboarding at once (wave 1 review). Keep it while the recorded username is
+        # still listed; an entry frozen before the username was recorded stays frozen (fail closed).
+        name = entry.ignored_username
+        if name is None or name in snapshot.ignored_usernames:
+            return Classification(AccountStatus.frozen, IGNORED_REASON, pk, ignored_username=name)
     if any(u.is_active and u.in_scope for u in primary):
         return Classification(AccountStatus.active, "active in Authentik and in the sync scope", pk)
     if any(u.is_active for u in primary):
@@ -580,6 +597,7 @@ class AccountLifecycleManager:
         ):
             audit.info("%s is no longer frozen (%s)", mxid, classification.reason)
             entry.frozen_reason = None
+            entry.ignored_username = None
             await self.store.save(ledger)
         if (
             entry is not None
@@ -603,7 +621,7 @@ class AccountLifecycleManager:
         if action is LifecycleAction.none or action is LifecycleAction.wait:
             return None
         if action is LifecycleAction.freeze:
-            return await self._freeze(ledger, mxid, classification.reason)
+            return await self._freeze(ledger, mxid, classification)
 
         try:
             changed = await self._apply(ledger, mxid, action, now, classification)
@@ -617,11 +635,19 @@ class AccountLifecycleManager:
             await self.store.save(ledger)  # after every user, never once at the end (LIF-03)
         return LifecycleOutcome(mxid=mxid, action=action, dry_run=self.cfg.dry_run)
 
-    async def _freeze(self, ledger: LifecycleLedger, mxid: str, reason: str) -> LifecycleOutcome | None:
+    async def _freeze(
+        self, ledger: LifecycleLedger, mxid: str, classification: Classification
+    ) -> LifecycleOutcome | None:
         entry = ledger.entries[mxid]
+        reason = classification.reason
+        username = classification.ignored_username
         if entry.frozen_reason == reason:
+            if username is not None and entry.ignored_username != username:
+                entry.ignored_username = username  # an entry frozen before the name was recorded
+                await self.store.save(ledger)
             return None  # reported when it was frozen; stay quiet until something changes
         entry.frozen_reason = reason
+        entry.ignored_username = username
         await self.store.save(ledger)
         audit.warning(
             "FROZEN %s: %s. No unlock and no further offboarding step until an admin decides (D9)",

@@ -324,6 +324,45 @@ async def test_locked_user_who_drops_out_of_scope_is_frozen_not_unlocked(change:
     assert mx("alice") in w.store.ledger().entries
 
 
+async def test_ignore_list_freeze_survives_the_deletion_of_the_user() -> None:
+    """Wave 1 review: the ignore list names present users, deleting the user must not end the freeze."""
+    w = World(delete_after=DAY)
+    pk = w.person("alice")
+    w.directory.set_active(pk, False)
+    await w.tick()  # mark
+    await w.tick()  # lock
+    w.config.authentik_user_ignore_list = ["alice"]
+    await w.tick()  # frozen
+    w.directory.delete(pk)
+    await w.tick(DAY * 2)  # the erase cooldown has long elapsed
+    await w.tick(DAY * 2)
+    assert w.mas.ops("deactivate") == []
+    assert w.mas.ops("unlock") == []
+    assert w.store.ledger().entries[mx("alice")].frozen_reason is not None
+    assert [e.payload["action"] for e in w.reports if e.payload.get("mxid") == mx("alice")] == ["freeze"]
+
+    w.config.authentik_user_ignore_list = []  # an admin lifts the exemption: offboarding resumes
+    await w.tick()
+    assert w.mas.ops("deactivate") == ["alice"]
+
+
+async def test_ignore_list_freeze_recorded_without_a_username_stays_after_deletion() -> None:
+    """An entry frozen before the username was recorded fails closed once the user is deleted."""
+    w = World(delete_after=DAY)
+    pk = w.person("alice")
+    w.directory.set_active(pk, False)
+    await w.tick()
+    await w.tick()
+    w.config.authentik_user_ignore_list = ["alice"]
+    await w.tick()
+    raw = w.store.raw["org.company.onbot.lifecycle"]
+    raw["entries"][mx("alice")].pop("ignored_username", None)  # as written by the previous release
+    w.directory.delete(pk)
+    w.config.authentik_user_ignore_list = []
+    await w.tick(DAY * 2)
+    assert w.mas.ops("deactivate") == []
+
+
 async def test_locked_user_whose_mapping_attribute_disappears_is_not_unlocked() -> None:
     """The ledger remembers which Authentik user it locked, so a mapping change is no escape."""
     w = World(delete_after=DAY)
