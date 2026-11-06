@@ -1323,6 +1323,8 @@ class ReconcilerEngine:
         assert self.lifecycle is not None
 
         def permit(mxid: str, action: LifecycleAction) -> bool:
+            if action is LifecycleAction.forget:
+                return not decision.input_implausible  # "gone from Authentik" must be trusted
             kind = _LIFECYCLE_ACTION_KINDS.get(action)
             return kind is not None and decision.permits(DestructiveAction(kind=kind, target=mxid))
 

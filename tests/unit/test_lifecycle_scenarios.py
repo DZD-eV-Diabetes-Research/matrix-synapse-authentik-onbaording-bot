@@ -1014,6 +1014,60 @@ async def test_a_rejected_batch_ends_with_its_incident_and_a_genuine_deletion_is
     assert [e.payload["batch_id"] for e in ended] == [batch_id]  # reported once
 
 
+async def test_a_lock_record_is_not_forgotten_while_the_user_list_is_implausible() -> None:
+    """Wave 2 review: retention read "deleted from Authentik" as final while layer 1 was tripped."""
+    w = World(guard=True)
+    for name in ("anna", "ben", "cleo"):
+        w.person(name)
+    dino = w.person("dino")
+    await w.tick()
+    w.directory.set_active(dino, False)
+    await w.tick()  # mark
+    await w.tick()  # lock
+    assert w.locked("dino")
+
+    w.directory.visible = {"anna"}  # dino is only disabled, but now looks deleted
+    for _ in range(3):
+        await w.tick(100 * DAY)
+    assert mx("dino") in w.store.ledger().entries
+    assert w.mas.ops("unlock") == []
+
+    w.directory.visible = None
+    w.directory.set_active(dino, True)  # dino comes back: onbot still knows it set the lock
+    await w.tick()
+    assert w.mas.ops("unlock") == ["dino"]
+
+
+async def test_a_step_that_became_due_after_the_plan_is_not_logged_as_waiting_for_an_admin(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    w = World(guard=True)
+    w.lc.deactivate_after_n_sec = 10
+    for name in ("anna", "ben", "cleo"):
+        w.person(name)
+    pk = w.person("dino")
+    await w.tick()
+    w.directory.set_active(pk, False)
+    await w.tick()  # mark
+
+    plan = w.manager.plan_accounts
+
+    async def plan_then_let_time_pass(snapshot: Any) -> Any:
+        planned = await plan(snapshot)
+        w.clock.now += 20  # the lock becomes due between the plan and the run
+        return planned
+
+    w.manager.plan_accounts = plan_then_let_time_pass  # type: ignore[method-assign]
+    with caplog.at_level(logging.INFO, logger="onbot.lifecycle.audit"):
+        await w.tick()
+    assert w.mas.calls == []
+    assert "DEFERRED logout of @dino:company.org" in caplog.text
+    assert "until an admin confirms" not in caplog.text
+    w.manager.plan_accounts = plan  # type: ignore[method-assign]
+    await w.tick()
+    assert w.mas.ops("lock") == ["dino"]
+
+
 async def test_an_unreadable_guard_state_holds_the_locks_of_a_rejected_batch() -> None:
     """Starting from empty dropped the baseline and the rejection, so the narrowed token's locks ran."""
     w = World(guard=True)

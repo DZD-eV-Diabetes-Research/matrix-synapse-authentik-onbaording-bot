@@ -734,7 +734,9 @@ class PlannedAccountAction:
 # The steps the destructive-action guard (onbot.guard) decides on. Only taken in live mode.
 GUARDED_ACTIONS = frozenset({LifecycleAction.logout, LifecycleAction.erase})
 
-# Whether the guard lets one destructive step run this pass.
+# Whether the guard lets one step run this pass: a lock or erase it decided on, or ``forget``,
+# which drops a record because the user is gone from Authentik and so waits while the guard does not
+# trust the pass's user list.
 Permit = Callable[[str, LifecycleAction], bool]
 
 _ATTENTION_ACTIONS = frozenset({LifecycleAction.freeze, LifecycleAction.abort, LifecycleAction.alert})
@@ -774,6 +776,9 @@ class AccountLifecycleManager:
         # channel gets one line per stage transition instead of one per tick (LIF-08).
         self._noted: dict[str, str] = {}
         self._missing_ledger_checked = False
+        # What the last :meth:`plan_accounts` handed to the guard, to tell a step the guard paused
+        # from one that only became due after the plan (the clock moved on between the two).
+        self._planned: frozenset[tuple[str, LifecycleAction]] = frozenset()
 
     async def preflight(self) -> list[str]:
         """Log the offboarding setup once at startup and return what an operator must know (LIF-09).
@@ -824,6 +829,7 @@ class AccountLifecycleManager:
         nothing either. A preview plans as configured. ``None`` means the step is refused this pass
         (an unreadable ledger): :meth:`reconcile_accounts` then aborts and reports it.
         """
+        self._planned = frozenset()
         if not self.cfg.enabled or self.cfg.dry_run or not snapshot.users:
             return []
         try:
@@ -848,6 +854,7 @@ class AccountLifecycleManager:
             action = self._decide(entry, classification, now)
             if action in GUARDED_ACTIONS:
                 planned.append(PlannedAccountAction(mxid=mxid, action=action, reason=classification.reason))
+        self._planned = frozenset((p.mxid, p.action) for p in planned)
         return planned
 
     def _decide(
@@ -1009,6 +1016,14 @@ class AccountLifecycleManager:
             entry.authentik_pk = classification.pk
             await self.store.save(ledger)
         if entry is not None and self._retention_over(entry, classification, now):
+            if permit is not None and not permit(mxid, LifecycleAction.forget):
+                if self._note_once(mxid, "held:forget"):
+                    audit.warning(
+                        "HELD forgetting the lock record of %s: the destructive-action guard does not "
+                        "trust this pass's user list, so 'deleted from Authentik' is not final yet",
+                        mxid,
+                    )
+                return None
             return await self._forget(ledger, mxid, entry, now)
 
         action = self._decide(entry, classification, now)
@@ -1023,7 +1038,17 @@ class AccountLifecycleManager:
             and not self.cfg.dry_run
             and not permit(mxid, action)
         ):
-            if self._note_once(mxid, f"held:{action.value}"):
+            if (mxid, action) not in self._planned:
+                # Became due between the plan and now: the guard has not seen it, nobody is asked.
+                if self._note_once(mxid, f"deferred:{action.value}"):
+                    audit.info(
+                        "DEFERRED %s of %s (%s): it became due after this pass was planned; the "
+                        "destructive-action guard decides on it in the next pass",
+                        action.value,
+                        mxid,
+                        classification.reason,
+                    )
+            elif self._note_once(mxid, f"held:{action.value}"):
                 audit.warning(
                     "HELD %s of %s (%s): paused by the destructive-action guard until an admin confirms",
                     action.value,
