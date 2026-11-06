@@ -4,11 +4,18 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from onbot.admin.admins import AdminResolver
 from onbot.clients.base import ApiError
 from onbot.config import AdminRoom, AuthentikServer, OnbotConfig, SynapseServer
 from onbot.events import Event, Signal
-from onbot.rooms.admin import PINNED_EVENTS_TYPE, AdminRoomProvisioner, admin_room_power_levels
+from onbot.rooms.admin import (
+    ENCRYPTED_ROOM_NOTICE,
+    PINNED_EVENTS_TYPE,
+    AdminRoomProvisioner,
+    admin_room_power_levels,
+)
 from onbot.rooms.identity import RoomIdentityResolver
 from onbot.rooms.provision import PRIVILEGED_LOCK_LEVEL, marker_event_types
 
@@ -140,6 +147,9 @@ class _FakeClient:
 
     async def get_membership(self, room_id: str, user_id: str) -> str | None:
         return self.memberships.get(user_id)
+
+    async def room_is_encrypted(self, room_id: str) -> bool:
+        return (room_id, "m.room.encryption", "") in self.state
 
     async def invite_user(self, room_id: str, user_id: str) -> None:
         self.invited.append(user_id)
@@ -396,3 +406,34 @@ async def test_changed_help_text_replaces_the_old_pin_but_keeps_unrelated_ones()
     pinned = client.state[(ROOM, PINNED_EVENTS_TYPE, "")]["pinned"]
     assert pinned == ["$someone-elses-pin", "$help2"]  # old help pin dropped, foreign pin kept
     assert len(client.sends) == 2
+
+
+# --- ONB-06: a control room the homeserver encrypted is not silently deaf ---
+
+
+async def test_an_encrypted_control_room_is_reported_in_the_log_and_the_room(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Synapse's encryption_enabled_by_default_for_room_type encrypts it, and createRoom cannot opt
+    out (checked in Synapse 1.164). Before the fix nothing said so; the room merely looked alive."""
+    client = _FakeClient(existing_room=None)
+    original = client.create_room
+
+    async def forced(**kwargs: Any) -> str:
+        room = await original(**kwargs)
+        client.state[(room, "m.room.encryption", "")] = {"algorithm": "m.megolm.v1.aes-sha2"}
+        return room
+
+    client.create_room = forced  # type: ignore[method-assign]
+
+    assert await _provisioner(client).ensure() == ROOM
+
+    assert any("encryption_enabled_by_default_for_room_type" in r.getMessage() for r in caplog.records)
+    assert any(r.levelname == "ERROR" for r in caplog.records)
+    assert client.sends[0] == ENCRYPTED_ROOM_NOTICE
+
+
+async def test_an_unencrypted_control_room_gets_no_warning() -> None:
+    client = _FakeClient(existing_room=None)
+    await _provisioner(client).ensure()
+    assert ENCRYPTED_ROOM_NOTICE not in client.sends

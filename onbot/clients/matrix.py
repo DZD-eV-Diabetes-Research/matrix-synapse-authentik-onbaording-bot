@@ -416,6 +416,10 @@ class ApiClientMatrix(BaseApiClient):
     async def get_room_power_levels(self, room_id: str) -> dict[str, Any]:
         return await self.get_room_state_event(room_id, "m.room.power_levels") or {}
 
+    async def room_is_encrypted(self, room_id: str) -> bool:
+        """Whether ``room_id`` has ``m.room.encryption`` (which can never be removed again)."""
+        return await self.get_room_state_event(room_id, "m.room.encryption") is not None
+
     async def set_room_power_levels(self, room_id: str, power_levels: Mapping[str, Any]) -> None:
         await self.put_room_state_event(room_id, "m.room.power_levels", power_levels)
 
@@ -493,8 +497,15 @@ class ApiClientMatrix(BaseApiClient):
         *,
         msgtype: str = "m.text",
         formatted_body: str | None = None,
+        txn_id: str | None = None,
     ) -> str:
-        """Send a textual message; returns the event id. Uses a unique transaction id.
+        """Send a textual message; returns the event id.
+
+        ``txn_id`` defaults to a new random id per call, which the HTTP retries of this one call
+        reuse. A caller that may repeat the same send in a later call (the welcome flow, ONB-09)
+        passes a deterministic one: Synapse answers a repeated transaction id of the same device with
+        the event it already created instead of posting the message again.
+        https://spec.matrix.org/latest/client-server-api/#transaction-identifiers
 
         ``msgtype`` is ``m.text`` for a plain message and ``m.notice`` for one the client should not
         auto-reply to or notify on as loudly — the convention for bot-originated messages, used by
@@ -506,7 +517,7 @@ class ApiClientMatrix(BaseApiClient):
         HTML — so it must say the same thing, not more.
         https://spec.matrix.org/latest/client-server-api/#mroommessage-msgtypes
         """
-        txn = uuid.uuid4().hex
+        txn = txn_id or uuid.uuid4().hex
         content: dict[str, Any] = {"msgtype": msgtype, "body": body}
         if formatted_body is not None:
             content["format"] = "org.matrix.custom.html"

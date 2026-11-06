@@ -4,6 +4,8 @@ force-join ever) and for the read-only notice board the DM has become."""
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -16,14 +18,16 @@ from onbot.config import (
     CreateMatrixRoomsInAMatrixSpace,
     OnbotConfig,
     SynapseServer,
+    WelcomeMessage,
 )
 from onbot.onboarding.notice_board import notice_board_power_levels
-from onbot.onboarding.welcome import WelcomeService
+from onbot.onboarding.welcome import NoticeBoardUnreadable, WelcomeService, welcome_txn_id
 from onbot.reconciler.state import OnbotRoomType
 from onbot.rooms.identity import RoomIdentity, RoomKey
 
 BOT = "@bot:matrix.test"
 ALICE = "@alice:matrix.test"
+BOB = "@bob:matrix.test"
 
 
 class FakeSynapseAdmin:
@@ -32,9 +36,13 @@ class FakeSynapseAdmin:
     def __init__(self, *, fail_with: int | None = None) -> None:
         self.joined: list[tuple[str, str]] = []
         self.fail_with = fail_with
+        self.accounts: dict[str, dict[str, Any]] = {}
         # Called after a successful join, to stand in for the membership event the real force-join
         # puts on the bot's sync stream.
         self.on_join: Callable[[], None] | None = None
+
+    async def get_user(self, user_id: str) -> dict[str, Any] | None:
+        return self.accounts.get(user_id)
 
     async def add_user_to_room(self, room_id: str, user_id: str) -> None:
         if self.fail_with is not None:
@@ -59,8 +67,32 @@ class FakeMatrixClient:
         self.power_level_writes: list[str] = []
         self.avatars: dict[str, str] = {}
         self.create_calls: list[dict[str, Any]] = []
+        self.txn_ids: list[str | None] = []
+        # (room, user) -> membership; a user is joined unless a test says otherwise.
+        self.memberships: dict[tuple[str, str], str | None] = {}
+        self.invites: list[tuple[str, str]] = []
+        # Rooms the bot has left (purged or kicked): reading their state answers 403.
+        self.gone: set[str] = set()
+
+    async def get_membership(self, room_id: str, user_id: str) -> str | None:
+        return self.memberships.get((room_id, user_id), "join")
+
+    async def invite_user(self, room_id: str, user_id: str) -> None:
+        self.invites.append((room_id, user_id))
+        self.memberships[(room_id, user_id)] = "invite"
+
+    async def room_is_encrypted(self, room_id: str) -> bool:
+        if room_id in self.gone:
+            raise ApiError("GET", f"/rooms/{room_id}/state", 403, {"errcode": "M_FORBIDDEN"})
+        return (room_id, "m.room.encryption") in self.room_state
+
+    async def joined_rooms(self) -> list[str]:
+        rooms = {room for room, _ in self.room_state} | set(self.power_levels)
+        return sorted(rooms - self.gone)
 
     async def get_room_power_levels(self, room_id: str) -> dict[str, Any]:
+        if room_id in self.gone:
+            raise ApiError("GET", f"/rooms/{room_id}/state", 403, {"errcode": "M_FORBIDDEN"})
         return dict(self.power_levels.get(room_id, {}))
 
     async def set_room_power_levels(self, room_id: str, power_levels: dict[str, Any]) -> None:
@@ -99,6 +131,8 @@ class FakeMatrixClient:
     async def get_room_state_event(
         self, room_id: str, event_type: str, state_key: str = ""
     ) -> dict[str, Any] | None:
+        if room_id in self.gone:
+            raise ApiError("GET", f"/rooms/{room_id}/state", 403, {"errcode": "M_FORBIDDEN"})
         return self.room_state.get((room_id, event_type))
 
     async def put_room_state_event(
@@ -106,17 +140,20 @@ class FakeMatrixClient:
     ) -> None:
         self.room_state[(room_id, event_type)] = dict(content)
 
-    async def send_text_message(self, room_id: str, body: str, *, formatted_body: str | None = None) -> str:
+    async def send_text_message(
+        self, room_id: str, body: str, *, formatted_body: str | None = None, txn_id: str | None = None
+    ) -> str:
         # Yield to the loop, as a real HTTP round-trip does: any concurrent welcome for the same user
         # gets to run here, which is exactly where a duplicate would slip in.
         await asyncio.sleep(0)
         self.sent.append((room_id, body))
         self.formatted.append(formatted_body)
+        self.txn_ids.append(txn_id)
         return f"$e{len(self.sent)}"
 
 
 def _config(
-    messages: list[str] | None,
+    messages: list[str | WelcomeMessage] | None,
     *,
     place_in_space: bool = False,
     force_join: bool = True,
@@ -191,12 +228,14 @@ async def test_a_message_is_recorded_before_the_next_one_is_sent() -> None:
     sent_when_second_message_goes_out: list[int] = []
     original = client.send_text_message
 
-    async def _spy(room_id: str, body: str, *, formatted_body: str | None = None) -> str:
+    async def _spy(
+        room_id: str, body: str, *, formatted_body: str | None = None, txn_id: str | None = None
+    ) -> str:
         if body == "rules":
             sent_when_second_message_goes_out.append(
                 len(_direct_state(client, room_id)["welcome_messages_sent"])
             )
-        return await original(room_id, body, formatted_body=formatted_body)
+        return await original(room_id, body, formatted_body=formatted_body, txn_id=txn_id)
 
     client.send_text_message = _spy  # type: ignore[method-assign]
     await svc.welcome_user(ALICE)
@@ -496,3 +535,303 @@ async def test_a_squatted_space_alias_does_not_get_the_dms() -> None:
     await svc.welcome_user(ALICE)
     assert client.space_links == []
     assert [body for _, body in client.sent] == ["hi"]  # the welcome itself still goes out
+
+
+# --- RUN-01 / ONB-01: concurrent welcomes of different users share one m.direct document ---
+
+
+class YieldingMatrixClient(FakeMatrixClient):
+    """Yields on every account-data and createRoom round trip, as the real HTTP client does."""
+
+    async def get_account_data(self, user_id: str, data_type: str) -> dict[str, Any]:
+        content = await super().get_account_data(user_id, data_type)
+        await asyncio.sleep(0)
+        return content
+
+    async def set_account_data(self, user_id: str, data_type: str, content: dict[str, Any]) -> None:
+        await asyncio.sleep(0)
+        await super().set_account_data(user_id, data_type, content)
+
+    async def create_room(self, **kwargs: Any) -> str:
+        await asyncio.sleep(0)
+        return await super().create_room(**kwargs)
+
+
+async def test_concurrent_first_welcomes_of_different_users_keep_every_m_direct_entry() -> None:
+    """Before the fix each welcome read m.direct, created its room and wrote the whole document back,
+    so the last writer dropped the others' entries (live check 12 lost 9 of 20)."""
+    client = YieldingMatrixClient()
+    svc = WelcomeService(client, _config(["hi"]))  # type: ignore[arg-type]
+    users = [f"@user{i}:matrix.test" for i in range(20)]
+
+    await asyncio.gather(*(svc.welcome_user(mxid) for mxid in users))
+
+    direct = client.account_data[(BOT, "m.direct")]
+    assert sorted(direct) == sorted(users)
+    assert all(len(rooms) == 1 for rooms in direct.values())
+    assert client.created_dms == 20
+
+    # A second round (a restart) creates nothing and sends nothing new.
+    await asyncio.gather(*(svc.welcome_user(mxid) for mxid in users))
+    assert client.created_dms == 20
+    assert len(client.sent) == 20
+
+
+# --- ONB-09: a repeated send is deduplicated by its transaction id ---
+
+
+async def test_each_welcome_message_has_a_transaction_id_stable_across_attempts() -> None:
+    """A crash between the send and the record repeats the send; the same txn id lets Synapse drop it."""
+    client = FakeMatrixClient()
+    await WelcomeService(client, _config(["hi", "rules"])).welcome_user(ALICE)  # type: ignore[arg-type]
+    first = list(client.txn_ids)
+
+    # The record of both sends is lost (the process died before persisting): the retry repeats them.
+    _direct_state(client, "!dm-1:matrix.test")["welcome_messages_sent"] = {}
+    await WelcomeService(client, _config(["hi", "rules"])).welcome_user(ALICE)  # type: ignore[arg-type]
+
+    assert client.txn_ids[2:] == first
+    assert all(t and t.startswith("onbot-welcome-") for t in first)
+    assert len(set(first)) == 2
+
+
+def test_transaction_ids_differ_per_room_and_message() -> None:
+    assert welcome_txn_id("!a:x", "k1") != welcome_txn_id("!b:x", "k1")
+    assert welcome_txn_id("!a:x", "k1") != welcome_txn_id("!a:x", "k2")
+    assert welcome_txn_id("!a:x", "k1") == welcome_txn_id("!a:x", "k1")
+
+
+# --- ONB-18: message identity ---
+
+
+async def test_whitespace_at_line_ends_and_around_the_text_does_not_resend() -> None:
+    """Switching a YAML block from `|` to `|-`, or a stray trailing space, changes nothing visible."""
+    client = FakeMatrixClient()
+    config = _config(["hello\nworld\n"])
+    await WelcomeService(client, config).welcome_user(ALICE)  # type: ignore[arg-type]
+
+    config.welcome_new_users_messages = ["hello  \nworld"]
+    await WelcomeService(client, config).welcome_user(ALICE)  # type: ignore[arg-type]
+
+    assert len(client.sent) == 1
+
+
+async def test_a_message_recorded_by_its_raw_text_hash_is_not_resent() -> None:
+    """Records written before normalisation hold the hash of the raw text; they still count."""
+    client = FakeMatrixClient()
+    raw = "hello  \n"
+    client.account_data[(BOT, "m.direct")] = {ALICE: ["!old:matrix.test"]}
+    client.room_state[("!old:matrix.test", "test.matrix.onbot.direct_room")] = {
+        "user_id": ALICE,
+        "welcome_messages_sent": {hashlib.sha256(raw.encode()).hexdigest()[:16]: "2026-01-01T00:00:00+00:00"},
+    }
+    await WelcomeService(client, _config([raw])).welcome_user(ALICE)  # type: ignore[arg-type]
+
+    assert client.sent == []
+
+
+async def test_a_message_with_an_id_can_be_corrected_without_resending() -> None:
+    client = FakeMatrixClient()
+    config = _config([WelcomeMessage(id="intro", text="Welcome aboadr")])
+    await WelcomeService(client, config).welcome_user(ALICE)  # type: ignore[arg-type]
+
+    config.welcome_new_users_messages = [WelcomeMessage(id="intro", text="Welcome aboard")]
+    await WelcomeService(client, config).welcome_user(ALICE)  # type: ignore[arg-type]
+
+    assert [body for _, body in client.sent] == ["Welcome aboadr"]
+    assert "id:intro" in _direct_state(client, "!dm-1:matrix.test")["welcome_messages_sent"]
+
+
+async def test_giving_a_sent_message_an_id_sends_nothing_now_or_after_the_next_edit() -> None:
+    client = FakeMatrixClient()
+    config = _config(["Welcome aboadr"])
+    await WelcomeService(client, config).welcome_user(ALICE)  # type: ignore[arg-type]
+
+    config.welcome_new_users_messages = [WelcomeMessage(id="intro", text="Welcome aboadr")]
+    await WelcomeService(client, config).welcome_user(ALICE)  # type: ignore[arg-type]
+    # The id is recorded now, so the text can change afterwards.
+    config.welcome_new_users_messages = [WelcomeMessage(id="intro", text="Welcome aboard")]
+    await WelcomeService(client, config).welcome_user(ALICE)  # type: ignore[arg-type]
+
+    assert [body for _, body in client.sent] == ["Welcome aboadr"]
+
+
+async def test_a_new_id_sends_the_message_again() -> None:
+    client = FakeMatrixClient()
+    config = _config([WelcomeMessage(id="intro", text="hi")])
+    await WelcomeService(client, config).welcome_user(ALICE)  # type: ignore[arg-type]
+
+    config.welcome_new_users_messages = [WelcomeMessage(id="intro-2", text="hi, again")]
+    await WelcomeService(client, config).welcome_user(ALICE)  # type: ignore[arg-type]
+
+    assert [body for _, body in client.sent] == ["hi", "hi, again"]
+
+
+# --- SEC-06 / ONB-07: notice boards of accounts that are gone leave m.direct ---
+
+
+async def test_prune_drops_foreign_and_deactivated_accounts_and_keeps_the_rest() -> None:
+    client = FakeMatrixClient()
+    admin = FakeSynapseAdmin()
+    admin.accounts = {
+        "@erased:matrix.test": {"name": "@erased:matrix.test", "deactivated": True},
+        "@locked:matrix.test": {"name": "@locked:matrix.test", "deactivated": False, "locked": True},
+    }
+    client.account_data[(BOT, "m.direct")] = {
+        ALICE: ["!a"],
+        "@guest:partner.org": ["!g"],
+        "@erased:matrix.test": ["!e"],
+        "@locked:matrix.test": ["!l"],
+        "@unknown:matrix.test": ["!u"],
+    }
+    svc = WelcomeService(client, _config(["hi"]), admin=admin)  # type: ignore[arg-type]
+
+    gone = await svc.prune_direct({ALICE})
+
+    assert gone == ["@erased:matrix.test", "@guest:partner.org"]
+    assert sorted(client.account_data[(BOT, "m.direct")]) == [
+        ALICE,
+        "@locked:matrix.test",  # MAS-locked users are not listed; they keep their room for their return
+        "@unknown:matrix.test",  # no evidence that it is gone
+    ]
+
+
+async def test_prune_writes_nothing_when_nothing_is_gone() -> None:
+    client = FakeMatrixClient()
+    client.account_data[(BOT, "m.direct")] = {ALICE: ["!a"]}
+    writes: list[object] = []
+    original = client.set_account_data
+
+    async def spy(user_id: str, data_type: str, content: dict[str, Any]) -> None:
+        writes.append(content)
+        await original(user_id, data_type, content)
+
+    client.set_account_data = spy  # type: ignore[method-assign]
+    svc = WelcomeService(client, _config(["hi"]), admin=FakeSynapseAdmin())  # type: ignore[arg-type]
+
+    assert await svc.prune_direct({ALICE}) == []
+    assert writes == []
+
+
+# --- ONB-07: a user who left their notice board is invited back once ---
+
+
+async def test_a_user_who_left_is_invited_back_once_and_not_force_joined() -> None:
+    client = FakeMatrixClient()
+    admin = FakeSynapseAdmin()
+    svc = WelcomeService(client, _config(["hi"]), admin=admin)  # type: ignore[arg-type]
+    await svc.welcome_user(ALICE)
+    client.memberships[("!dm-1:matrix.test", ALICE)] = "leave"
+
+    await svc.welcome_user(ALICE)  # after a restart, or the listener saw the leave
+    assert client.invites == [("!dm-1:matrix.test", ALICE)]
+    assert isinstance(_direct_state(client, "!dm-1:matrix.test")["reinvited_at"], int)
+
+    client.memberships[("!dm-1:matrix.test", ALICE)] = "leave"  # declined, or left again
+    await svc.welcome_user(ALICE)
+    assert client.invites == [("!dm-1:matrix.test", ALICE)]  # once only
+    assert len(admin.joined) == 1  # never dragged back in
+
+
+async def test_a_banned_or_joined_user_is_not_invited() -> None:
+    client = FakeMatrixClient()
+    svc = WelcomeService(client, _config(["hi"]))  # type: ignore[arg-type]
+    await svc.welcome_user(ALICE)
+    await svc.welcome_user(ALICE)
+    client.memberships[("!dm-1:matrix.test", ALICE)] = "ban"
+    await svc.welcome_user(ALICE)
+
+    assert client.invites == []
+
+
+# --- ONB-08: a notice board the bot cannot read any more ---
+
+
+async def test_a_notice_board_the_bot_left_is_replaced_by_a_new_one() -> None:
+    """Before the fix the 403 failed the welcome on every pass, forever."""
+    client = FakeMatrixClient()
+    client.account_data[(BOT, "m.direct")] = {ALICE: ["!purged:matrix.test"], BOB: ["!b:matrix.test"]}
+    client.gone.add("!purged:matrix.test")
+    svc = WelcomeService(client, _config(["hi"]))  # type: ignore[arg-type]
+
+    await svc.welcome_user(ALICE)
+
+    direct = client.account_data[(BOT, "m.direct")]
+    assert direct[ALICE] == ["!dm-1:matrix.test"]
+    assert direct[BOB] == ["!b:matrix.test"]
+    assert client.sent == [("!dm-1:matrix.test", "hi")]
+
+
+async def test_a_lost_notice_board_falls_back_to_the_next_one_on_record() -> None:
+    """A user with two rooms (left over from RUN-01): the readable one keeps its bookkeeping."""
+    client = FakeMatrixClient()
+    client.account_data[(BOT, "m.direct")] = {ALICE: ["!purged:matrix.test", "!second:matrix.test"]}
+    client.gone.add("!purged:matrix.test")
+    client.room_state[("!second:matrix.test", "test.matrix.onbot.direct_room")] = {
+        "user_id": ALICE,
+        "welcome_messages_sent": {"id:hi": "2026-01-01T00:00:00+00:00"},
+    }
+    svc = WelcomeService(client, _config([WelcomeMessage(id="hi", text="hi")]))  # type: ignore[arg-type]
+
+    await svc.welcome_user(ALICE)
+
+    assert client.account_data[(BOT, "m.direct")] == {ALICE: ["!second:matrix.test"]}
+    assert client.sent == []
+    assert client.created_dms == 0
+
+
+async def test_a_403_in_a_room_the_bot_is_still_in_is_not_taken_for_a_lost_room() -> None:
+    client = FakeMatrixClient()
+    client.account_data[(BOT, "m.direct")] = {ALICE: ["!dm:matrix.test"]}
+    client.power_levels["!dm:matrix.test"] = {}
+
+    async def refused(room_id: str) -> dict[str, Any]:
+        raise ApiError("GET", "/state/m.room.power_levels", 403)
+
+    client.get_room_power_levels = refused  # type: ignore[method-assign]
+    svc = WelcomeService(client, _config(["hi"]))  # type: ignore[arg-type]
+
+    with pytest.raises(ApiError):
+        await svc.welcome_user(ALICE)
+    assert client.account_data[(BOT, "m.direct")] == {ALICE: ["!dm:matrix.test"]}
+    assert client.created_dms == 0
+
+
+async def test_unparsable_notice_board_state_is_reported_not_guessed() -> None:
+    client = FakeMatrixClient()
+    client.account_data[(BOT, "m.direct")] = {ALICE: ["!dm:matrix.test"]}
+    client.room_state[("!dm:matrix.test", "test.matrix.onbot.direct_room")] = {
+        "user_id": ALICE,
+        "welcome_messages_sent": "hand-edited",
+    }
+    svc = WelcomeService(client, _config(["hi"]))  # type: ignore[arg-type]
+
+    with pytest.raises(NoticeBoardUnreadable, match=re.escape("!dm:matrix.test")):
+        await svc.welcome_user(ALICE)
+    assert client.sent == []
+
+
+# --- ONB-06: notice boards the homeserver encrypted ---
+
+
+async def test_a_notice_board_encrypted_by_the_homeserver_is_reported_once(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    client = FakeMatrixClient()
+    original = client.create_room
+
+    async def forced(**kwargs: Any) -> str:
+        room = await original(**kwargs)
+        client.room_state[(room, "m.room.encryption")] = {"algorithm": "m.megolm.v1.aes-sha2"}
+        return room
+
+    client.create_room = forced  # type: ignore[method-assign]
+    svc = WelcomeService(client, _config(["hi"]))  # type: ignore[arg-type]
+
+    await svc.welcome_user(ALICE)
+    await svc.welcome_user(BOB)
+
+    errors = [r for r in caplog.records if "encryption_enabled_by_default_for_room_type" in r.getMessage()]
+    assert len(errors) == 1 and errors[0].levelname == "ERROR"
+    assert len(client.sent) == 2  # the welcome still goes out
+    assert client.create_calls[0]["encrypted"] is False

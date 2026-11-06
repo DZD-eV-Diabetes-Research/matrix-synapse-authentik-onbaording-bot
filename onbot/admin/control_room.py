@@ -34,7 +34,7 @@ from typing import Any
 
 from onbot import __version__
 from onbot.admin.admins import AdminResolver
-from onbot.admin.broadcast import BroadcastService
+from onbot.admin.broadcast import BroadcastService, RecipientsUnknown
 from onbot.admin.commands import (
     ANNOUNCE,
     CONFIRM,
@@ -242,12 +242,15 @@ class ControlRoomHandler:
         return status
 
     async def _status_line(self) -> str:
-        rooms = await self.broadcast.target_rooms()
+        try:
+            managed = str(len(await self.broadcast.target_rooms()))
+        except RecipientsUnknown:
+            managed = "unknown until a pass has mapped the users"
         if self.engine is None or self.engine.last_reconcile_at is None:
             last = "not yet"
         else:
             last = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(self.engine.last_reconcile_at))
-        return f"onbot {__version__} — last reconcile: {last} — managed rooms: {len(rooms)}"
+        return f"onbot {__version__} — last reconcile: {last} — managed rooms: {managed}"
 
     async def _reply(self, text: str) -> None:
         assert self.room_id is not None

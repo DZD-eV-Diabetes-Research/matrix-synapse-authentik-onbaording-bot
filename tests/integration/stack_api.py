@@ -24,6 +24,7 @@ import hashlib
 import os
 import re
 import secrets
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import parse_qs, quote, urlencode, urljoin, urlparse
@@ -394,6 +395,16 @@ def uniq(prefix: str) -> str:
 DEFAULT_PASSWORD = "onbot-Compl3x-Pw-123"
 
 
+def recipients(*mxids: str) -> Callable[[], Awaitable[frozenset[str] | None]]:
+    """A broadcast recipient source naming exactly ``mxids``, standing in for the users the last
+    reconcile pass mapped (the service hands the broadcast that set, SEC-06)."""
+
+    async def source() -> frozenset[str] | None:
+        return frozenset(mxids)
+
+    return source
+
+
 def whoami_status(access_token: str) -> int:
     """HTTP status of a CS /whoami with the given token (200 active, 401 revoked)."""
     return httpx.get(
@@ -420,6 +431,17 @@ def ban_user(access_token: str, room_id: str, user_id: str) -> None:
         f"{SYNAPSE_URL}/_matrix/client/v3/rooms/{quote(room_id, safe='')}/ban",
         headers={"Authorization": f"Bearer {access_token}"},
         json={"user_id": user_id, "reason": "integration test"},
+        timeout=30.0,
+    )
+    r.raise_for_status()
+
+
+def leave_room(access_token: str, room_id: str) -> None:
+    """The token owner leaves ``room_id`` (what "Leave" in a client does)."""
+    r = httpx.post(
+        f"{SYNAPSE_URL}/_matrix/client/v3/rooms/{quote(room_id, safe='')}/leave",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json={},
         timeout=30.0,
     )
     r.raise_for_status()

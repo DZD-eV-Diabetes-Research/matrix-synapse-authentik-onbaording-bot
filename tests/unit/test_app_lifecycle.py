@@ -246,13 +246,20 @@ async def test_cold_start_heals_once_the_homeserver_is_up(monkeypatch: pytest.Mo
         monkeypatch.setattr(app.admin, "override_ratelimit", hs.override_ratelimit)
         monkeypatch.setattr(app.listener.welcome, "welcome_user", hs.welcome_user)
 
+        async def no_prune(_accounts: object) -> list[str]:
+            return []
+
+        monkeypatch.setattr(app.listener.welcome, "prune_direct", no_prune)
+
         supervisor = StartupSupervisor(app.service_steps(), initial_backoff_sec=0.005, max_backoff_sec=0.02)
         task = asyncio.create_task(supervisor.run())
 
         # Synapse is still booting. The engine's first pass runs regardless (it is not blocked by
         # startup) and sees a user; nobody tries to welcome them into a broken send path.
         app.engine.passes_started = 1
-        await app.events.emit(Signal.user_synced, mxid="@alice:example.test")
+        await app.events.emit(
+            Signal.users_mapped, mxids=frozenset({"@alice:example.test"}), accounts=frozenset()
+        )
         await asyncio.sleep(0.05)
         assert {"device registration", "rate-limit override", "admin control room"} <= set(supervisor.pending)
         assert hs.welcomed == []
@@ -267,7 +274,10 @@ async def test_cold_start_heals_once_the_homeserver_is_up(monkeypatch: pytest.Mo
         assert app.events._handlers[Signal.reconcile_completed]  # admin invites ride on the tick
         # Onboarding opened after the device and asked for a pass, so alice need not wait a tick.
         assert app.engine._trigger.is_set()
-        await app.events.emit(Signal.user_synced, mxid="@alice:example.test")
+        await app.events.emit(
+            Signal.users_mapped, mxids=frozenset({"@alice:example.test"}), accounts=frozenset()
+        )
+        await app.listener.process_queued()
         assert hs.welcomed == ["@alice:example.test"]
 
 
@@ -288,7 +298,7 @@ async def test_onboarding_opens_even_when_device_registration_is_refused_for_goo
 
         await asyncio.wait_for(StartupSupervisor(app.service_steps()).run(), timeout=2)
 
-        assert app.events._handlers[Signal.user_synced]  # as before the fix: try the sends anyway
+        assert app.events._handlers[Signal.users_mapped]  # as before the fix: try the sends anyway
 
 
 async def test_a_proxy_404_during_boot_does_not_open_onboarding_without_a_device(
@@ -318,7 +328,7 @@ async def test_a_proxy_404_during_boot_does_not_open_onboarding_without_a_device
         assert len(attempts) == 3
         device = next(s for s in steps if s.name == "device registration")
         assert device.succeeded
-        assert app.events._handlers[Signal.user_synced]
+        assert app.events._handlers[Signal.users_mapped]
 
 
 async def test_a_late_control_room_replays_the_stream_it_missed(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -447,6 +457,14 @@ async def test_broadcast_touches_only_what_a_broadcast_needs() -> None:
         router.get(f"{HS}/_matrix/client/v3/user/@bot:example.test/account_data/m.direct").respond(
             200, json={}
         )
+        # Who the mapped users are (SEC-06): the accounts, the directory and the recorded bindings.
+        router.get(f"{HS}/_synapse/admin/v2/users").respond(200, json={"users": [], "total": 0})
+        router.get("https://authentik.test/api/v3/core/users/").respond(
+            200, json={"results": [], "pagination": {"count": 0, "next": 0}}
+        )
+        router.get(
+            f"{HS}/_matrix/client/v3/user/@bot:example.test/account_data/test.example.onbot.known_users"
+        ).respond(200, json={})
 
         assert await run_broadcast(config, "hello") == 0
         called = _called_paths(router)
@@ -455,8 +473,30 @@ async def test_broadcast_touches_only_what_a_broadcast_needs() -> None:
         "GET /_matrix/client/v3/account/whoami",
         "POST /_matrix/client/v3/keys/upload",
         "POST /_synapse/admin/v1/users/@bot:example.test/override_ratelimit",
+        "GET /_synapse/admin/v2/users",
+        "GET /api/v3/core/users/",
+        "GET /_matrix/client/v3/user/@bot:example.test/account_data/test.example.onbot.known_users",
         "GET /_matrix/client/v3/user/@bot:example.test/account_data/m.direct",
     }
+
+
+async def test_broadcast_without_user_sync_is_refused_and_fails_the_command(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config = _config()
+    config.sync_authentik_users_with_matrix_rooms.enabled = False
+    with respx.mock(assert_all_mocked=False, assert_all_called=False) as router:
+        router.get(f"{HS}/_matrix/client/v3/account/whoami").respond(
+            200, json={"user_id": "@bot:example.test", "device_id": "DEV"}
+        )
+        router.get(f"{HS}/_synapse/admin/v2/users").respond(200, json={"users": [], "total": 0})
+        router.get(
+            f"{HS}/_matrix/client/v3/user/@bot:example.test/account_data/test.example.onbot.known_users"
+        ).respond(200, json={})
+
+        assert await run_broadcast(config, "hello") == 1
+
+    assert capsys.readouterr().out.startswith("not sent:")
 
 
 async def test_reconcile_once_runs_every_startup_step_before_its_pass(
@@ -557,6 +597,52 @@ async def test_service_stops_within_the_grace_period_while_everything_hangs(tmp_
     assert code == 0
     assert time.monotonic() - started < 0.3 + runtime.CANCEL_TIMEOUT_SEC
     assert json.loads(heartbeat.read_text())["pid"] == os.getpid()
+
+
+async def test_a_welcome_in_hand_is_cancelled_after_the_grace_period(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """RUN-08: welcomes run in a loop of their own; a stuck one cannot hold up the shutdown."""
+    from onbot.onboarding.listener import OnboardingListener
+
+    started = asyncio.Event()
+    cancelled: list[bool] = []
+    original_run = OnboardingListener.run
+
+    async def run_with_one_user(self: OnboardingListener) -> None:
+        self._mapped = frozenset({"@stuck:example.test"})
+        self._enqueue("@stuck:example.test")
+        await original_run(self)
+
+    async def stuck(_self: OnboardingListener, _item: str) -> None:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.append(True)
+            raise
+
+    monkeypatch.setattr(OnboardingListener, "run", run_with_one_user)
+    monkeypatch.setattr(OnboardingListener, "_process", stuck)
+    with _black_hole() as url:
+        shutdown = Shutdown()
+        task = asyncio.create_task(
+            run_service(
+                _config(url, authentik_url=url),
+                heartbeat_path=tmp_path / "hb.json",
+                shutdown=shutdown,
+                grace=0.3,
+            )
+        )
+        await asyncio.wait_for(started.wait(), timeout=2)
+
+        begun = time.monotonic()
+        shutdown.request(signal.SIGTERM)
+        code = await asyncio.wait_for(task, timeout=5)
+
+    assert code == 0
+    assert cancelled == [True]
+    assert time.monotonic() - begun < 0.3 + runtime.CANCEL_TIMEOUT_SEC
 
 
 async def test_a_second_signal_cancels_at_once(tmp_path: Path) -> None:

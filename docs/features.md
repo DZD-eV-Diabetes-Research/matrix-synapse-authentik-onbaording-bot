@@ -365,9 +365,20 @@ hand.
 
 ### What an admin should know
 
+- **Only mapped users get a notice board.** A user is welcomed once a reconcile pass has mapped them:
+  an active Authentik user in the sync scope with a Matrix account, not ignored and not part of an
+  identity conflict. Somebody who merely joins a room the bot is in (a guest from another homeserver
+  invited into a group room, a local account that is not in Authentik, a break-glass admin entering
+  the control room) gets nothing, and neither do broadcasts reach them. With
+  `sync_authentik_users_with_matrix_rooms.enabled: false` nobody is mapped, so nobody is welcomed.
+- **Welcomes do not slow down the pass.** The pass hands the mapped users to a small queue and goes
+  on converging rooms; a few welcomes are delivered at a time beside it. A user who joins a room is
+  welcomed right away if the last pass mapped them, otherwise with the pass that maps them.
 - **The messages are yours to write.** `welcome_new_users_messages` is the list, sent in order;
   `null` or an empty list disables the welcome room entirely. Each message is sent at most once per
-  user and matched by its text, so editing one message re-sends *that* message to everyone.
+  user. A plain entry is matched by its text, so editing it re-sends *that* message to everyone
+  (whitespace at line ends and blank lines around the text do not count). To fix a typo without
+  re-sending, give the message an id, see [message ids](#message-ids) below.
 - **Messages are Markdown, and can link to your space.** See
   [writing welcome messages](#writing-welcome-messages) below.
 - **The room's name and topic** come from `onboarding_room_name` and `onboarding_room_topic`, read
@@ -375,8 +386,17 @@ hand.
   than through a direct-message invitation, and without one the client would show it as an untitled
   room.
 - **Users are force-joined by default** (`force_join_onboarding_room`), so the notices land somewhere
-  they actually see. The join happens exactly once — a user who leaves is not dragged back — and
+  they actually see. The join happens exactly once, so a user who leaves is not dragged back, and
   Onbot falls back to a plain invitation if the join is refused.
+- **A user who leaves gets one invitation back.** The room is invite-only, so without it a single
+  click on "Leave" would cut them off from every later announcement. Onbot notices the leave and
+  invites them once; whether they accept is up to them, and a user who declines or leaves again is
+  not invited a second time. Broadcasts skip rooms whose user is no longer in them. An admin can
+  always put a user back with Synapse's admin join API.
+- **A notice board the bot is no longer in is replaced.** If such a room was purged by hand, or the
+  user of a very old room removed the bot, Onbot drops it from its `m.direct` and opens a new notice
+  board (which sends the welcome messages again). A notice board whose onbot state event was edited
+  into something unreadable is reported in the log once per start and left alone.
 - **The welcome room is deliberately separate and unencrypted**, even when your group rooms are
   encrypted: the bot posts here, and it stays outside encryption everywhere it writes messages.
 - **A gotcha for old deployments:** welcome rooms created by a much earlier Onbot granted the user the
@@ -424,6 +444,28 @@ you enable the space. Any other `{...}` in a message is left exactly as you wrot
 
 Placeholders do not affect the once-per-user bookkeeping: a message is identified by the text in your
 config, not by what an individual user saw, so renaming the space does not re-send anything.
+
+#### Message ids
+
+A plain entry is identified by its text, so correcting it sends the corrected message to every user
+who already got it. An entry with an `id` is identified by the id instead:
+
+```yaml
+welcome_new_users_messages:
+  - id: intro
+    text: |
+      Welcome aboard, {user_id}. I will invite you to the rooms of your groups.
+  - Everything open to everyone lives in **[{space_name}]({space_link})**.
+```
+
+- Editing the `text` of an entry with an id sends nothing again. Changing the `id` sends the message
+  once more to every onboarded user, which is the way to push a substantially new version.
+- Giving an existing plain entry an id (with its text unchanged) sends nothing again either.
+- Ids must be unique within the list.
+
+Each send also carries a transaction id derived from the room and the message, so a send the bot
+repeats because its answer was lost, or because the process died before it recorded the message, is
+dropped by Synapse instead of posted twice (within the day Synapse remembers transaction ids).
 
 **Settings:** `welcome_new_users_messages`, `onboarding_room_name`, `onboarding_room_topic` and
 `force_join_onboarding_room` in the [configuration reference](CONFIG_REFERENCE.md). The design is in
@@ -638,6 +680,14 @@ to a shell.
 - **Broadcasts are fail-soft.** They go out as quiet `m.notice` messages, rate-limited across the
   fan-out, and one unreachable room is reported rather than allowed to silence the announcement for
   everyone else. The `onbot broadcast` CLI command does the same job without a room.
+- **Broadcasts reach mapped users who are still in their notice board.** Only users the reconciler
+  maps (the same set that gets welcomed) are announced to, so an account that is not in Authentik
+  never receives one, even when an older Onbot gave it a notice board. `!announce` uses the set of
+  the last pass and is refused until the first pass has mapped anybody; `onbot broadcast` reads
+  Authentik and the identity record itself (read-only), so it needs Authentik reachable. A user who
+  left their notice board is skipped and counted apart ("1 skipped"), so the "sent to" count is the
+  number of users who can read the message. Notice boards of deactivated (erased) accounts and of
+  accounts on other homeservers are dropped from the bot's `m.direct` on the next pass.
 
 **Settings:** all the fields under [`admin_room`](CONFIG_REFERENCE.md). The rationale for admitting a
 command-reading room at all is in [ADR-0010](adr/0010-admin-control-room.md).

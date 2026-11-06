@@ -50,6 +50,10 @@
 | Sliding sync unavailable | The homeserver does not advertise MSC4186. Onbot falls back to the reconciler signal path automatically. |
 | A user can still write in their welcome room | Their room predates onbot's read-only welcome room. See below. |
 | A user is in their welcome room without ever accepting an invitation | Expected: `force_join_onboarding_room` is on by default. |
+| Somebody who joined a group room got no welcome room | Expected unless a reconcile pass maps them: only active Authentik users in the sync scope with a Matrix account are welcomed (and receive broadcasts). Guests from other homeservers and local accounts outside Authentik never are. A new user is welcomed with the first pass that sees their Matrix account. |
+| `!announce` answers `not sent: no reconcile pass has mapped the users yet` | Right after a start, before the first pass finished, or with `sync_authentik_users_with_matrix_rooms.enabled: false`. Wait for the pass, or turn user sync on. |
+| `admin control room ... is end-to-end encrypted` (or `new notice boards are end-to-end encrypted`) at error level | Synapse encrypts new private rooms by itself. See [Encrypted control room or notice boards](#encrypted-control-room-or-notice-boards) below. |
+| `cannot welcome @user: the onbot state of their notice board ... cannot be read` | The bot's state event in that room was edited by hand into something it cannot parse. Onbot neither guesses nor retries until the next start. Correct or remove the state event named in the line. |
 | `visitor_lobby_enabled requires create_matrix_rooms_in_a_matrix_space` at startup | A lobby's `restricted` join rule needs a space to be restricted to. Enable the parent space, or turn the lobby off. |
 | A lobby stayed invite-only | A lobby enabled by an Authentik attribute while no parent space is configured is skipped, not created invite-only. Configure the space. |
 | Someone outside the group can see the group room exists | Expected, and only its *existence* leaks — not its contents. See "The lobby room-ID leak" below. |
@@ -103,7 +107,27 @@ itself above them either, because nothing outranks 100. Synapse's `make_room_adm
 not help; it also tops out at 100.
 
 Those rooms therefore stay writable by their user. The only way out is to delete the room
-(`DELETE /_synapse/admin/v1/rooms/<room_id>` with `purge`) and drop its entry from the bot's
-`m.direct` account data, after which the next reconcile recreates it correctly. Be aware that this
+(`DELETE /_synapse/admin/v1/rooms/<room_id>` with `purge`). The bot notices on the next check of
+that user (after a restart, or when they leave a room) that it is no longer in the room, drops the
+entry from its `m.direct` account data and creates a new notice board. Be aware that this
 also re-sends every welcome message, because the per-message bookkeeping lives in the state of the
 room being destroyed — on a live server it pages every user it touches.
+
+## Encrypted control room or notice boards
+
+The bot has no end-to-end encryption ([ADR-0009](adr/0009-e2ee-stance.md)) and creates the admin
+control room and the notice boards unencrypted. Synapse's `encryption_enabled_by_default_for_room_type`
+(`invite` or `all`) encrypts every new private room anyway, and a client cannot opt out when it
+creates a room (verified against Synapse 1.164: an `m.room.encryption` event in `initial_state` can
+only choose the algorithm). Encryption can never be removed from a room again.
+
+- **Control room:** admins' clients encrypt their commands, and the bot never sees them. Onbot logs
+  an error at startup and posts a notice into the room saying so; commands sent in plain text and the
+  bot's own reports still work. Fix: set `encryption_enabled_by_default_for_room_type: off` in
+  Synapse, then delete the control room as a server admin
+  (`DELETE /_synapse/admin/v1/rooms/<room_id>` with `purge`) and restart Onbot, which creates a new,
+  unencrypted one.
+- **Notice boards:** the welcome messages and announcements still arrive, but as plain text in an
+  encrypted room, which clients flag. Onbot logs an error once per start when it creates such a
+  board. Turning the Synapse setting off fixes boards created afterwards; existing ones stay
+  encrypted unless you replace them (see the previous section for what that costs).

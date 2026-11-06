@@ -181,7 +181,7 @@ class World:
         self.synced: list[str] = []
         self.events.subscribe(Signal.identity_attention, self._on_identity)
         self.events.subscribe(Signal.destructive_actions_suppressed, self._on_guard)
-        self.events.subscribe(Signal.user_synced, self._on_synced)
+        self.events.subscribe(Signal.users_mapped, self._on_synced)
         ledger_store = MatrixAccountDataLedgerStore(self.store, mx("bot"), SERVER)
         manager = AccountLifecycleManager(
             self.config,
@@ -216,7 +216,7 @@ class World:
         self.guard_events.append(event)
 
     async def _on_synced(self, event: Event) -> None:
-        self.synced.append(event.payload["mxid"])
+        self.synced.extend(sorted(event.payload["mxids"]))
 
     def person(self, pk: int, local: str, *groups: str, **attributes: Any) -> None:
         """An Authentik user who logged in once: MAS fixed ``local`` as their localpart."""

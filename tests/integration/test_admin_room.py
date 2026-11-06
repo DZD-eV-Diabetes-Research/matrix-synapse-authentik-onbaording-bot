@@ -78,7 +78,12 @@ async def test_only_an_allowlisted_admin_can_announce(
     await admin_client.add_user_to_room(control_room, admin.mxid)
     await admin_client.add_user_to_room(control_room, stranger.mxid)
 
-    handler = ControlRoomHandler(matrix_client, config, BroadcastService(matrix_client, config), resolver)
+    handler = ControlRoomHandler(
+        matrix_client,
+        config,
+        BroadcastService(matrix_client, config, recipients=S.recipients(target.mxid)),
+        resolver,
+    )
     await handler.start(control_room)
 
     # The room's power levels let any member speak; Synapse accepts the stranger's command.
@@ -123,7 +128,12 @@ async def test_a_replayed_sync_timeline_does_not_re_announce(
     assert control_room is not None
     await admin_client.add_user_to_room(control_room, admin.mxid)
 
-    handler = ControlRoomHandler(matrix_client, config, BroadcastService(matrix_client, config), resolver)
+    handler = ControlRoomHandler(
+        matrix_client,
+        config,
+        BroadcastService(matrix_client, config, recipients=S.recipients(target.mxid)),
+        resolver,
+    )
     await handler.start(control_room)
     assert S.send_message_status(admin.access_token, control_room, "!announce Only once please") == 200
 
@@ -165,7 +175,12 @@ async def test_an_authentik_group_grants_commands_and_leaving_it_revokes_them(
     assert control_room is not None
     await admin_client.add_user_to_room(control_room, admin.mxid)
 
-    handler = ControlRoomHandler(matrix_client, config, BroadcastService(matrix_client, config), resolver)
+    handler = ControlRoomHandler(
+        matrix_client,
+        config,
+        BroadcastService(matrix_client, config, recipients=S.recipients(target.mxid)),
+        resolver,
+    )
     await handler.start(control_room)
 
     assert S.send_message_status(admin.access_token, control_room, "!announce Granted by group") == 200

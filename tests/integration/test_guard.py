@@ -140,7 +140,7 @@ async def test_a_narrowed_token_pauses_everything_until_an_admin_confirms(
     handler = ControlRoomHandler(
         matrix_client,
         config,
-        BroadcastService(matrix_client, config),
+        BroadcastService(matrix_client, config, recipients=S.recipients()),
         AdminResolver(authentik_client, config, ttl_sec=0),
         guard=guard,
     )
@@ -197,6 +197,9 @@ async def test_three_erasures_wait_for_a_confirmation_in_the_admin_room(
         authentik_admin.create_user(S.uniq("layer3anchor"), password=S.DEFAULT_PASSWORD, attributes=scope)
 
     config = make_config()
+    # Only this test's (nonexistent) group rooms: the chat rooms other tests left on the shared stack
+    # hold members outside this scope, whose kicks would trip layer 2 instead.
+    config.sync_matrix_rooms_based_on_authentik_groups.only_for_groupnames_starting_with = prefix
     config.sync_authentik_users_with_matrix_rooms.sync_only_users_with_authentik_attributes = scope
     life = config.sync_authentik_users_with_matrix_rooms.deactivate_disabled_authentik_users_in_matrix
     life.enabled, life.dry_run, life.deactivate_after_n_sec, life.delete_after_n_sec = True, False, 0, 0
@@ -236,7 +239,7 @@ async def test_three_erasures_wait_for_a_confirmation_in_the_admin_room(
     handler = ControlRoomHandler(
         matrix_client,
         config,
-        BroadcastService(matrix_client, config),
+        BroadcastService(matrix_client, config, recipients=S.recipients()),
         AdminResolver(authentik_client, config, ttl_sec=0),
         guard=guard,
     )

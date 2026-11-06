@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from onbot.admin.broadcast import BroadcastFailure, BroadcastResult, BroadcastService
+from onbot.admin.broadcast import BroadcastFailure, BroadcastResult, BroadcastService, RecipientsUnknown
 from onbot.config import AdminRoom, AuthentikServer, OnbotConfig, SynapseServer
 
 BOT = "@bot:matrix.test"
@@ -29,9 +29,17 @@ def _config(**overrides: object) -> OnbotConfig:
 class _FakeClient:
     """Serves ``m.direct`` account data and records sends; ``fail_rooms`` raise instead."""
 
-    def __init__(self, direct: dict[str, list[str]], *, fail_rooms: set[str] | None = None) -> None:
+    def __init__(
+        self,
+        direct: dict[str, list[str]],
+        *,
+        fail_rooms: set[str] | None = None,
+        memberships: dict[str, str | None] | None = None,
+    ) -> None:
         self._direct = direct
         self._fail_rooms = fail_rooms or set()
+        # room -> the target user's membership there; "join" when not listed.
+        self._memberships = memberships or {}
         self.sends: list[tuple[str, str, str]] = []
         self.in_flight = 0
         self.max_in_flight = 0
@@ -40,6 +48,9 @@ class _FakeClient:
         assert user_id == BOT
         assert data_type == "m.direct"
         return dict(self._direct)
+
+    async def get_membership(self, room_id: str, user_id: str) -> str | None:
+        return self._memberships.get(room_id, "join")
 
     async def send_text_message(self, room_id: str, body: str, *, msgtype: str = "m.text") -> str:
         self.in_flight += 1
@@ -54,8 +65,20 @@ class _FakeClient:
             self.in_flight -= 1
 
 
-def _service(client: object, config: OnbotConfig | None = None, **kwargs: object) -> BroadcastService:
-    return BroadcastService(client, config or _config(), **kwargs)  # type: ignore[arg-type]
+def _service(
+    client: _FakeClient,
+    config: OnbotConfig | None = None,
+    *,
+    mapped: set[str] | None = None,
+    **kwargs: object,
+) -> BroadcastService:
+    """``mapped`` are the users the last pass mapped; by default everybody in ``m.direct``."""
+    recipients = set(client._direct) if mapped is None else mapped
+
+    async def source() -> set[str]:
+        return recipients
+
+    return BroadcastService(client, config or _config(), recipients=source, **kwargs)  # type: ignore[arg-type]
 
 
 async def test_targets_every_direct_room_and_maps_it_to_its_user() -> None:
@@ -133,3 +156,46 @@ def test_summary_names_the_failures() -> None:
 
     assert "sent to 1 rooms, 1 failed" in summary
     assert "@b:matrix.test (!bad:x): boom" in summary
+
+
+# --- SEC-06: only mapped users; ONB-07: only users still in their notice board ---
+
+
+async def test_users_the_last_pass_did_not_map_are_not_broadcast_to() -> None:
+    """Live check 6: an outsider an older version welcomed stays in m.direct but gets nothing."""
+    client = _FakeClient({"@a:matrix.test": ["!ra:x"], "@outsider:matrix.test": ["!ro:x"]})
+
+    result = await _service(client, mapped={"@a:matrix.test"}).broadcast("hello")
+
+    assert result.sent == ["!ra:x"]
+    assert [room for room, _, _ in client.sends] == ["!ra:x"]
+
+
+async def test_without_a_mapped_set_nothing_is_sent() -> None:
+    client = _FakeClient({"@a:matrix.test": ["!ra:x"]})
+
+    async def unknown() -> None:
+        return None
+
+    service = BroadcastService(client, _config(), recipients=unknown)  # type: ignore[arg-type]
+    result = await service.broadcast("hello")
+
+    assert client.sends == []
+    assert result.refused is not None
+    assert result.summary().startswith("not sent: no reconcile pass has mapped the users yet")
+    with pytest.raises(RecipientsUnknown):
+        await service.target_rooms()
+
+
+async def test_a_room_the_user_left_is_skipped_and_counted_apart() -> None:
+    client = _FakeClient(
+        {"@a:matrix.test": ["!ra:x"], "@b:matrix.test": ["!rb:x"], "@c:matrix.test": ["!rc:x"]},
+        memberships={"!rb:x": "leave", "!rc:x": "invite"},
+    )
+
+    result = await _service(client).broadcast("hello")
+
+    # The invited user reads it once they accept; the one who left would never see it.
+    assert sorted(result.sent) == ["!ra:x", "!rc:x"]
+    assert result.not_member == [("!rb:x", "@b:matrix.test")]
+    assert result.summary() == "sent to 2 rooms, 0 failed, 1 skipped (the user left their notice board)"
