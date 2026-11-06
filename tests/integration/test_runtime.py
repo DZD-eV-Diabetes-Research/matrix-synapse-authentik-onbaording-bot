@@ -42,6 +42,7 @@ from onbot.clients.matrix import ApiClientMatrix
 from onbot.clients.synapse_admin import ApiClientSynapseAdmin
 from onbot.config import OnbotConfig
 from onbot.rooms.admin import AdminRoomProvisioner
+from onbot.rooms.identity import RoomIdentityResolver
 from onbot.sync import SyncPump
 from tests.integration import stack_api as S
 
@@ -84,6 +85,7 @@ async def test_pump_recovers_from_an_unknown_position_and_the_control_room_answe
     authentik_client: ApiClientAuthentik,
     matrix_client: ApiClientMatrix,
     admin_client: ApiClientSynapseAdmin,
+    room_identity: RoomIdentityResolver,
 ) -> None:
     _a, admin = S.provision(authentik_admin, S.uniq("posadmin"))
     config = make_config()
@@ -92,7 +94,7 @@ async def test_pump_recovers_from_an_unknown_position_and_the_control_room_answe
     config.admin_room.admin_user_ids = [admin.mxid]
     resolver = AdminResolver(authentik_client, config, ttl_sec=0)
     await matrix_client.ensure_device_registered()  # the session token's device may be new (RUN-02)
-    control_room = await AdminRoomProvisioner(matrix_client, config, resolver).ensure()
+    control_room = await AdminRoomProvisioner(matrix_client, config, resolver, room_identity).ensure()
     assert control_room is not None
     await admin_client.add_user_to_room(control_room, admin.mxid)
 

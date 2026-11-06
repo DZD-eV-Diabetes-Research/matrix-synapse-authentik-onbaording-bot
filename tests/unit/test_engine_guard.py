@@ -8,13 +8,13 @@ and power levels, so "zero kicks" and "zero withdrawals" are observed, not infer
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import Any
+from typing import Any, ClassVar
 
 from onbot.clients.base import ApiError
 from onbot.config import OnbotConfig
 from onbot.events import Event, EventBus, Signal
 from onbot.reconciler.engine import ReconcilerEngine
-from onbot.reconciler.state import granted_power_levels_type
+from onbot.reconciler.state import OnbotRoomType, granted_power_levels_type
 from tests.unit.test_engine import _BASE, FakeAdmin, RecordingEffectors
 
 ROOM1 = "!room1:company.org"
@@ -69,6 +69,12 @@ class Directory:
 
 class Rooms(FakeAdmin):
     """Synapse admin API over rooms that remember their members."""
+
+    room_markers: ClassVar[dict[str, tuple[OnbotRoomType, str | None]]] = {
+        ROOM1: (OnbotRoomType.group_room, "g1"),
+        ROOM2: (OnbotRoomType.group_room, "g2"),
+        SPACE: (OnbotRoomType.space, None),
+    }
 
     def __init__(self, directory: Directory) -> None:
         super().__init__()
@@ -258,6 +264,12 @@ class ObsoleteRooms(Rooms):
     def __init__(self, directory: Directory, count: int) -> None:
         super().__init__(directory)
         self.obsolete = OBSOLETE[:count]
+        # Bot-created rooms with a locked marker naming a vanished group: the only teardown
+        # candidates since room identity is creator plus marker (D20).
+        self.room_markers = {
+            **Rooms.room_markers,
+            **{room: (OnbotRoomType.group_room, f"gone{n}") for n, room in enumerate(self.obsolete)},
+        }
         for n, room in enumerate(self.obsolete):
             self.members[room] = {BOT, mx(f"member{n}")}
 
@@ -279,6 +291,8 @@ def obsolete_world(count: int) -> tuple[ReconcilerEngine, ObsoleteRooms, LiveEff
     rooms = ObsoleteRooms(directory, count)
     effectors = LiveEffectors(rooms)
     engine.admin, engine.effectors = rooms, effectors  # type: ignore[assignment]
+    # The room identity scan (D20) reads and writes through its own references.
+    engine.rooms.admin, engine.rooms.writer = rooms, effectors  # type: ignore[assignment]
     for n, room in enumerate(rooms.obsolete):
         effectors.state_store[(room, "org.company.onbot.group_room")] = {
             "room_type": "group_room",

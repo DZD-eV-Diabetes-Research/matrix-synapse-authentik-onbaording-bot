@@ -131,8 +131,10 @@ attribute to rename it.
 
 **Alias.** Comes from the group's `pk`, deliberately: a Matrix alias **can never be changed after the
 room is created**, and a `pk` survives the group being renamed. Only repoint it at
-`attributes.chatroom_alias` if you accept that renaming that attribute later strands the old room and
-builds a fresh, empty one. Dashes are stripped from the alias.
+`attributes.chatroom_alias` if you accept that changing that attribute later leaves the room at its
+old alias (Onbot keeps the room, it is recognised by its marker, not its alias). An attribute alias
+is predictable, so a user could create a room at it first; Onbot then skips the group and reports
+it instead of using that room. Dashes are stripped from the alias.
 
 **Topic.** Comes from the `chatroom_topic` attribute. Leave the attribute unset for no topic. One
 wrinkle: if the config sets a `topic_prefix` and the group has no topic attribute, the room's topic

@@ -141,6 +141,31 @@ in, so your identity directory and your chat rooms need not be the same list.
   the group's stable primary key, not its name (`matrix_alias_from_authentik_attribute`) — precisely
   so that renaming the group in Authentik does not strand the room, because a Matrix alias can never
   be changed after the room exists.
+- **Onbot recognises its rooms by who created them, not by their alias.** A room belongs to a group
+  only when Onbot itself created it and it carries Onbot's marker naming that group. The marker is
+  part of the room from its creation, and only Onbot can change it (a room moderator cannot), so
+  nobody can move a room to another group. The alias is only the room's address: a moderator who
+  changes or removes it changes nothing for Onbot, and Onbot does not build a second room.
+- **A room somebody else created at a group's alias is never taken over.** Any user can claim a free
+  alias, so a user could create a room at the alias a group is about to get. Onbot then skips that
+  group, reports it in the log and the admin control room, and creates nothing: it neither joins the
+  group into that room nor builds a second one beside it. Remove the alias from that room (a server
+  admin can) and the group gets its room on the next pass. The same applies when two groups would get
+  the same alias (for example `team-a` and `teama` after the dashes are stripped): neither gets a new
+  room until the attributes differ.
+- **Changing the alias settings later keeps the existing rooms.** A group keeps its room when
+  `alias_prefix` or the alias attribute changes; the room keeps its old alias. (Before this version a
+  changed alias stranded the old room and built a new, empty one.)
+- **Rooms upgraded by a human are left alone.** When somebody other than Onbot upgrades a group room to
+  a new room version (only possible when `chatroom_params` lowered the upgrade permission), Onbot
+  reports it and skips that group until an admin decides; it does not follow the upgrade.
+- **Upgrading from a version before room identity:** existing rooms carry Onbot's marker but not
+  its protection. On the first pass Onbot adopts each one once, through its alias: a marked room that
+  Onbot created and that sits at the alias the current configuration gives it is protected from then
+  on and found by its marker alone. Marked rooms that are not at their alias (for example stranded by
+  an earlier alias change) are reported and left alone, and so are rooms Onbot did not create. If your
+  rooms were created by a different bot account than the one configured now, they are not adopted:
+  every such group is reported as "belongs to room ..., which the bot did not create".
 - **Rooms are end-to-end encrypted by default** (`end2end_encryption_enabled`). Like all encryption
   in Matrix this can never be turned off again once a room has it, so decide before the room is
   created. You can override this and other settings for a single group through
@@ -292,8 +317,10 @@ joinable at all.
 
 - **It is on by default** (`create_matrix_rooms_in_a_matrix_space.enabled`). Disable it to leave the
   group rooms unparented at the top of the room list.
-- **Onbot finds the space by its alias and creates it if it is missing**
-  (`create_matrix_space_if_not_exists.enabled`). Turn creation off to build and curate the space
+- **Onbot finds the space it created for this configuration and creates it if it is missing**
+  (`create_matrix_space_if_not_exists.enabled`). The space remembers the `alias` it was created for,
+  so a changed `alias` setting makes Onbot create a new space. If a room it did not create already
+  holds the alias, Onbot does not use it and the room stage stops with an error instead. Turn creation off to build and curate the space
   yourself, in which case Onbot only adds rooms to it; if the space is then missing entirely, Onbot
   refuses to start rather than scatter rooms.
 - **Its name, topic and icon are configurable.** The icon is downloaded and re-applied only when its
@@ -595,9 +622,12 @@ to a shell.
   upstream.
 - **The set is live.** Removing somebody from the granting group revokes their commands within a
   refresh interval, without a restart; they keep their seat in the room and can still read it.
-- **It is found by alias** (`admin_room.alias`), so changing the alias later makes Onbot create a
-  second, empty room rather than rename the first. The room is unencrypted and unfederated, so the
-  bot can read it and it cannot be commanded from off-server.
+- **It is found by its marker, not by its alias.** Onbot uses only a room it created as its control
+  room for this `admin_room.alias`; changing the alias setting later makes Onbot create a second,
+  empty room rather than rename the first. If the alias belongs to a room Onbot did not create (or to
+  another of its rooms), Onbot never posts, invites or takes commands there: the control room stays
+  off, with an error in the log naming the alias. The room is unencrypted and unfederated, so the bot
+  can read it and it cannot be commanded from off-server.
 - **Broadcasts are fail-soft.** They go out as quiet `m.notice` messages, rate-limited across the
   fan-out, and one unreachable room is reported rather than allowed to silence the announcement for
   everyone else. The `onbot broadcast` CLI command does the same job without a room.

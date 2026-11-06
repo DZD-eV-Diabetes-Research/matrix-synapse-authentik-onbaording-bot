@@ -1,7 +1,7 @@
 """Integration-style tests for the reconciler engine using in-memory fakes."""
 
 import asyncio
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 
@@ -11,6 +11,9 @@ from onbot.events import EventBus, Signal
 from onbot.lifecycle.accounts import DirectorySnapshot, DirectoryUser
 from onbot.reconciler.effectors import DryRunEffectors
 from onbot.reconciler.engine import ReconcilerEngine
+from onbot.reconciler.state import OnbotRoomType
+from onbot.rooms.provision import ManagedRoomSpec
+from tests.unit.room_fakes import IdentityScanMixin, room_state
 
 _BASE = {
     "synapse_server": {
@@ -43,8 +46,14 @@ class FakeAuthentik:
         return [_GROUP_G1]
 
 
-class FakeAdmin:
+class FakeAdmin(IdentityScanMixin):
+    room_markers: ClassVar[dict[str, tuple[OnbotRoomType, str | None]]] = {
+        "!room1:company.org": (OnbotRoomType.group_room, "g1"),
+        "!space:company.org": (OnbotRoomType.space, None),
+    }
+
     def __init__(self) -> None:
+        self.room_state_events = {}
         self.added: list[tuple[str, str]] = []
         self.blocked_changes: list[tuple[str, bool]] = []
         self.deleted: list[str] = []
@@ -93,6 +102,7 @@ class RecordingEffectors(DryRunEffectors):
         self.names: list[tuple[str, str]] = []
         self.topics: list[tuple[str, str]] = []
         self.account_data: dict[tuple[str, str], dict[str, Any]] = {}
+        self.created: list[ManagedRoomSpec] = []
 
     async def kick_user(self, room_id: str, user_id: str, reason: str | None = None) -> None:
         self.kicks.append((room_id, user_id))
@@ -104,11 +114,16 @@ class RecordingEffectors(DryRunEffectors):
         self.topics.append((room_id, topic))
         self.state_store[(room_id, "m.room.topic")] = {"topic": topic}
 
-    async def create_lobby_room(
-        self, attrs: Any, parent_space_id: str, join_rules_content: dict[str, Any]
-    ) -> str:
-        self.lobbies_created.append((attrs.canonical_alias, parent_space_id, join_rules_content))
-        return "!newlobby:company.org"
+    async def create_managed_room(self, spec: ManagedRoomSpec) -> str:
+        self.created.append(spec)
+        if spec.room_type is OnbotRoomType.visitor_lobby:
+            assert spec.parent_space_id is not None
+            join_rules = next(
+                e["content"] for e in spec.extra_initial_state if e["type"] == "m.room.join_rules"
+            )
+            self.lobbies_created.append((spec.alias_localpart, spec.parent_space_id, join_rules))
+            return "!newlobby:company.org"
+        return f"!new-{spec.room_type.value}:company.org"
 
     async def set_room_power_levels(self, room_id: str, power_levels: dict[str, Any]) -> None:
         self.power_levels.append((room_id, power_levels))
@@ -331,7 +346,7 @@ def _orphan_engine(
     admin = OrphanAdmin()
     effectors = RecordingEffectors()
     if orphan_state is not None:
-        effectors.state_store[(_ORPHAN, _GROUP_ROOM_EVENT)] = orphan_state
+        admin.room_state_events = {_ORPHAN: room_state(OnbotRoomType.group_room, content=orphan_state)}
     engine = ReconcilerEngine(config, FakeAuthentik(), admin, effectors)  # type: ignore[arg-type]
     return engine, admin, effectors
 
@@ -350,6 +365,85 @@ async def test_obsolete_room_is_blocked_and_cleared() -> None:
     kicked = {mxid for room, mxid in effectors.kicks if room == _ORPHAN}
     assert kicked == {"@alice:company.org", "@stale:company.org"}
     assert admin.deleted == []  # delete_disabled_rooms is off
+
+
+async def test_the_kick_reason_does_not_carry_the_authentik_url() -> None:
+    """SEC-11: the configured Authentik URL is often internal, and every member sees the reason."""
+    reasons: list[str | None] = []
+
+    class ReasonEffectors(RecordingEffectors):
+        async def kick_user(self, room_id: str, user_id: str, reason: str | None = None) -> None:
+            reasons.append(reason)
+            await super().kick_user(room_id, user_id, reason)
+
+    engine, _, _ = _orphan_engine(orphan_state=_state("g-gone"))
+    engine.effectors = ReasonEffectors()
+    await engine.reconcile_once()
+
+    assert reasons
+    assert all(reason and "authentik" not in reason.lower() for reason in reasons)
+
+
+async def test_an_unlocked_marker_of_a_vanished_group_is_never_torn_down() -> None:
+    """A marker from before the lock was writable by moderators: it may name any group (D20)."""
+    engine, admin, effectors = _orphan_engine(delete=True)
+    admin.room_state_events = {_ORPHAN: room_state(OnbotRoomType.group_room, "g-gone", locked=False)}
+    await engine.reconcile_once()
+
+    assert admin.blocked_changes == [] and admin.deleted == []
+    assert all(room != _ORPHAN for room, _ in effectors.kicks)
+
+
+async def test_a_room_somebody_else_created_is_never_torn_down() -> None:
+    """Before S6 any readable room with the marker counted, including a forged one in a user's room."""
+    engine, admin, _ = _orphan_engine(delete=True)
+    admin.room_state_events = {
+        _ORPHAN: room_state(OnbotRoomType.group_room, "g-gone", creator="@mallory:company.org")
+    }
+    await engine.reconcile_once()
+
+    assert admin.blocked_changes == [] and admin.deleted == []
+
+
+async def test_a_squatted_alias_skips_the_group_and_creates_nothing() -> None:
+    """08 check 4: the alias of a new group belongs to a room a user created first (SEC-02)."""
+
+    class Squatted(RecordingEffectors):
+        async def resolve_room_alias(self, alias: str) -> str | None:
+            return "!squat:company.org" if alias == "#g2:company.org" else None
+
+    class SquatAdmin(FakeAdmin):
+        async def list_non_space_rooms(self) -> list[dict[str, Any]]:
+            return [
+                *await super().list_non_space_rooms(),
+                {
+                    "room_id": "!squat:company.org",
+                    "canonical_alias": "#g2:company.org",
+                    "creator": "@mallory:company.org",
+                },
+            ]
+
+    class TwoGroups(FakeAuthentik):
+        async def list_groups(self, **_: Any) -> list[dict[str, Any]]:
+            return [_GROUP_G1, {"pk": "g2", "name": "New", "attributes": {}, "users": ["carol-pk"]}]
+
+    bus = EventBus()
+    reported: list[dict[str, Any]] = []
+
+    async def handler(event: Any) -> None:
+        reported.append(event.payload)
+
+    bus.subscribe(Signal.room_not_converged, handler)
+    admin = SquatAdmin()
+    effectors = Squatted()
+    engine = ReconcilerEngine(OnbotConfig.model_validate(_BASE), TwoGroups(), admin, effectors, bus)  # type: ignore[arg-type]
+    await engine.reconcile_once()
+
+    assert effectors.created == []
+    assert all(room != "!squat:company.org" for room, _ in admin.added)  # nobody is joined into it
+    assert ("!room1:company.org", "@bob:company.org") in admin.added  # the rest of the pass ran
+    (problem,) = [p for p in reported if p["group_pk"] == "g2"]
+    assert "did not create" in problem["problems"][0]
 
 
 async def test_obsolete_room_deleted_when_delete_disabled_rooms_enabled() -> None:
@@ -630,6 +724,7 @@ class LobbyAdmin(FakeAdmin):
     def __init__(self, *, with_lobby_room: bool) -> None:
         super().__init__()
         self._with_lobby_room = with_lobby_room
+        self.room_markers = {**FakeAdmin.room_markers, _LOBBY_ID: (OnbotRoomType.visitor_lobby, "g1")}
 
     async def list_non_space_rooms(self) -> list[dict[str, Any]]:
         rooms = await super().list_non_space_rooms()
@@ -659,15 +754,16 @@ async def test_lobby_created_stamped_and_join_rule_set() -> None:
     # group_room), so no later pass mistakes it for the group room.
     assert len(effectors.lobbies_created) == 1
     alias, space_id, join_rules = effectors.lobbies_created[0]
-    assert alias == "#g1-lobby:company.org"
+    assert alias == "g1-lobby"
     assert space_id == "!space:company.org"
     assert join_rules == {
         "join_rule": "restricted",
         "allow": [{"type": "m.room_membership", "room_id": "!space:company.org"}],
     }
-    stamped = effectors.state_store[("!newlobby:company.org", _LOBBY_EVENT)]
-    assert stamped["room_type"] == "visitor_lobby"
-    assert stamped["group_id"] == "g1"
+    # The marker travels with createRoom (initial_state), so the lobby is never unmarked (ONB-16).
+    (spec,) = effectors.created
+    assert spec.room_type is OnbotRoomType.visitor_lobby
+    assert spec.marker.group_id == "g1"  # type: ignore[union-attr]
 
 
 async def test_lobby_is_add_only_and_never_kicks_a_visitor() -> None:
@@ -783,11 +879,7 @@ async def test_lobby_taken_down_with_its_group_when_group_disappears() -> None:
     room_cfg.disable_rooms_when_mapped_authentik_group_disappears = True
     admin = OrphanLobbyAdmin()
     effectors = RecordingEffectors()
-    effectors.state_store[(_ORPHAN_LOBBY, _LOBBY_EVENT)] = {
-        "schema_version": 1,
-        "room_type": "visitor_lobby",
-        "group_id": "g-gone",
-    }
+    admin.room_state_events = {_ORPHAN_LOBBY: room_state(OnbotRoomType.visitor_lobby, "g-gone")}
     engine = ReconcilerEngine(config, FakeAuthentik(), admin, effectors)  # type: ignore[arg-type]
     await engine.reconcile_once()
     assert (_ORPHAN_LOBBY, True) in admin.blocked_changes
@@ -900,7 +992,12 @@ class ForeignRoomAdmin(FakeAdmin):
     async def list_non_space_rooms(self) -> list[dict[str, Any]]:
         return [
             *await super().list_non_space_rooms(),
-            {"room_id": "!private:company.org", "canonical_alias": None, "name": "Alice's room"},
+            {
+                "room_id": "!private:company.org",
+                "canonical_alias": None,
+                "name": "Alice's room",
+                "creator": "@alice:company.org",
+            },
         ]
 
 
@@ -941,28 +1038,38 @@ async def test_a_room_the_bot_is_not_in_does_not_abort_the_pass() -> None:
     assert admin.deleted == []
 
 
-async def test_a_non_403_state_error_is_reported_not_skipped() -> None:
-    """The 403 handler is narrow on purpose: a 500 from Synapse is still a real fault.
+async def test_an_unreadable_bot_room_holds_creation_and_teardown() -> None:
+    """Fail closed (D20): a bot room whose state cannot be read could be any group's room.
 
-    Since S2 a fault no longer aborts the pass (REC-03), but it must not be mistaken for "not a
-    managed room" either: the room is reported as not converged, which a 403 never is.
+    The rooms the bot already knows still converge, but no group gets a new room on a guess, and no
+    room is torn down while the picture is incomplete. The problem is reported for the waiting group.
     """
 
-    class BrokenStateEffectors(RecordingEffectors):
-        async def get_room_state(
-            self, room_id: str, event_type: str, state_key: str = ""
-        ) -> dict[str, Any] | None:
-            raise ApiError("GET", "http://synapse/whatever", 500, {"errcode": "M_UNKNOWN"})
+    class FlakyStateAdmin(OrphanAdmin):
+        async def get_room_state_events(self, room_id: str) -> list[dict[str, Any]]:
+            if room_id == _ORPHAN:
+                raise ApiError(
+                    "GET", "http://synapse/_synapse/admin/v1/rooms/x/state", 500, {"errcode": "M_UNKNOWN"}
+                )
+            return await super().get_room_state_events(room_id)
+
+    class TwoGroups(FakeAuthentik):
+        async def list_groups(self, **_: Any) -> list[dict[str, Any]]:
+            return [_GROUP_G1, {"pk": "g-new", "name": "New", "attributes": {}, "users": []}]
 
     bus = EventBus()
-    reported: list[str] = []
+    reported: list[tuple[str | None, list[str]]] = []
 
     async def handler(event: Any) -> None:
-        reported.append(event.payload["room_id"])
+        reported.append((event.payload["group_pk"], event.payload["problems"]))
 
     bus.subscribe(Signal.room_not_converged, handler)
-    engine = ReconcilerEngine(
-        _teardown_config(), FakeAuthentik(), ForeignRoomAdmin(), BrokenStateEffectors(), bus
-    )  # type: ignore[arg-type]
+    admin = FlakyStateAdmin()
+    effectors = RecordingEffectors()
+    engine = ReconcilerEngine(_teardown_config(), TwoGroups(), admin, effectors, bus)  # type: ignore[arg-type]
     await engine.reconcile_once()
-    assert "!private:company.org" in reported
+
+    assert ("!room1:company.org", "@bob:company.org") in admin.added  # the known room converged
+    assert effectors.created == []  # g-new waits
+    assert admin.blocked_changes == []  # and nothing is torn down
+    assert any(group == "g-new" and "could not be read" in problems[0] for group, problems in reported)

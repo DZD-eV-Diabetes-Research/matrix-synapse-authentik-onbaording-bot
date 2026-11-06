@@ -39,7 +39,7 @@ Process lifecycle (review findings RUN-02, RUN-09, RUN-12, RUN-13):
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -87,6 +87,7 @@ from onbot.onboarding.welcome import WelcomeService
 from onbot.reconciler.effectors import DryRunEffectors, DryRunSynapseAdmin, MatrixEffectors
 from onbot.reconciler.engine import ReconcilerEngine
 from onbot.rooms.admin import AdminRoomProvisioner
+from onbot.rooms.identity import RoomIdentityResolver
 from onbot.runtime import (
     SHUTDOWN_GRACE_SEC,
     Shutdown,
@@ -241,7 +242,7 @@ class App:
         handler = self.control_room
         if handler is None:
             return
-        provisioner = AdminRoomProvisioner(self.matrix, self.config, self.admins)
+        provisioner = AdminRoomProvisioner(self.matrix, self.config, self.admins, self.engine.rooms)
         room_id = await provisioner.ensure()
         if room_id is None:
             return
@@ -291,6 +292,28 @@ class App:
         if self.dry_run:
             return [StartupStep("version negotiation", self.negotiate_versions)]
         return self.service_steps()
+
+
+def _notice_boards(matrix: ApiClientMatrix, bot_id: str) -> Callable[[], Awaitable[set[str]]]:
+    """The bot's notice boards (its ``m.direct``), which a room identity scan need not read."""
+
+    async def read() -> set[str]:
+        try:
+            direct = await matrix.get_account_data(bot_id, "m.direct")
+        except Exception:
+            log.warning(
+                "could not read the bot's m.direct; the room scan reads every bot room", exc_info=True
+            )
+            return set()
+        return {
+            room
+            for rooms in direct.values()
+            if isinstance(rooms, list)
+            for room in rooms
+            if isinstance(room, str)
+        }
+
+    return read
 
 
 def _matrix_clients(
@@ -372,13 +395,22 @@ async def build_app(
         # One guard for the engine (decides, records) and the control room (!confirm, !reject): its
         # state is reloaded under one lock for every operation (D13).
         guard = DestructiveActionGuard(GuardLimits.from_config(config), guard_store, events)
-        live_effectors = CSApiEffectors(matrix, media=media)
+        live_effectors = CSApiEffectors(matrix, media=media, bot_id=bot_id)
         stack.push_async_callback(live_effectors.aclose)
         effectors: MatrixEffectors = live_effectors
         engine_admin = admin
         if dry_run:
             effectors = DryRunEffectors(reads=live_effectors)
             engine_admin = cast(ApiClientSynapseAdmin, DryRunSynapseAdmin(admin))
+        # Which room is which (D20): one resolver for the engine, the control room and the welcome
+        # flow, so every room's identity is read once per process.
+        rooms = RoomIdentityResolver(
+            engine_admin,
+            effectors,
+            bot_id=bot_id,
+            server_name=server_name,
+            direct_rooms=_notice_boards(matrix, bot_id),
+        )
         engine = ReconcilerEngine(
             config,
             authentik,
@@ -387,9 +419,10 @@ async def build_app(
             events=events,
             lifecycle=lifecycle,
             guard=guard,
+            rooms=rooms,
             dry_run=dry_run,
         )
-        welcome = WelcomeService(matrix, config, admin=admin, media=media)
+        welcome = WelcomeService(matrix, config, admin=admin, media=media, rooms=rooms)
         # Not started here: the welcome flow is subscribed by the "onboarding" startup step.
         listener = OnboardingListener(matrix, welcome, config, events)
         broadcast = BroadcastService(matrix, config)

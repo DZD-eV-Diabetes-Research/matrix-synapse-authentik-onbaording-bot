@@ -30,7 +30,7 @@ import pytest_asyncio
 from testcontainers.compose import DockerCompose
 
 from onbot.clients.authentik import ApiClientAuthentik
-from onbot.clients.matrix import ApiClientMatrix
+from onbot.clients.matrix import ApiClientMatrix, CSApiEffectors
 from onbot.clients.synapse_admin import ApiClientSynapseAdmin
 from onbot.config import (
     AdminRoom,
@@ -41,6 +41,7 @@ from onbot.config import (
 )
 from onbot.guard import guard_account_data_type
 from onbot.lifecycle.accounts import known_users_account_data_type, lifecycle_account_data_type
+from onbot.rooms.identity import RoomIdentityResolver
 from tests.integration import stack_api as S
 from tests.integration.stack_instance import SKIP_VAR, StackUnavailable, skip_requested, start_stack
 
@@ -290,3 +291,16 @@ async def authentik_client(onbot_config: OnbotConfig) -> AsyncIterator[ApiClient
         yield client
     finally:
         await client.aclose()
+
+
+@pytest.fixture
+def room_identity(
+    matrix_client: ApiClientMatrix, admin_client: ApiClientSynapseAdmin
+) -> RoomIdentityResolver:
+    """The bot's room identity resolver (D20), as the service wires it, over the live stack."""
+    return RoomIdentityResolver(
+        admin_client,
+        CSApiEffectors(matrix_client, bot_id=S.BOT_USER_ID),
+        bot_id=S.BOT_USER_ID,
+        server_name=S.SERVER_NAME,
+    )

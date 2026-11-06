@@ -7,7 +7,7 @@ still run, and the failure is reported once per pass with room and group (REC-03
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 
@@ -15,6 +15,9 @@ from onbot.clients.base import ApiError
 from onbot.config import OnbotConfig
 from onbot.events import Event, EventBus, Signal
 from onbot.reconciler.engine import ReconcilerEngine
+from onbot.reconciler.state import OnbotRoomType
+from onbot.rooms.provision import ManagedRoomSpec
+from tests.unit.room_fakes import room_state
 from tests.unit.test_engine import (
     _BASE,
     _GROUP_G1,
@@ -47,6 +50,12 @@ class TwoGroupAuthentik(FakeAuthentik):
 
 class TwoRoomAdmin(FakeAdmin):
     """room1 belongs to g1, room2 to g2. Bob is banned from room1, so joining him is refused."""
+
+    room_markers: ClassVar[dict[str, tuple[OnbotRoomType, str | None]]] = {
+        _ROOM1: (OnbotRoomType.group_room, "g1"),
+        _ROOM2: (OnbotRoomType.group_room, "g2"),
+        "!space:company.org": (OnbotRoomType.space, None),
+    }
 
     def __init__(self) -> None:
         super().__init__()
@@ -182,7 +191,7 @@ async def test_a_failing_room_creation_does_not_stop_the_other_groups() -> None:
             return [r for r in await super().list_non_space_rooms() if r["room_id"] != _ROOM2]
 
     class RefusingCreate(RecordingEffectors):
-        async def create_group_room(self, attrs: Any, parent_space_id: str | None) -> str:
+        async def create_managed_room(self, spec: ManagedRoomSpec) -> str:
             raise ApiError("POST", "http://synapse/createRoom", 400, {"errcode": "M_ROOM_IN_USE"})
 
     admin = NoRoom2()
@@ -288,26 +297,36 @@ def _teardown_config() -> OnbotConfig:
     return config
 
 
-async def test_a_state_read_error_on_one_room_does_not_stop_the_teardown_of_another() -> None:
-    class FlakyState(RecordingEffectors):
-        async def get_room_state(
-            self, room_id: str, event_type: str, state_key: str = ""
-        ) -> dict[str, Any] | None:
-            if room_id == _ORPHAN_A:
-                raise ApiError("GET", "http://synapse/state", 500, {"errcode": "M_UNKNOWN"})
-            return await super().get_room_state(room_id, event_type, state_key)
+async def test_an_unreadable_bot_room_holds_the_teardown_until_it_can_be_read() -> None:
+    """Fail closed (D20): while one bot room cannot be read, no room is torn down at all.
 
-    effectors = FlakyState()
-    effectors.state_store[(_ORPHAN_B, _GROUP_EVENT)] = {"room_type": "group_room", "group_id": "g-gone"}
-    engine, admin, _, bus = _engine(admin=OrphansAdmin(), effectors=effectors, config=_teardown_config())
-    reported = _collect(bus, Signal.room_not_converged)
+    Before S6 a state read error on one room only skipped that room. Identity now comes from the whole
+    picture, so the teardown waits; the membership pass still runs, and the next pass catches up.
+    """
+
+    class FlakyState(OrphansAdmin):
+        broken = True
+
+        async def get_room_state_events(self, room_id: str) -> list[dict[str, Any]]:
+            if room_id == _ORPHAN_A and self.broken:
+                raise ApiError("GET", "http://synapse/state", 500, {"errcode": "M_UNKNOWN"})
+            return await super().get_room_state_events(room_id)
+
+    admin = FlakyState()
+    admin.room_state_events = {
+        _ORPHAN_A: room_state(OnbotRoomType.group_room, "g-gone"),
+        _ORPHAN_B: room_state(OnbotRoomType.group_room, "g-gone"),
+    }
+    engine, admin, _, _ = _engine(admin=admin, config=_teardown_config())
     await engine.reconcile_once()
 
-    assert (_ORPHAN_B, True) in admin.blocked_changes
-    assert (_ORPHAN_A, True) not in admin.blocked_changes
-    assert _ORPHAN_A in {e.payload["room_id"] for e in reported}
-    # ...and the membership pass after the teardown still ran.
+    assert admin.blocked_changes == []
     assert (_ROOM2, "@carol:company.org") in admin.added
+
+    admin.broken = False
+    await engine.reconcile_once()
+    assert (_ORPHAN_A, True) in admin.blocked_changes
+    assert (_ORPHAN_B, True) in admin.blocked_changes
 
 
 async def test_a_refused_kick_while_disabling_a_room_does_not_stop_the_other_kicks() -> None:
@@ -318,8 +337,9 @@ async def test_a_refused_kick_while_disabling_a_room_does_not_stop_the_other_kic
             await super().kick_user(room_id, user_id, reason)
 
     effectors = RefuseX()
-    effectors.state_store[(_ORPHAN_A, _GROUP_EVENT)] = {"room_type": "group_room", "group_id": "g-gone"}
-    engine, _, _, bus = _engine(admin=OrphansAdmin(), effectors=effectors, config=_teardown_config())
+    admin = OrphansAdmin()
+    admin.room_state_events = {_ORPHAN_A: room_state(OnbotRoomType.group_room, "g-gone")}
+    engine, _, _, bus = _engine(admin=admin, effectors=effectors, config=_teardown_config())
     reported = _collect(bus, Signal.room_not_converged)
     await engine.reconcile_once()
 

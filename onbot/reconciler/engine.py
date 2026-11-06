@@ -68,7 +68,7 @@ from onbot.reconciler.power_levels import (
     room_authority,
 )
 from onbot.reconciler.report import PassReport, describe_error
-from onbot.reconciler.rooms import build_group_room_maps, resolve_room_settings
+from onbot.reconciler.rooms import build_group_room_maps, colliding_aliases, resolve_room_settings
 from onbot.reconciler.state import (
     AnyRoomState,
     GrantedPowerLevels,
@@ -81,6 +81,15 @@ from onbot.reconciler.state import (
     granted_power_levels_type,
     parse_room_state,
 )
+from onbot.rooms.identity import (
+    Resolution,
+    RoomIdentityResolver,
+    RoomIndex,
+    RoomKey,
+    describe_stray,
+    stray_claims,
+)
+from onbot.rooms.provision import ManagedRoomSpec
 
 log = get_logger(__name__)
 
@@ -176,6 +185,7 @@ class ReconcilerEngine:
         lifecycle: AccountLifecycleManager | None = None,
         guard: DestructiveActionGuard | None = None,
         *,
+        rooms: RoomIdentityResolver | None = None,
         dry_run: bool = False,
     ) -> None:
         self.config = config
@@ -191,6 +201,14 @@ class ReconcilerEngine:
         # verdict is logged but not recorded.
         self.dry_run = dry_run
         self.server_name = config.synapse_server.server_name
+        # Which room is which, by creator and marker (D20). Shared with the admin room and the welcome
+        # flow in the service, so the room identities are read once per process.
+        self.rooms = rooms or RoomIdentityResolver(
+            admin,
+            self.effectors,
+            bot_id=config.synapse_server.bot_user_id,
+            server_name=self.server_name,
+        )
         self.global_admins = GlobalRoomAdminResolver(authentik, config)
         # Unix timestamp of the last pass that ran to completion; reported by the admin room's
         # `!status` command. ``None`` until the first pass finishes.
@@ -345,14 +363,18 @@ class ReconcilerEngine:
         self, users: list[MappedUser], report: PassReport, plan: PassPlan, inputs: _PassInputs
     ) -> int:
         """Everything that touches rooms and the space; returns the number of group rooms."""
-        space = await self._resolve_space()
-        rooms = await self._gather_group_rooms()
-        group_maps = await self._gather_group_room_maps(rooms)
-        if self.config.sync_matrix_rooms_based_on_authentik_groups.enabled:
+        rooms_cfg = self.config.sync_matrix_rooms_based_on_authentik_groups
+        if not rooms_cfg.enabled and not self.config.create_matrix_rooms_in_a_matrix_space.enabled:
+            return 0
+        index = await self.rooms.scan()
+        space = await self._resolve_space(index)
+        group_maps = await self._gather_group_room_maps()
+        if rooms_cfg.enabled:
             inputs.mapped_groups = len(group_maps)
 
-        await self._converge_rooms(group_maps, space, report)
-        await self._converge_obsolete_rooms(rooms, group_maps, report, plan)
+        await self._converge_rooms(group_maps, space, index, report)
+        self._report_stray_rooms(index, group_maps, report)
+        await self._converge_obsolete_rooms(index, group_maps, report, plan)
         if space is not None:
             await self._guarded(
                 report,
@@ -480,41 +502,51 @@ class ReconcilerEngine:
                 users.append(user)
         return users
 
-    async def _gather_group_rooms(self) -> list[MatrixRoom]:
-        if not self.config.sync_matrix_rooms_based_on_authentik_groups.enabled:
-            return []
-        return [MatrixRoom.from_admin_api(r) for r in await self.admin.list_non_space_rooms()]
-
-    async def _gather_group_room_maps(self, rooms: list[MatrixRoom]) -> list[GroupRoomMap]:
+    async def _gather_group_room_maps(self) -> list[GroupRoomMap]:
         settings = self.config.sync_matrix_rooms_based_on_authentik_groups
         if not settings.enabled:
             return []
         groups = await self.authentik.list_groups(filter_by_attribute=settings.only_groups_with_attributes)
-        return build_group_room_maps(groups, rooms, self.config, self.server_name)
+        return build_group_room_maps(groups, self.config, self.server_name)
 
-    async def _resolve_space(self) -> MatrixRoom | None:
+    async def _resolve_space(self, index: RoomIndex) -> MatrixRoom | None:
+        """The space, found by its marker; created when there is none and its alias is free.
+
+        A space the bot cannot settle on (two claim to be it, its alias belongs to somebody else's room,
+        or bot rooms could not be read) aborts the room stage: every group room hangs off it.
+        """
         cfg = self.config.create_matrix_rooms_in_a_matrix_space
         if not cfg.enabled:
             return None
         target_alias = build_canonical(cfg.alias, self.server_name, "#")
-        for sp in await self.admin.list_spaces():
-            if sp.get("canonical_alias") == target_alias:
-                return MatrixRoom.from_admin_api(sp, is_space=True)
-        if not cfg.create_matrix_space_if_not_exists.enabled:
-            raise ConfigurationError(
-                f"space {target_alias!r} not found and auto-creation is disabled "
-                "(create_matrix_rooms_in_a_matrix_space.create_matrix_space_if_not_exists.enabled)"
+        key = RoomKey(OnbotRoomType.space, name=cfg.alias)
+        resolution = await self.rooms.resolve(index, key, target_alias)
+        if resolution.problem is not None:
+            raise ConfigurationError(f"space {target_alias}: {resolution.problem}")
+        if resolution.room is not None:
+            space = resolution.room
+            space.is_space = True
+        else:
+            if not cfg.create_matrix_space_if_not_exists.enabled:
+                raise ConfigurationError(
+                    f"space {target_alias!r} not found and auto-creation is disabled "
+                    "(create_matrix_rooms_in_a_matrix_space.create_matrix_space_if_not_exists.enabled)"
+                )
+            create = cfg.create_matrix_space_if_not_exists
+            room_id = await self.effectors.create_managed_room(
+                ManagedRoomSpec(
+                    marker=SpaceRoomState(configured_alias=cfg.alias),
+                    alias_localpart=cfg.alias,
+                    name=create.name,
+                    topic=create.topic,
+                    room_params=create.space_params,
+                    is_space=True,
+                )
             )
-        create = cfg.create_matrix_space_if_not_exists
-        room_id = await self.effectors.create_space(
-            alias=cfg.alias, name=create.name, topic=create.topic, params=create.space_params
-        )
-        await self.effectors.put_room_state(
-            room_id,
-            event_type_name(self.server_name, OnbotRoomType.space),
-            dump_room_state(SpaceRoomState(authentik_server=self.config.authentik_server.url)),
-        )
-        return MatrixRoom(room_id=room_id, canonical_alias=target_alias, is_space=True)
+            space = MatrixRoom(room_id=room_id, canonical_alias=target_alias, is_space=True)
+            self.rooms.register(space, key)
+        self.rooms.space_id = space.room_id
+        return space
 
     async def _converge_avatar(
         self, room_id: str, room_type: OnbotRoomType, desired: str | None, fresh_state: AnyRoomState
@@ -526,7 +558,7 @@ class ReconcilerEngine:
         upload. Applies to already-existing rooms too, not just freshly created ones. Best-effort:
         a fetch/upload failure is logged and retried next tick. Clearing the source URL stops future
         updates but leaves the current icon in place (removing avatars is out of scope). ``fresh_state``
-        seeds the state event (its ``group_id``/``authentik_server``) when the room has none yet.
+        seeds the state event (its ``group_id``) when the room has none yet.
         """
         event_type = event_type_name(self.server_name, room_type)
         raw = await self.effectors.get_room_state(room_id, event_type)
@@ -550,63 +582,101 @@ class ReconcilerEngine:
             space.room_id,
             OnbotRoomType.space,
             space_cfg.avatar_url,
-            SpaceRoomState(authentik_server=self.config.authentik_server.url),
+            SpaceRoomState(configured_alias=self.config.create_matrix_rooms_in_a_matrix_space.alias),
         )
 
     async def _converge_rooms(
-        self, group_maps: list[GroupRoomMap], space: MatrixRoom | None, report: PassReport
+        self,
+        group_maps: list[GroupRoomMap],
+        space: MatrixRoom | None,
+        index: RoomIndex,
+        report: PassReport,
     ) -> None:
         parent_space_id = space.room_id if space else None
+        # Two roles wanting one alias (REC-13): their rooms are still found by marker, but none of
+        # them gets a room adopted or created through that alias.
+        collisions = colliding_aliases(group_maps)
+        for alias, owners in sorted(collisions.items()):
+            log.error(
+                "alias %s is wanted by %s; none of them gets a new room until that is resolved",
+                alias,
+                " and ".join(owners),
+            )
         for gm in group_maps:
             await self._guarded(
                 report,
                 room_kind=OnbotRoomType.group_room,
-                room_id=gm.room.room_id if gm.room else None,
+                room_id=None,
                 group_pk=gm.group_pk,
                 step="room setup",
-                work=self._converge_group_room_existence(gm, parent_space_id),
+                work=self._converge_group_room_existence(gm, parent_space_id, index, collisions),
             )
             if gm.room is None or gm.lobby_desired is None:
                 continue
             await self._guarded(
                 report,
                 room_kind=OnbotRoomType.visitor_lobby,
-                room_id=gm.lobby.room_id if gm.lobby else None,
+                room_id=None,
                 group_pk=gm.group_pk,
                 step="lobby setup",
-                work=self._converge_lobby_existence(gm, parent_space_id),
+                work=self._converge_lobby_existence(gm, parent_space_id, index, collisions),
             )
 
-    async def _converge_group_room_existence(self, gm: GroupRoomMap, parent_space_id: str | None) -> None:
-        if gm.room is None:
-            room_id = await self.effectors.create_group_room(gm.desired, parent_space_id)
-            # Set before stamping, so a failed stamp still leaves this pass converging membership.
-            gm.room = MatrixRoom(room_id=room_id, canonical_alias=gm.desired.canonical_alias)
-            await self.effectors.put_room_state(
-                room_id,
-                event_type_name(self.server_name, OnbotRoomType.group_room),
-                dump_room_state(
-                    GroupRoomState(
-                        group_id=gm.group_pk,
-                        authentik_server=self.config.authentik_server.url,
-                    )
-                ),
+    async def _resolve_room(
+        self, index: RoomIndex, key: RoomKey, alias: str, collisions: dict[str, list[str]]
+    ) -> Resolution:
+        resolution = await self.rooms.resolve(index, key, alias, alias_usable=alias not in collisions)
+        if resolution.problem is not None:
+            # Reported for the group; the room's later steps are skipped because it stays unset.
+            raise _RoomStepProblems([f"{key.describe()} skipped: {resolution.problem}"])
+        return resolution
+
+    async def _converge_group_room_existence(
+        self,
+        gm: GroupRoomMap,
+        parent_space_id: str | None,
+        index: RoomIndex,
+        collisions: dict[str, list[str]],
+    ) -> None:
+        key = RoomKey(OnbotRoomType.group_room, gm.group_pk)
+        resolution = await self._resolve_room(index, key, gm.desired.canonical_alias, collisions)
+        if resolution.room is None:
+            room_id = await self.effectors.create_managed_room(
+                ManagedRoomSpec(
+                    marker=GroupRoomState(group_id=gm.group_pk),
+                    alias_localpart=gm.desired.alias,
+                    name=gm.desired.name,
+                    topic=gm.desired.topic,
+                    encrypted=gm.desired.encrypted,
+                    room_params=gm.desired.room_params,
+                    parent_space_id=parent_space_id,
+                )
             )
-        elif await self.admin.room_is_blocked(gm.room.room_id):
-            # G2.3: a previously blocked room whose group reappeared gets unblocked.
-            log.info("unblocking room %s (group reappeared)", gm.room.room_id)
-            await self.admin.room_set_blocked(gm.room.room_id, blocked=False)
+            gm.room = MatrixRoom(room_id=room_id, canonical_alias=gm.desired.canonical_alias)
+            self.rooms.register(gm.room, key)
+        else:
+            gm.room = resolution.room
+            if await self.admin.room_is_blocked(gm.room.room_id):
+                # G2.3: a previously blocked room whose group reappeared gets unblocked.
+                log.info("unblocking room %s (group reappeared)", gm.room.room_id)
+                await self.admin.room_set_blocked(gm.room.room_id, blocked=False)
 
         await self._converge_avatar(
             gm.room.room_id,
             OnbotRoomType.group_room,
             gm.desired.avatar_source_url,
-            GroupRoomState(group_id=gm.group_pk, authentik_server=self.config.authentik_server.url),
+            GroupRoomState(group_id=gm.group_pk),
         )
 
-    async def _converge_lobby_existence(self, gm: GroupRoomMap, parent_space_id: str | None) -> None:
+    async def _converge_lobby_existence(
+        self,
+        gm: GroupRoomMap,
+        parent_space_id: str | None,
+        index: RoomIndex,
+        collisions: dict[str, list[str]],
+    ) -> None:
         assert gm.lobby_desired is not None
-        await self._converge_lobby_creation(gm, parent_space_id)
+        await self._converge_lobby_creation(gm, parent_space_id, index, collisions)
         if gm.lobby is not None:
             # Same source URL as the group room, so the uploader's per-URL cache makes this a state
             # read and a set, not a second fetch+upload.
@@ -614,118 +684,111 @@ class ReconcilerEngine:
                 gm.lobby.room_id,
                 OnbotRoomType.visitor_lobby,
                 gm.lobby_desired.avatar_source_url,
-                VisitorLobbyRoomState(
-                    group_id=gm.group_pk, authentik_server=self.config.authentik_server.url
-                ),
+                VisitorLobbyRoomState(group_id=gm.group_pk),
             )
 
-    async def _converge_lobby_creation(self, gm: GroupRoomMap, parent_space_id: str | None) -> None:
-        """Create the group's visitor lobby if it does not exist yet, and stamp it (ADR-0012).
+    async def _converge_lobby_creation(
+        self,
+        gm: GroupRoomMap,
+        parent_space_id: str | None,
+        index: RoomIndex,
+        collisions: dict[str, list[str]],
+    ) -> None:
+        """Find the group's visitor lobby, or create it if it does not exist yet (ADR-0012).
 
-        The lobby is stamped with ``OnbotRoomType.visitor_lobby`` — never ``group_room`` — so no later
+        The lobby is marked with ``OnbotRoomType.visitor_lobby``, never ``group_room``, so no later
         pass mistakes it for the group room, projects Authentik membership onto it, and kicks every
-        visitor. Its join rule is set at creation (via the effector) from the runtime space id, so it
-        is never briefly invite-only nor briefly open. Requires a space (the config validator enforces
-        that when the lobby comes from config; this guard covers a lobby enabled by an Authentik
-        attribute while no space is configured).
+        visitor. Its join rule is set at creation from the runtime space id, so it is never briefly
+        invite-only nor briefly open. Requires a space (the config validator enforces that when the
+        lobby comes from config; this guard covers a lobby enabled by an Authentik attribute while no
+        space is configured).
         """
         assert gm.lobby_desired is not None
-        if gm.lobby is not None:
-            return
         if parent_space_id is None:
             log.warning(
                 "group %s requests a visitor lobby but no parent space is configured; skipping",
                 gm.group_pk,
             )
             return
+        key = RoomKey(OnbotRoomType.visitor_lobby, gm.group_pk)
+        resolution = await self._resolve_room(index, key, gm.lobby_desired.canonical_alias, collisions)
+        if resolution.room is not None:
+            gm.lobby = resolution.room
+            return
         join_rules_content = desired_join_rules(OnbotRoomType.visitor_lobby, parent_space_id)
         assert join_rules_content is not None
-        room_id = await self.effectors.create_lobby_room(
-            gm.lobby_desired, parent_space_id, join_rules_content
-        )
-        await self.effectors.put_room_state(
-            room_id,
-            event_type_name(self.server_name, OnbotRoomType.visitor_lobby),
-            dump_room_state(
-                VisitorLobbyRoomState(group_id=gm.group_pk, authentik_server=self.config.authentik_server.url)
-            ),
+        room_id = await self.effectors.create_managed_room(
+            ManagedRoomSpec(
+                marker=VisitorLobbyRoomState(group_id=gm.group_pk),
+                alias_localpart=gm.lobby_desired.alias,
+                name=gm.lobby_desired.name,
+                topic=gm.lobby_desired.topic,
+                encrypted=gm.lobby_desired.encrypted,
+                room_params=gm.lobby_desired.room_params,
+                parent_space_id=parent_space_id,
+                # A lobby is a room a wandering space member should find.
+                suggested=True,
+                extra_initial_state=(
+                    {"type": JOIN_RULES_EVENT_TYPE, "state_key": "", "content": join_rules_content},
+                ),
+            )
         )
         gm.lobby = MatrixRoom(room_id=room_id, canonical_alias=gm.lobby_desired.canonical_alias)
+        self.rooms.register(gm.lobby, key)
+
+    def _report_stray_rooms(
+        self, index: RoomIndex, group_maps: list[GroupRoomMap], report: PassReport
+    ) -> None:
+        """Report the bot's marked rooms that nobody adopted (D20).
+
+        A stray room of a live group, the space or the control room is reported on every pass, like a
+        room that did not converge (so the admin room hears of it once). A stray room of a group that
+        is no longer synced is only logged, once per process: it is history, not a problem.
+        """
+        live = {gm.group_pk for gm in group_maps}
+        for identity in stray_claims(index):
+            key = identity.key
+            message = describe_stray(identity)
+            if key is not None and key.group_id is not None and key.group_id not in live:
+                self.rooms.log_once(identity.room_id, f"room {identity.room_id} {message}")
+                continue
+            report.add(
+                room_kind=key.kind.value if key is not None else "unmanaged_room",
+                room_id=identity.room_id,
+                group_pk=key.group_id if key is not None else None,
+                problem=message,
+            )
 
     async def _converge_obsolete_rooms(
-        self, rooms: list[MatrixRoom], group_maps: list[GroupRoomMap], report: PassReport, plan: PassPlan
+        self, index: RoomIndex, group_maps: list[GroupRoomMap], report: PassReport, plan: PassPlan
     ) -> None:
         """Tear down rooms whose mapped Authentik group disappeared (G2.3, the inverse of G2.2).
 
-        A room is obsolete when it carries our ``group_room`` *or* ``visitor_lobby`` state event but
-        the ``group_id`` recorded there no longer names a group that survives the sync filters —
-        because the group was deleted upstream, or lost the attribute/prefix/parent that opted it into
-        chat. The lobby is torn down with its group room (ADR-0012): a blocked group room beside a
-        live, joinable lobby is the worst of both.
+        A room is obsolete when it is a group room or visitor lobby the bot can vouch for (it created
+        the room, and its locked marker names the group, see :mod:`onbot.rooms.identity`) and that
+        group no longer survives the sync filters: deleted upstream, or it lost the
+        attribute/prefix/parent that opted it into chat. The lobby is torn down with its group room
+        (ADR-0012): a blocked group room beside a live, joinable lobby is the worst of both.
 
-        Identification is by the recorded ``group_id``, not by set-differencing room ids as legacy
-        did: a room whose alias changed, or one created earlier in this very pass, must not read as
-        obsolete. Rooms with neither of our state events are never touched, so unrelated and
-        onboarding rooms are structurally out of reach.
-
-        ``rooms`` is the *server-wide* admin room list, so it includes rooms the bot has never
-        joined: anything a user created for themselves. Reading state in one of those answers 403,
-        not 404, and that 403 is an answer rather than a fault (see the handler below).
+        Rooms the bot did not create, rooms without a marker, and marked rooms from older versions
+        that were never adopted are never touched. When the state of some bot room could not be read,
+        the whole teardown waits for a pass that can see everything.
         """
         settings = self.config.sync_matrix_rooms_based_on_authentik_groups
         if not settings.enabled or not settings.disable_rooms_when_mapped_authentik_group_disappears:
             return
-        live_group_pks = {gm.group_pk for gm in group_maps}
-        mapped_room_ids = {gm.room.room_id for gm in group_maps if gm.room is not None}
-        mapped_room_ids |= {gm.lobby.room_id for gm in group_maps if gm.lobby is not None}
-        for room in rooms:
-            if room.room_id in mapped_room_ids:
-                continue  # backed by a live group (room or lobby); skip the state read
-            await self._guarded(
-                report,
-                room_kind="unmapped_room",
-                room_id=room.room_id,
-                group_pk=None,
-                step="obsolete-room check",
-                work=self._converge_obsolete_room(room, live_group_pks, settings, report, plan),
+        if not index.complete:
+            log.warning(
+                "reconcile: obsolete-room teardown skipped this pass: %s", index.describe_incomplete()
             )
-
-    async def _converge_obsolete_room(
-        self,
-        room: MatrixRoom,
-        live_group_pks: set[str],
-        settings: SyncMatrixRoomsBasedOnAuthentikGroups,
-        report: PassReport,
-        plan: PassPlan,
-    ) -> None:
-        for room_type in (OnbotRoomType.group_room, OnbotRoomType.visitor_lobby):
-            try:
-                raw = await self.effectors.get_room_state(
-                    room.room_id, event_type_name(self.server_name, room_type)
-                )
-            except ApiError as exc:
-                if exc.status_code != 403:
-                    raise
-                # "Not in room, and room previews are disabled." The bot creates every room it
-                # manages and never leaves one, so a room whose state it may not read is by
-                # construction not a room this pass is about: skip it exactly like a room with
-                # no onbot state event.
-                #
-                # Not reported either: the admin room list is server-wide, so this is every
-                # user-created private room on the server, every pass.
-                log.debug("bot is not in room %s; not an onbot-managed room, skipping", room.room_id)
-                return
-            if not raw:
-                continue  # not this kind of managed room
-            try:
-                state = parse_room_state(room_type, raw)
-            except ValidationError:
-                log.warning("room %s has unreadable onbot state; leaving it alone", room.room_id)
-                return
-            assert isinstance(state, GroupRoomState | VisitorLobbyRoomState)
-            if state.group_id not in live_group_pks:
-                self._defer_teardown(room, state.group_id, settings, report, room_type, plan)
-            return  # matched one managed type; do not re-check the other
+            return
+        live_group_pks = {gm.group_pk for gm in group_maps}
+        for identity in index.trusted((OnbotRoomType.group_room, OnbotRoomType.visitor_lobby)):
+            assert identity.key is not None and identity.key.group_id is not None
+            if identity.key.group_id in live_group_pks:
+                continue
+            room = index.rooms.get(identity.room_id) or MatrixRoom(room_id=identity.room_id)
+            self._defer_teardown(room, identity.key.group_id, settings, report, identity.key.kind, plan)
 
     def _defer_teardown(
         self,
@@ -775,10 +838,8 @@ class ReconcilerEngine:
         plan.defer(actions, run)
 
     def _teardown_reason(self) -> str:
-        return (
-            f"The group mapped to this room is no longer synced from the central user directory "
-            f"({self.config.authentik_server.url})."
-        )
+        # Without the Authentik URL: it is often internal, and a kick reason is shown to everyone (SEC-11).
+        return "The group mapped to this room is no longer synced from the central user directory."
 
     async def _disable_room(
         self,
@@ -1017,7 +1078,7 @@ class ReconcilerEngine:
         await self._converge_levels(
             lobby,
             OnbotRoomType.visitor_lobby,
-            VisitorLobbyRoomState(group_id=gm.group_pk, authentik_server=self.config.authentik_server.url),
+            VisitorLobbyRoomState(group_id=gm.group_pk),
             gm.group_pk,
             {},
             report,
@@ -1060,7 +1121,7 @@ class ReconcilerEngine:
         await self._converge_levels(
             room,
             OnbotRoomType.group_room,
-            GroupRoomState(group_id=group_pk, authentik_server=self.config.authentik_server.url),
+            GroupRoomState(group_id=group_pk),
             group_pk,
             desired,
             report,

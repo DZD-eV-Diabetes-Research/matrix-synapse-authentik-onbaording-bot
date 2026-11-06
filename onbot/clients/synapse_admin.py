@@ -109,6 +109,15 @@ class ApiClientSynapseAdmin(BaseApiClient):
         members: list[str] = result["members"]
         return members
 
+    async def get_room_state_events(self, room_id: str) -> list[dict[str, Any]]:
+        """Every current state event of a room, whether or not the bot is a member.
+
+        https://element-hq.github.io/synapse/latest/admin_api/rooms.html#room-state-api
+        """
+        result = await self.get_json(f"v1/rooms/{room_id}/state")
+        events: list[dict[str, Any]] = list((result or {}).get("state") or [])
+        return events
+
     async def get_room_details(self, room_id: str) -> dict[str, Any]:
         # https://element-hq.github.io/synapse/latest/admin_api/rooms.html#room-details-api
         details: dict[str, Any] = await self.get_json(f"v1/rooms/{room_id}")
