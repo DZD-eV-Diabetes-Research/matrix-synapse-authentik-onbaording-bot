@@ -71,13 +71,24 @@ class FakeMatrixClient:
         # (room, user) -> membership; a user is joined unless a test says otherwise.
         self.memberships: dict[tuple[str, str], str | None] = {}
         self.invites: list[tuple[str, str]] = []
-        # Rooms the bot has left (purged or kicked): reading their state answers 403.
+        # Rooms the bot can no longer read at all (purged, forgotten, or the bot banned): 403 on reads.
         self.gone: set[str] = set()
+        # Rooms a user kicked the bot from. Synapse serves a departed member's reads from the state at
+        # the time they left (`allow_departed_users`), so reads keep working; sends and writes fail.
+        self.kicked: set[str] = set()
+
+    def _refuse(self, room_id: str, *, write: bool = False) -> None:
+        if room_id in self.gone or (write and room_id in self.kicked):
+            raise ApiError("PUT" if write else "GET", f"/rooms/{room_id}", 403, {"errcode": "M_FORBIDDEN"})
 
     async def get_membership(self, room_id: str, user_id: str) -> str | None:
+        self._refuse(room_id)
+        if user_id == BOT and room_id in self.kicked:
+            return "leave"
         return self.memberships.get((room_id, user_id), "join")
 
     async def invite_user(self, room_id: str, user_id: str) -> None:
+        self._refuse(room_id, write=True)
         self.invites.append((room_id, user_id))
         self.memberships[(room_id, user_id)] = "invite"
 
@@ -88,7 +99,7 @@ class FakeMatrixClient:
 
     async def joined_rooms(self) -> list[str]:
         rooms = {room for room, _ in self.room_state} | set(self.power_levels)
-        return sorted(rooms - self.gone)
+        return sorted(rooms - self.gone - self.kicked)
 
     async def get_room_power_levels(self, room_id: str) -> dict[str, Any]:
         if room_id in self.gone:
@@ -96,6 +107,7 @@ class FakeMatrixClient:
         return dict(self.power_levels.get(room_id, {}))
 
     async def set_room_power_levels(self, room_id: str, power_levels: dict[str, Any]) -> None:
+        self._refuse(room_id, write=True)
         self.power_levels[room_id] = dict(power_levels)
         self.power_level_writes.append(room_id)
 
@@ -138,6 +150,7 @@ class FakeMatrixClient:
     async def put_room_state_event(
         self, room_id: str, event_type: str, content: dict[str, Any], state_key: str = ""
     ) -> None:
+        self._refuse(room_id, write=True)
         self.room_state[(room_id, event_type)] = dict(content)
 
     async def send_text_message(
@@ -146,6 +159,7 @@ class FakeMatrixClient:
         # Yield to the loop, as a real HTTP round-trip does: any concurrent welcome for the same user
         # gets to run here, which is exactly where a duplicate would slip in.
         await asyncio.sleep(0)
+        self._refuse(room_id, write=True)
         self.sent.append((room_id, body))
         self.formatted.append(formatted_body)
         self.txn_ids.append(txn_id)
@@ -778,6 +792,36 @@ async def test_a_lost_notice_board_falls_back_to_the_next_one_on_record() -> Non
     assert client.account_data[(BOT, "m.direct")] == {ALICE: ["!second:matrix.test"]}
     assert client.sent == []
     assert client.created_dms == 0
+
+
+async def test_a_notice_board_a_user_kicked_the_bot_from_is_replaced() -> None:
+    """W4R-03: after a kick Synapse still answers the bot's reads (from the state at leave time), so
+    the read-error check never fired: the stale m.direct entry stayed, and every welcome of a new
+    message failed with a 403 on the send, on every pass, without ever opening a new board."""
+    client = FakeMatrixClient()
+    await WelcomeService(client, _config(["hi"])).welcome_user(ALICE)  # type: ignore[arg-type]
+    board = client.account_data[(BOT, "m.direct")][ALICE][0]
+    client.kicked.add(board)  # ALICE (PL 100 in a board from an older version) kicks the bot
+
+    await WelcomeService(client, _config(["hi", "news"])).welcome_user(ALICE)  # type: ignore[arg-type]
+
+    (new_board,) = client.account_data[(BOT, "m.direct")][ALICE]
+    assert new_board != board and client.created_dms == 2
+    # The new board's bookkeeping starts empty: both messages are delivered there.
+    assert [body for room, body in client.sent if room == new_board] == ["hi", "news"]
+
+
+async def test_a_notice_board_is_checked_without_anything_to_send() -> None:
+    """Nothing new to send: the kick is still noticed, so broadcasts reach the user again."""
+    client = FakeMatrixClient()
+    svc = WelcomeService(client, _config(["hi"]))  # type: ignore[arg-type]
+    await svc.welcome_user(ALICE)
+    board = client.account_data[(BOT, "m.direct")][ALICE][0]
+    client.kicked.add(board)
+
+    await svc.welcome_user(ALICE)
+
+    assert client.account_data[(BOT, "m.direct")][ALICE] != [board]
 
 
 async def test_a_403_in_a_room_the_bot_is_still_in_is_not_taken_for_a_lost_room() -> None:

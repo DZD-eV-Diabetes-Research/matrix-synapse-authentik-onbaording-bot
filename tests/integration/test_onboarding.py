@@ -8,6 +8,9 @@ invite into, and that a user at power level 0 is refused when they try to send."
 
 from __future__ import annotations
 
+from urllib.parse import quote
+
+import httpx
 import pytest
 
 from onbot.app import run_reconcile_once
@@ -119,6 +122,49 @@ async def test_a_user_who_left_their_notice_board_is_invited_back_once(
     S.leave_room(login.access_token, room_id)  # declined
     await run_reconcile_once(make_config())
     assert await matrix_client.get_membership(room_id, login.mxid) == "leave"  # not invited twice
+
+
+async def test_a_notice_board_the_user_kicked_the_bot_from_is_replaced(
+    make_config, authentik_admin: S.AuthentikAdmin, matrix_client: ApiClientMatrix
+) -> None:
+    """W4R-03 (ONB-08): in a room from before the notice boards a user can outrank the bot and kick
+    it. Synapse then still answers the bot's reads from the state at the time it left, so a failed
+    read never told the bot it had lost the board: every welcome failed with a 403 on the send."""
+    _user, login = S.provision(authentik_admin, S.uniq("kicker"))
+    legacy = await matrix_client.create_room(
+        name="legacy welcome room",
+        is_direct=True,
+        invite=[login.mxid],
+        room_params={"room_version": "10", "preset": "private_chat"},
+    )
+    assert S.join_room_status(login.access_token, legacy) == 200
+    # The user above the bot: in a room older than version 12 the creator is an ordinary level.
+    power = await matrix_client.get_room_power_levels(legacy)
+    users = {S.BOT_USER_ID: 50, login.mxid: 100}
+    await matrix_client.set_room_power_levels(legacy, {**power, "users": users})
+    direct = await matrix_client.get_account_data(S.BOT_USER_ID, "m.direct")
+    await matrix_client.set_account_data(S.BOT_USER_ID, "m.direct", {**direct, login.mxid: [legacy]})
+    kicked = httpx.post(
+        f"{S.SYNAPSE_URL}/_matrix/client/v3/rooms/{quote(legacy, safe='')}/kick",
+        headers={"Authorization": f"Bearer {login.access_token}"},
+        json={"user_id": S.BOT_USER_ID},
+        timeout=30.0,
+    )
+    assert kicked.status_code == 200, kicked.text
+    # The Synapse behaviour the fix rests on: reads still answer, the bot's own membership says leave.
+    assert await matrix_client.get_room_state_event(legacy, "m.room.name") is not None
+    assert await matrix_client.get_membership(legacy, S.BOT_USER_ID) == "leave"
+    assert legacy not in await matrix_client.joined_rooms()
+
+    config = make_config()
+    await run_reconcile_once(config)
+
+    direct = await matrix_client.get_account_data(S.BOT_USER_ID, "m.direct")
+    (board,) = direct[login.mxid]
+    assert board != legacy
+    assert board in await matrix_client.joined_rooms()
+    messages = config.welcome_new_users_messages or []
+    assert len(await _bot_message_bodies(matrix_client, board)) == len(messages)
 
 
 async def _bot_message_bodies(client: ApiClientMatrix, room_id: str) -> list[str]:
