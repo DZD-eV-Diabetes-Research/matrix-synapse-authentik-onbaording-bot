@@ -358,6 +358,72 @@ async def test_a_stale_link_into_an_earlier_space_the_bot_left_is_not_a_room_pro
     assert all(not r.problems for r in engine.last_pass_report.rooms)
 
 
+def _linked_into_the_old_space(effectors: RecordingEffectors) -> None:
+    """ROOM1 as the old space left it, and not yet in the current one."""
+    _seed_converged(effectors)
+    del effectors.state_store[(SPACE, CHILD, ROOM1)]
+    del effectors.state_store[(ROOM1, PARENT, SPACE)]
+    effectors.state_store[(ROOM1, PARENT, OLD_SPACE)] = {"canonical": True, "via": ["company.org"]}
+    effectors.state_store[(OLD_SPACE, CHILD, ROOM1)] = {"suggested": False, "via": ["company.org"]}
+
+
+class _FlakyOldSpace(RecordingEffectors):
+    """The first write that removes a link between ROOM1 and the old space fails with a 502."""
+
+    fail_on: tuple[str, str, str] = (ROOM1, PARENT, OLD_SPACE)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.fail = True
+
+    async def put_room_state(
+        self, room_id: str, event_type: str, content: dict[str, Any], state_key: str = ""
+    ) -> None:
+        if self.fail and (room_id, event_type, state_key) == self.fail_on and content == {}:
+            self.fail = False
+            raise ApiError("PUT", "/state", 502, {"errcode": "M_UNKNOWN"})
+        await super().put_room_state(room_id, event_type, content, state_key)
+
+
+@pytest.mark.parametrize("fail_on", [(ROOM1, PARENT, OLD_SPACE), (OLD_SPACE, CHILD, ROOM1)])
+async def test_a_failed_removal_of_a_link_to_an_earlier_space_is_retried(
+    fail_on: tuple[str, str, str],
+) -> None:
+    """W8R-03: the cleanup ran only in the pass that wrote the current parent link, so one failed
+    write left the old links for good."""
+    effectors = _FlakyOldSpace()
+    effectors.fail_on = fail_on
+    _linked_into_the_old_space(effectors)
+    engine, _admin, effectors, _attention = _engine(SharedStateAdmin(effectors), effectors)
+
+    await engine.reconcile_once()
+    (problem,) = [r for r in engine.last_pass_report.rooms if r.room_id == ROOM1]
+    assert problem.problems == ["space link repair failed: HTTP 502 M_UNKNOWN"]
+
+    await engine.reconcile_once()
+
+    assert effectors.state_store[(ROOM1, PARENT, OLD_SPACE)] == {}
+    assert effectors.state_store[(OLD_SPACE, CHILD, ROOM1)] == {}
+    assert all(not r.problems for r in engine.last_pass_report.rooms)
+    writes = len(effectors.state_writes)
+    await engine.reconcile_once()
+    assert len(effectors.state_writes) == writes  # done: no more cleanup
+
+
+async def test_a_child_link_a_human_wrote_into_the_earlier_space_stays() -> None:
+    """W8R-04: the old space's child link was removed whoever wrote it."""
+    effectors = RecordingEffectors()
+    _linked_into_the_old_space(effectors)
+    effectors.state_store[(OLD_SPACE, CHILD, ROOM1)] = {"suggested": True, "via": ["company.org"]}
+    effectors.senders[(OLD_SPACE, CHILD, ROOM1)] = MODERATOR  # added to the old space by hand
+    engine, _admin, effectors, _attention = _engine(SharedStateAdmin(effectors), effectors)
+
+    await engine.reconcile_once()
+
+    assert effectors.state_store[(ROOM1, PARENT, OLD_SPACE)] == {}  # the bot's own parent link goes
+    assert effectors.state_store[(OLD_SPACE, CHILD, ROOM1)] == {"suggested": True, "via": ["company.org"]}
+
+
 # --- REC-09: marker and lock -----------------------------------------------------------------------
 
 
