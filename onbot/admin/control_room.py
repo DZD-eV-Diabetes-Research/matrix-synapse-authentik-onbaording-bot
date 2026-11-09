@@ -58,7 +58,7 @@ import time
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 from onbot import __version__
 from onbot.admin.admins import AdminResolver
@@ -91,7 +91,6 @@ from onbot.guard import (
     normalize_batch_id,
 )
 from onbot.logging import get_logger
-from onbot.reconciler.engine import ReconcilerEngine
 from onbot.state import OnbotRoomType, event_type_name
 
 log = get_logger(__name__)
@@ -169,6 +168,25 @@ def edited_body(content: dict[str, Any]) -> str:
     return body.removeprefix(EDIT_FALLBACK_PREFIX)
 
 
+class ReconcilerControl(Protocol):
+    """What the control room needs of the reconciler (MNT-14): its status and three commands.
+
+    :class:`~onbot.reconciler.engine.ReconcilerEngine` is the implementation; naming only these keeps
+    the admin package from depending on the engine.
+    """
+
+    @property
+    def last_reconcile_at(self) -> float | None: ...
+
+    def trigger(self) -> None: ...
+
+    async def reopen_lobby(self, target: str) -> str: ...
+
+    async def adopt_room(
+        self, group_pk: str, target: str, *, by: str, kind: OnbotRoomType = OnbotRoomType.group_room
+    ) -> str: ...
+
+
 class ControlRoomHandler:
     """Consume ``m.room.message`` events in the control room and act on the commands among them."""
 
@@ -179,7 +197,7 @@ class ControlRoomHandler:
         broadcast: BroadcastService,
         admins: AdminResolver,
         *,
-        engine: ReconcilerEngine | None = None,
+        engine: ReconcilerControl | None = None,
         guard: DestructiveActionGuard | None = None,
         started_at_ms: int | None = None,
         remembered_events: int = MAX_REMEMBERED_EVENTS,
