@@ -124,6 +124,10 @@ class RoomIdentity:
     """The marker as the bot last wrote or read it (see :meth:`RoomIdentityResolver.remember_marker`)."""
     removed_markers: tuple[OnbotRoomType, ...] = ()
     """Managed marker types whose state event is there but empty: somebody removed the marker."""
+    foreign_markers: tuple[OnbotRoomType, ...] = ()
+    """Managed marker types whose state event somebody other than the bot wrote."""
+    marker_types: tuple[OnbotRoomType, ...] = ()
+    """Managed marker types the room carries with content, whoever wrote them."""
 
     @property
     def trusted(self) -> bool:
@@ -171,6 +175,7 @@ def classify_room(
 
     markers: list[tuple[OnbotRoomType, str, dict[str, Any]]] = []
     foreign: list[str] = []
+    foreign_types: list[OnbotRoomType] = []
     removed: list[OnbotRoomType] = []
     for room_type in MANAGED_ROOM_TYPES:
         event_type = event_type_name(server_name, room_type)
@@ -183,6 +188,9 @@ def classify_room(
         markers.append((room_type, event_type, dict(content)))
         if event.get("sender") != bot_id:
             foreign.append(f"{room_type.value} marker written by {event.get('sender')}")
+            foreign_types.append(room_type)
+    identity.foreign_markers = tuple(foreign_types)
+    identity.marker_types = tuple(m[0] for m in markers)
     if not markers:
         identity.removed_markers = tuple(removed)
         return identity
@@ -390,6 +398,34 @@ class RoomIdentityResolver:
             # human restores as the bot account counts from the next pass on (W4R-06).
             self._cache[room_id] = identity
         return identity
+
+    async def reread(self, room_id: str) -> RoomIdentity | None:
+        """The identity of one room read now, not from the cache (``None``: not the bot's)."""
+        self._cache.pop(room_id, None)
+        return await self._read(room_id)
+
+    async def adopt(self, identity: RoomIdentity, key: RoomKey, content: dict[str, Any]) -> None:
+        """Hand ``key`` to a room the bot created that lost its marker (``!room adopt``, W4R-06).
+
+        Locks the marker types first, so nobody below the bot can change the marker in between, then
+        writes the marker as the bot. From then on the room is trusted like any room the bot created
+        for ``key``. The caller has checked that the room may take the role.
+        """
+        marker_type = event_type_name(self.server_name, key.kind)
+        await lock_markers(
+            self.writer,
+            identity.room_id,
+            self.server_name,
+            bot_id=self.bot_id,
+            room_version=identity.room_version,
+        )
+        await self.writer.put_room_state(identity.room_id, marker_type, dict(content))
+        identity.key, identity.marker_type, identity.marker_content = key, marker_type, dict(content)
+        identity.problem = None
+        identity.removed_markers = identity.foreign_markers = ()
+        identity.marker_types = (key.kind,)
+        identity.locked = True
+        self._cache[identity.room_id] = identity
 
     def known_marker(self, room_id: str) -> dict[str, Any] | None:
         """The marker content of a trusted room as the bot last wrote or read it (W4R-08)."""

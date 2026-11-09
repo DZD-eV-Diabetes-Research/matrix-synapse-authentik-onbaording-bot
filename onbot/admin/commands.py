@@ -28,8 +28,11 @@ GUARD_RESET = "reset"
 # ``!lobby reopen <group>``: withdraw the manual close of a visitor lobby (D16).
 LOBBY = "lobby"
 LOBBY_REOPEN = "reopen"
+# ``!room adopt <group> <room>``: hand a group room that lost its marker back to the bot (W4R-06).
+ROOM = "room"
+ROOM_ADOPT = "adopt"
 
-KNOWN_COMMANDS = frozenset({ANNOUNCE, HELP, STATUS, PENDING, CONFIRM, REJECT, GUARD, LOBBY})
+KNOWN_COMMANDS = frozenset({ANNOUNCE, HELP, STATUS, PENDING, CONFIRM, REJECT, GUARD, LOBBY, ROOM})
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,10 +80,11 @@ def help_text() -> str:
             f"{COMMAND_PREFIX}{ANNOUNCE} <message>  send <message> to every user's onboarding room",
             f"{COMMAND_PREFIX}{STATUS}             bot version, last reconcile, managed rooms",
             f"{COMMAND_PREFIX}{PENDING}            destructive actions paused by the guard, by batch",
-            f"{COMMAND_PREFIX}{CONFIRM} <id>       carry out exactly that batch (what still applies)",
+            f"{COMMAND_PREFIX}{CONFIRM} <id>       carry out that batch, or send a held announcement",
             f"{COMMAND_PREFIX}{REJECT} <id>        keep that batch paused while its cause lasts",
             f"{COMMAND_PREFIX}{GUARD} {GUARD_RESET}        replace a guard state the bot cannot read",
             f"{COMMAND_PREFIX}{LOBBY} {LOBBY_REOPEN} <group>  reopen a visitor lobby somebody closed by hand",
+            f"{COMMAND_PREFIX}{ROOM} {ROOM_ADOPT} <group> <room>  take back a group room without its marker",
             f"{COMMAND_PREFIX}{HELP}               this message",
             "",
             "Only users on the bot's admin allowlist may run commands.",

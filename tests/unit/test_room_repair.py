@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
+import pytest
+
 from onbot.admin.notifier import AdminRoomNotifier
 from onbot.clients.base import ApiError
 from onbot.clients.synapse_admin import RoomBlock
@@ -1021,3 +1023,116 @@ async def test_an_upgraded_room_gets_the_picture_that_changed_behind_its_url_bef
     assert effectors.uploads == ["https://cdn/t.png"]
     assert [a for a in effectors.avatars if a[0] == ROOM1] == [(ROOM1, "mxc://company.org/1")]
     assert effectors.state_store[(ROOM1, GROUP_MARKER)]["avatar_sha256"]
+
+
+# --- S18 (W4R-06): `!room adopt` hands a room that lost its marker back to the bot ------------------
+
+
+async def test_room_adopt_takes_back_a_room_whose_marker_was_removed_while_the_bot_was_stopped() -> None:
+    effectors = RecordingEffectors()
+    _seed_converged(effectors)
+    effectors.state_store[(ROOM1, GROUP_MARKER)] = {}
+    engine, admin, effectors, _attention = _restarted(effectors)
+    await engine.reconcile_once()
+    assert engine.last_pass_report.rooms  # skipped and reported, as before
+
+    reply = await engine.adopt_room("g1", ROOM1, by="@admin:company.org")
+
+    assert reply.startswith(f"Adopted {ROOM1} as the room of group g1")
+    assert effectors.state_store[(ROOM1, GROUP_MARKER)]["group_id"] == "g1"
+    assert effectors.senders[(ROOM1, GROUP_MARKER)] == BOT
+    known = engine.rooms.known_marker(ROOM1)
+    assert known is not None and known["group_id"] == "g1"
+    await engine.reconcile_once()
+    assert (ROOM1, "@bob:company.org") in admin.added
+    assert engine.last_pass_report.rooms == []
+
+
+async def test_room_adopt_takes_back_a_room_whose_marker_somebody_else_rewrote() -> None:
+    effectors = RecordingEffectors()
+    _seed_converged(effectors)
+    effectors.state_store[(ROOM1, GROUP_MARKER)] = dump_room_state(GroupRoomState(group_id="g-gone"))
+    effectors.senders[(ROOM1, GROUP_MARKER)] = MODERATOR
+    engine, _admin, effectors, _attention = _restarted(effectors)
+    await engine.reconcile_once()
+
+    reply = await engine.adopt_room("g1", "#g1:company.org", by="@admin:company.org")
+
+    assert reply.startswith("Adopted")
+    assert effectors.state_store[(ROOM1, GROUP_MARKER)] == dump_room_state(GroupRoomState(group_id="g1"))
+    assert effectors.senders[(ROOM1, GROUP_MARKER)] == BOT
+
+
+async def test_room_adopt_refuses_an_unknown_group_and_a_group_that_has_its_room() -> None:
+    engine, _admin, effectors, _attention = _running()
+    await engine.reconcile_once()
+    writes = len(effectors.state_writes)
+
+    unknown = await engine.adopt_room("g-nope", ROOM1, by="@admin:company.org")
+    managed = await engine.adopt_room("g1", ROOM1, by="@admin:company.org")
+    usage = await engine.adopt_room("g1", "room1", by="@admin:company.org")
+
+    assert "is not a group the bot keeps a room for" in unknown and "Nothing was changed" in unknown
+    assert "Group g1 is already that room" in managed
+    assert usage.startswith("Usage: !room adopt")
+    assert len(effectors.state_writes) == writes
+
+
+async def test_room_adopt_refuses_a_room_the_bot_did_not_create() -> None:
+    class ForeignCreator(SharedStateAdmin):
+        async def get_room_state_events(self, room_id: str) -> list[dict[str, Any]]:
+            events = await super().get_room_state_events(room_id)
+            if room_id == ROOM1:
+                for event in events:
+                    if event["type"] == "m.room.create":
+                        event["sender"] = MODERATOR
+                        event["content"] = {**event.get("content", {}), "creator": MODERATOR}
+            return events
+
+    effectors = RecordingEffectors()
+    _seed_converged(effectors)
+    effectors.state_store[(ROOM1, GROUP_MARKER)] = {}
+    effectors.aliases["#g1:company.org"] = ROOM1
+    engine, _admin, effectors, _attention = _engine(ForeignCreator(effectors), effectors)
+    writes = len(effectors.state_writes)
+
+    reply = await engine.adopt_room("g1", ROOM1, by="@admin:company.org")
+
+    assert "was not created by the bot" in reply and "D20" in reply
+    assert len(effectors.state_writes) == writes
+
+
+def test_only_a_lost_group_room_marker_qualifies_for_adoption() -> None:
+    from onbot.reconciler.engine import _adoption_refusal
+    from onbot.rooms.identity import RoomIdentity, RoomKey
+
+    group, lobby = OnbotRoomType.group_room, OnbotRoomType.visitor_lobby
+    removed = RoomIdentity(room_id=ROOM1, key=None, removed_markers=(group,))
+    foreign = RoomIdentity(
+        room_id=ROOM1, key=None, problem="... not by the bot", marker_types=(group,), foreign_markers=(group,)
+    )
+    assert _adoption_refusal(removed) is None
+    assert _adoption_refusal(foreign) is None
+    never = RoomIdentity(room_id=ROOM1, key=None)  # a notice board, or any other room of the bot's
+    assert "never was a group room" in (_adoption_refusal(never) or "")
+    lost_lobby = RoomIdentity(room_id=ROOM1, key=None, removed_markers=(lobby,))
+    assert "not a lost group room marker" in (_adoption_refusal(lost_lobby) or "")
+    trusted = RoomIdentity(room_id=ROOM1, key=RoomKey(group, "g2"), locked=True)
+    assert "is already the room of group g2" in (_adoption_refusal(trusted) or "")
+    upgraded = RoomIdentity(room_id=ROOM1, key=None, removed_markers=(group,), tombstone="!new:x")
+    assert "was upgraded" in (_adoption_refusal(upgraded) or "")
+
+
+async def test_room_adopt_waits_for_a_running_pass_and_gives_up_after_a_while(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An adoption racing a pass could leave the group with a new room beside the adopted one."""
+    from onbot.reconciler import engine as engine_module
+
+    monkeypatch.setattr(engine_module, "ADOPT_WAIT_SEC", 0.01)
+    engine, _admin, effectors, _attention = _running()
+    writes = len(effectors.state_writes)
+    async with engine._pass_lock:  # a pass is running
+        reply = await engine.adopt_room("g1", ROOM1, by="@admin:company.org")
+    assert reply.startswith("A reconcile pass is still running")
+    assert len(effectors.state_writes) == writes

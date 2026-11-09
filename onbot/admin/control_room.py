@@ -70,6 +70,8 @@ from onbot.admin.commands import (
     LOBBY_REOPEN,
     PENDING,
     REJECT,
+    ROOM,
+    ROOM_ADOPT,
     STATUS,
     Command,
     help_text,
@@ -280,6 +282,8 @@ class ControlRoomHandler:
             await self._guard_command(command, sender)
         elif command.name == LOBBY:
             await self._lobby_command(command, sender)
+        elif command.name == ROOM:
+            await self._room_command(command, sender)
         else:
             # !help, and anything unrecognised: answering is friendlier than silence, which reads
             # as the bot being down.
@@ -454,6 +458,22 @@ class ControlRoomHandler:
             return
         log.info("admin %s asked to reopen the visitor lobby %s", sender, target.strip())
         await self._reply(await self.engine.reopen_lobby(target))
+
+    async def _room_command(self, command: Command, sender: str) -> None:
+        """``!room adopt <group> <room>``: re-adopt a group room that lost its marker (W4R-06, D20)."""
+        parts = command.argument.split()
+        if len(parts) != 3 or parts[0].lower() != ROOM_ADOPT:
+            await self._reply(
+                f"Usage: !{ROOM} {ROOM_ADOPT} <group pk> <room id or alias>. It hands a group room the bot "
+                "created, whose onbot marker was removed or rewritten by somebody else, back to the bot "
+                "(see 'A room lost its onbot marker' in docs/troubleshooting.md)."
+            )
+            return
+        if self.engine is None:
+            await self._reply("The reconciler is not available in this process.")
+            return
+        log.info("admin %s asked to adopt %s as the room of group %s", sender, parts[2], parts[1])
+        await self._reply(await self.engine.adopt_room(parts[1], parts[2], by=sender))
 
     async def _decide_batch(self, command: Command, sender: str) -> None:
         """``!confirm <id>`` / ``!reject <id>``: exactly one batch, never all of them (D13)."""

@@ -715,3 +715,43 @@ async def test_a_broadcast_cut_off_by_a_shutdown_says_how_far_it_got() -> None:
     await asyncio.wait_for(handler.stop(), timeout=2)
 
     assert "interrupted by a shutdown of the bot after 0 of 2 rooms" in client.sends[-1][1]
+
+
+# --- S18 (W4R-06): `!room adopt <group> <room>` -----------------------------------------------------
+
+
+class _AdoptEngine:
+    def __init__(self) -> None:
+        self.adopted: list[tuple[str, str, str]] = []
+
+    async def adopt_room(self, group_pk: str, target: str, *, by: str) -> str:
+        self.adopted.append((group_pk, target, by))
+        return f"Adopted {target} for {group_pk}"
+
+
+async def test_room_adopt_asks_the_engine_with_the_admin_and_answers_with_its_reply() -> None:
+    client, broadcast = _FakeClient(), _FakeBroadcast()
+    engine = _AdoptEngine()
+
+    await _run(_handler(client, broadcast, engine=engine), _message("!room adopt g1 !old:matrix.test"))
+
+    assert engine.adopted == [("g1", "!old:matrix.test", ADMIN)]
+    assert client.sends == [(ROOM, "Adopted !old:matrix.test for g1")]
+
+
+async def test_room_adopt_explains_the_usage_and_is_refused_off_the_allowlist() -> None:
+    client, broadcast = _FakeClient(), _FakeBroadcast()
+    engine = _AdoptEngine()
+    handler = _handler(client, broadcast, engine=engine)
+
+    await _run(
+        handler,
+        _message("!room", event_id="$a"),
+        _message("!room adopt g1", event_id="$b"),
+        _message("!room delete g1 !x:y", event_id="$c"),
+        _message("!room adopt g1 !x:y", sender=STRANGER, event_id="$d"),
+    )
+
+    assert engine.adopted == []
+    assert sum("Usage: !room adopt" in body for _, body in client.sends) == 3
+    assert "not on the bot's admin allowlist" in client.sends[-1][1]
