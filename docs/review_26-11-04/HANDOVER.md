@@ -20,7 +20,7 @@ Local `main` is ahead of `origin/main` (the maintainer pushes; last push was the
 | between | S16, CI1 | history scrub (force-pushed by the maintainer), shorter CI (D17) | first GitHub CI run green |
 | 2 | S11, S3, S4, W2F, W2R | HTTP layer, guard layers 1 and 2 with `!confirm <id>`, offboarding completeness (D7), D19 fixups (MAS 1.28 and Synapse 1.164 in the test stack, admin room on by default), wave 2 review fixups | 1130 passed |
 | 3 | S5, S6, S9, W3R | guard layer 3, room identity by creator plus locked marker (D20), user identity across renames (D8, D21), wave 3 review fixups | 1277 passed (before W3R; W3R's own full run on its branch: 1295 passed) |
-| 4 | S8, S7, S12, W4R (merged), S18 (running) | onboarding correctness, room repair, broadcast and admin room, wave 4 review fixups | 1384 passed, 1 failed, fixed (see "Wave 4"); rerun at a47c0f1: 1385 passed |
+| 4 | S8, S7, S12, W4R (merged), S18 (running) | onboarding correctness, room repair, broadcast and admin room, wave 4 review fixups | after S12 and W4R (5deb135): 1454 passed | 1384 passed, 1 failed, fixed (see "Wave 4"); rerun at a47c0f1: 1385 passed |
 
 Status per session: the table in `SESSIONS.md`. Release notes: `CHANGELOG.md` (Unreleased) has a line
 for every merged session.
@@ -63,21 +63,20 @@ Done this session:
   `welcome.py` and `engine.py`: S12's avatar marker writes now go through W4R's `_put_marker`.
   Unit and contract after both: 1369 passed.
 
-Running in parallel since 3d01196:
+Also done: full integration run on main at 5deb135 (S12 and W4R together): 1454 passed, 22 minutes.
+Cold review of S12 plus W4R: 5 findings (2 medium, 3 low), no critical; added to S18 as W5R-01 to
+W5R-05 (see the S18 brief).
 
-- Full integration run on main at 5deb135 (instance 0), log `itest-main-5deb135.log` in the session
-  scratchpad (first run with S12 and W4R together).
-- Cold review of S12 plus W4R (`git diff b28fbb1 5deb135`), read-only agent. Findings become W5R.
-- S18 (wave 4 follow-ups from D24) in its own worktree, branch `review/s18-followups` from 3d01196,
-  stack instance 1.
+Running: S18 (wave 4 follow-ups from D24 plus W5R) in its own worktree, branch
+`review/s18-followups` from 3d01196, stack instance 1.
 
-Then: W5R fixups if the review finds anything, merge S18, full integration run, then wave 5: S14
-(docs, dead code, cleanup; also the integration suite speed-up from D17). S17 (bot-driven room
-upgrades, D20) is deferred: not before the next release.
+Then: merge S18, full integration run, cold review of S18, then wave 5: S14 (docs, dead code,
+cleanup; also the integration suite speed-up from D17). S17 (bot-driven room upgrades, D20) is
+deferred: not before the next release.
 
 If this session stops before they finish: check `git branch` and `git worktree list` for
-`review/s18-*`, review it against its brief and merge per "How merging works"; rerun the cold review
-of `b28fbb1..5deb135` if no W5R brief exists in `SESSIONS.md`.
+`review/s18-*`, review it against its brief (including the W5R items) and merge per "How merging
+works".
 
 ## Questions collected for the maintainer
 

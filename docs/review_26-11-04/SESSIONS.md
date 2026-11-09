@@ -37,7 +37,7 @@ Start a session by pointing Claude at this file and the session ID, for example:
 | 7b | W2R | Wave 2 review fixups: guard fails closed, rejected batches end, ledger report, guard gaps | S | S3, S4 | done (merged in wave 2) |
 | 11a | W3R | Wave 3 review fixups: identity guess vs MAS owner, marker sender, upgrade claims, lock retry, batch expiry | S | S5, S6, S9 | done (merged in wave 3) |
 | 11b | W4R | Wave 4 review fixups: closed rooms, human-blocked rooms as hold (D23), lost notice boards, upkeep isolation, binding wins (D21) | S | S7, S8 | done (merged in wave 4) |
-| 14a | S18 | Wave 4 follow-ups (D24): avatar re-check, sync scope re-check, duplicate announce guard, `!room adopt`, flaky deletion test | S | S12, W4R | open |
+| 14a | S18 | Wave 4 follow-ups (D24) plus W5R review fixups: avatar re-check, sync scope re-check, duplicate announce guard, `!room adopt`, flaky deletion test, marker signing, UUID forms | M | S12, W4R | running |
 | 4 | S3 | Guard layers 1 and 2, reconciler dry-run | M | S2 | done (merged in wave 2) |
 | 5 | S16 | Git history scrub | S | S0, no open branches | done (force-pushed 2026-11-06, new main 89afecf) |
 | 6 | S4 | Offboarding completeness | M | S1 | done (merged in wave 2) |
@@ -169,6 +169,26 @@ W4R entries in `CHANGELOG.md` first.
   `delete_status` sometimes answers 404, so `_existing_room_deletion` returns None and the original
   error is re-raised. Fix the cause (a short retry of the status lookup on 404 in `delete_room`) and
   prove it by running the test repeatedly.
+
+**Added 2026-11-09 from the cold review of S12 plus W4R (`git diff b28fbb1 5deb135`), no critical
+finding; given to the running S18 agent because all of them sit in the code S18 changes:**
+
+- **W5R-01 (medium):** after a failed marker repair the avatar step (and `_write_power_levels`)
+  re-reads the room's marker and writes it back through `_put_marker`, so the bot signs and remembers
+  a foreign marker (for example a gone group's id written by a high-PL human); after a restart the room
+  is trusted as the gone group's room and torn down. Build written markers from the known marker, skip
+  the avatar marker write when the repair failed, `remember_marker` refuses a different role or group.
+- **W5R-02 (medium):** the SEC-09 re-check compares group pks as raw strings; the documented config
+  example uses 32-hex UUIDs without hyphens while Authentik user objects carry hyphenated ones, so every
+  group admin is dropped after an upgrade. Normalise UUIDs on both sides (also for S18's sync scope
+  re-check). The production template (`infra-node-conf-com`) uses the hyphenated lowercase form and is
+  not affected.
+- **W5R-03 (low):** on the first start after S12, rooms adopt the current image hash without checking
+  what the room wears, so a picture changed before the upgrade is never applied.
+- **W5R-04 (low):** an `!announce` in the pump's last slice can start a broadcast after
+  `control_room.stop()`; a cancelled broadcast never posts a result.
+- **W5R-05 (low):** `MediaUploader` keeps up to 5 MB of image bytes per avatar URL for the life of the
+  process; `_failed` re-raises one exception object.
 
 ---
 
