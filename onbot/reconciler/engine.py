@@ -743,14 +743,15 @@ class ReconcilerEngine:
         Keyed by the source URL *and* the image's content (ONB-15): the room's onbot state event
         records ``avatar_source_url`` and ``avatar_sha256``, and the avatar is set again when either
         differs, so a picture replaced behind an unchanged URL reaches the room too. The image is
-        fetched once per process (:class:`~onbot.media.MediaUploader`), so a stable avatar costs one
-        state read per tick and no upload. A marker from before the digest was recorded adopts the
-        current content without setting the avatar again. Applies to already-existing rooms too, not
-        just freshly created ones. Best-effort: a fetch/upload failure is logged and retried on a later
-        tick, and the room keeps its picture meanwhile. Clearing the source URL stops future updates
-        but leaves the current icon in place (removing avatars is out of scope). ``fresh_state`` seeds
-        the state event (its ``group_id``) when the room has none yet. ``marker`` is the marker's
-        content when the caller has just read it (the upkeep step), saving a read.
+        fetched about once a day (:class:`~onbot.media.MediaUploader`), so a stable avatar costs one
+        state read per tick and no upload, and the image just fetched is what gets uploaded. A marker
+        from before the digest was recorded adopts the current content without setting the avatar
+        again. Applies to already-existing rooms too, not just freshly created ones. Best-effort: a
+        fetch/upload failure is logged and retried on a later tick, and the room keeps its picture
+        meanwhile. Clearing the source URL stops future updates but leaves the current icon in place
+        (removing avatars is out of scope). ``fresh_state`` seeds the state event (its ``group_id``)
+        when the room has none yet. ``marker`` is the marker's content when the caller has just read
+        it (the upkeep step), saving a read.
 
         The marker it writes is built from what the bot knows the room's marker to be, never from what
         it reads in the room (W5R-01): see :meth:`_marker_basis`.
@@ -766,10 +767,11 @@ class ReconcilerEngine:
             await self._put_marker(room_id, event_type, dump_room_state(state))
             return
         try:
-            digest = await self.effectors.avatar_digest(desired)
+            image = await self.effectors.avatar_image(desired)
         except Exception as exc:
             log.warning("could not fetch the avatar of %s from %s: %s", room_id, desired, exc)
             return
+        digest = image.sha256
         if desired == state.avatar_source_url:
             if digest == state.avatar_sha256:
                 return
@@ -781,14 +783,16 @@ class ReconcilerEngine:
                 await self._put_marker(room_id, event_type, dump_room_state(state))
                 return
         try:
-            mxc = await self.effectors.upload_avatar(desired)
-            await self.effectors.set_room_avatar(room_id, mxc)
+            # The image as just fetched, bytes included, so the upload needs no second download
+            # (W6R-02); what was set is recorded, should the picture have changed meanwhile.
+            uploaded = await self.effectors.upload_avatar(image)
+            await self.effectors.set_room_avatar(room_id, uploaded.mxc)
         except Exception:
             log.exception("failed to set avatar of %s from %s", room_id, desired)
             return
         log.info("set avatar of %s from %s", room_id, desired)
         state.avatar_source_url = desired
-        state.avatar_sha256 = digest
+        state.avatar_sha256 = uploaded.sha256
         await self._put_marker(room_id, event_type, dump_room_state(state))
 
     def _marker_basis(

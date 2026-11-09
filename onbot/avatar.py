@@ -27,7 +27,7 @@ from __future__ import annotations
 from typing import Any, Protocol
 
 from onbot.logging import get_logger
-from onbot.media import MediaUploader, content_digest
+from onbot.media import MediaUploader
 from onbot.reconciler.state import SCHEMA_VERSION, event_type_name
 
 log = get_logger(__name__)
@@ -46,8 +46,6 @@ class AvatarClient(Protocol):
     async def get_user_avatar(self, user_id: str) -> str | None: ...
 
     async def set_user_avatar(self, user_id: str, mxc_uri: str) -> None: ...
-
-    async def download_media(self, mxc_uri: str) -> bytes: ...
 
 
 async def ensure_bot_avatar(
@@ -91,24 +89,17 @@ async def ensure_bot_avatar(
         media.remember(image.sha256, current)
         log.debug("bot avatar already set from %s (%s)", source_url, current)
         return
-    if current and await _holds_same_bytes(client, current, image.sha256):
+    if current and await media.holds(current, image.sha256):
+        # The bot's own profile picture: only the bot sets it, so its media may be reused.
         media.remember(image.sha256, current)
         await _write_record(client, user_id, data_type, source_url, image.sha256, current)
         log.info("bot avatar already matches %s; recorded %s without re-setting it", source_url, current)
         return
-    mxc = await media.mxc_for(image)
-    await client.set_user_avatar(user_id, mxc)
-    await _write_record(client, user_id, data_type, source_url, image.sha256, mxc)
+    uploaded = await media.upload(image)
+    await client.set_user_avatar(user_id, uploaded.mxc)
+    # The digest of what was set: a picture that changed during the upload is recorded as the new one.
+    await _write_record(client, user_id, data_type, source_url, uploaded.sha256, uploaded.mxc)
     log.info("set bot avatar from %s", source_url)
-
-
-async def _holds_same_bytes(client: AvatarClient, mxc: str, digest: str) -> bool:
-    """Whether the media at ``mxc`` has the content ``digest`` (``False`` if it is unreadable)."""
-    try:
-        return content_digest(await client.download_media(mxc)) == digest
-    except Exception:
-        log.warning("could not read the current bot avatar %s; treating it as different", mxc, exc_info=True)
-        return False
 
 
 async def _write_record(

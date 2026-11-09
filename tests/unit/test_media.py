@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import traceback
 
 import httpx
@@ -9,8 +10,14 @@ import pytest
 import respx
 
 from onbot.clients.matrix import ApiClientMatrix
-from onbot.media import FAILED_FETCH_RETRY_SEC, RECHECK_INTERVAL_SEC, MediaUploader, content_digest
-from onbot.safe_fetch import FetchedImage
+from onbot.media import (
+    FAILED_FETCH_RETRY_SEC,
+    RECHECK_INTERVAL_SEC,
+    MediaUploader,
+    UploadedImage,
+    content_digest,
+)
+from onbot.safe_fetch import FetchedImage, MediaFetchError
 
 AVATAR_URL = "https://cdn.test/face.png"
 
@@ -171,12 +178,118 @@ async def test_no_image_bytes_are_kept_and_a_needed_upload_fetches_once_more() -
     assert remembered.content is None
     assert all(not isinstance(v, bytes) for known in uploader._known.values() for v in vars_of(known))
 
-    mxc = await uploader.mxc_for(remembered)
+    uploaded = await uploader.upload(remembered)
     assert uploads.uploads == [b"logo"]
     assert len(fetcher.calls) == 2
-    assert await uploader.mxc_for(remembered) == mxc
+    assert await uploader.upload(remembered) == uploaded
     assert len(fetcher.calls) == 2
 
 
 def vars_of(obj: object) -> list[object]:
     return [getattr(obj, name) for name in obj.__slots__]  # type: ignore[attr-defined]
+
+
+# --- W6R-02: the image just fetched is the one uploaded; a refetch is locked, backed off and learns -
+
+
+class _VaryingFetcher:
+    """A host whose bytes differ per request (re-encoding CDN, embedded timestamp, rotating logo)."""
+
+    def __init__(self) -> None:
+        self.counter = itertools.count()
+        self.calls = 0
+        self.fail = False
+
+    async def fetch_if_changed(
+        self, url: str, *, etag: str | None = None, last_modified: str | None = None
+    ) -> FetchedImage:
+        self.calls += 1
+        if self.fail:
+            raise RuntimeError("cdn down")
+        return FetchedImage(b"png-" + str(next(self.counter)).encode(), "image/png")
+
+    async def aclose(self) -> None:
+        return None
+
+
+async def test_the_engine_path_uploads_the_bytes_it_fetched_once_per_pass() -> None:
+    """Before W6R-02 the digest and the upload were fetched apart, so a host with varying bytes was
+    downloaded once per room and pass, and its picture never set ("changed while it was being set")."""
+    fetcher, uploads = _VaryingFetcher(), _Uploads()
+    media = MediaUploader(uploads, fetcher=fetcher, clock=lambda: 0.0)  # type: ignore[arg-type]
+    results = []
+    for _room in range(5):  # five rooms wearing the group's picture, in one pass
+        image = await media.image(URL)  # what CSApiEffectors.avatar_image does
+        results.append(await media.upload(image))  # and upload_avatar
+    assert fetcher.calls == 1
+    assert uploads.uploads == [b"png-0"]
+    assert results == [UploadedImage("mxc://matrix.test/1", content_digest(b"png-0"))] * 5
+
+
+async def test_a_refetch_for_an_upload_learns_a_changed_picture_instead_of_failing() -> None:
+    """A new room wearing a known picture that was never uploaded (every room already wore it)."""
+    fetcher, uploads = _VaryingFetcher(), _Uploads()
+    media = MediaUploader(uploads, fetcher=fetcher, clock=lambda: 0.0)  # type: ignore[arg-type]
+    await media.image(URL)  # png-0, worn everywhere: never uploaded
+    remembered = await media.image(URL)
+    assert remembered.content is None
+
+    uploaded = await media.upload(remembered)
+
+    assert uploaded.sha256 == content_digest(b"png-1") != remembered.sha256  # what was set
+    assert uploads.uploads == [b"png-1"]
+    assert media.known_digest(URL) == content_digest(b"png-1")  # learnt, so the next pass agrees
+    again = await media.upload(await media.image(URL))
+    assert again == uploaded and fetcher.calls == 2
+
+
+async def test_a_refetch_for_an_upload_keeps_the_failure_backoff() -> None:
+    now = [0.0]
+    fetcher, uploads = _VaryingFetcher(), _Uploads()
+    media = MediaUploader(uploads, fetcher=fetcher, clock=lambda: now[0])  # type: ignore[arg-type]
+    remembered = await media.image(URL)
+    remembered = await media.image(URL)
+    fetcher.fail = True
+
+    for _room in range(3):
+        with pytest.raises(Exception, match="cdn down"):
+            await media.upload(remembered)
+    assert fetcher.calls == 2  # one failed refetch, then the backoff answers
+    with pytest.raises(MediaFetchError, match="failed 0s ago: cdn down"):
+        await media.upload(remembered)
+
+    now[0] += FAILED_FETCH_RETRY_SEC
+    fetcher.fail = False
+    assert (await media.upload(remembered)).mxc == "mxc://matrix.test/1"
+
+
+URL = "https://cdn.test/logo.png"
+
+
+# --- W6R-06: a human's media is compared, never handed to other rooms ---------------------------------
+
+
+class _Media(_Uploads):
+    def __init__(self, media: dict[str, bytes]) -> None:
+        super().__init__()
+        self.media = media
+        self.downloads: list[str] = []
+
+    async def download_media(self, mxc_uri: str) -> bytes:
+        self.downloads.append(mxc_uri)
+        return self.media[mxc_uri]
+
+
+async def test_holds_does_not_remember_a_rooms_media_for_the_picture() -> None:
+    """Before W6R-06 a mxc a human chose (another server's, say) became the upload of that picture."""
+    remote = "mxc://elsewhere.test/theirs"
+    client = _Media({remote: b"logo"})
+    fetcher = _Fetcher({"https://a.test/x.png": b"logo"})
+    media = MediaUploader(client, fetcher=fetcher)  # type: ignore[arg-type]
+
+    assert await media.holds(remote, content_digest(b"logo"))
+    assert media.known_mxc(content_digest(b"logo")) is None
+
+    uploaded = await media.upload(await media.image("https://a.test/x.png"))
+    assert uploaded.mxc == "mxc://matrix.test/1" != remote
+    assert client.uploads == [b"logo"]

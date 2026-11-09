@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 if TYPE_CHECKING:
-    from onbot.media import MediaUploader
+    from onbot.media import MediaUploader, SourceImage, UploadedImage
 
 from onbot.auth.token_provider import TokenProvider
 from onbot.clients.base import (
@@ -715,11 +715,11 @@ class CSApiEffectors:
     async def set_room_avatar(self, room_id: str, mxc_uri: str) -> None:
         await self.client.set_room_avatar(room_id, mxc_uri)
 
-    async def avatar_digest(self, url: str) -> str:
-        return (await self._media.image(url)).sha256
+    async def avatar_image(self, url: str) -> SourceImage:
+        return await self._media.image(url)
 
-    async def upload_avatar(self, url: str) -> str:
-        return await self._media.upload_from_url(url)
+    async def upload_avatar(self, image: SourceImage) -> UploadedImage:
+        return await self._media.upload(image)
 
     async def room_wears(self, room_id: str, digest: str) -> bool:
         content = await self.client.get_room_state_event(room_id, "m.room.avatar") or {}
