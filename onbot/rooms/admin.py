@@ -185,8 +185,8 @@ class AdminRoomProvisioner:
         An admin who left the room or declined the invitation is remembered and not invited again
         (ONB-12): the record (``invited_admins`` in the room's marker) names everybody the bot invited
         or found in the room while they were admins. Dropping out of the admin set clears the entry,
-        so somebody made an admin again is invited again. A banned admin is never invited. When the
-        record is the bot's own (see the module docstring), so a hand-edited marker changes nothing here.
+        so somebody made an admin again is invited again. A banned admin is never invited. The
+        record is the bot's own (see the module docstring): a hand-edited marker changes nothing here.
         """
         room_id = self.room_id
         if room_id is None:

@@ -710,7 +710,7 @@ class SyncAuthentikUsersWithMatrix(_StrictModel):
                 """Only sync users who belong to at least one of these Authentik groups, identified by
                 the group's primary key (`pk`). `null` applies no group filter. Note this filters
                 *which users exist* for the bot; it does not by itself decide which groups become
-                rooms — that is `sync_matrix_rooms_based_on_authentik_groups`. A pk may be written in
+                rooms; that is `sync_matrix_rooms_based_on_authentik_groups`. A pk may be written in
                 any form of its UUID: with or without hyphens, in upper or lower case."""
             ),
             examples=[["1120a6e1124f309bbe96c8be5fb09eab"]],

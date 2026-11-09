@@ -40,7 +40,7 @@
 | `room !... was created by the bot, but its onbot ... marker was removed` | The same, for a room whose group Onbot cannot tell (no alias points at it any more). Onbot leaves the room alone. If you know its group, `!room adopt <group pk> <room id>` hands it back; see [A room lost its onbot marker](#a-room-lost-its-onbot-marker). |
 | `rooms !a, !b all claim to be the room of group X` | Two rooms carry Onbot's protected marker for the same group. Onbot does not guess which one is right and skips the group. Delete or close the wrong room; then remove its marker as a server admin, or delete the room. |
 | `... carries an onbot group_room marker written by @..., not by the bot` | Somebody other than Onbot rewrote the room's marker: a moderator in a room from an older version, or a user at Onbot's own level in a room older than version 12. Onbot does not trust, adopt or tear down that room; if it was a group's room, the group is skipped. A marker restored by a human stays a human's (only the sender counts), so see [A room lost its onbot marker](#a-room-lost-its-onbot-marker) for what helps. (A change Onbot notices while it runs is repaired by Onbot itself, see the next line; only a change made while it was stopped, or before its last restart, ends here.) |
-| `Rooms: room !..., the room of group X: the onbot marker was removed` (or `rewritten`, or `the power level required to change its onbot marker had been lowered`) in the admin room | Somebody at Onbot's own level changed the marker or its protection in a room Onbot already manages: an extra creator from `chatroom_params` in a version 12 room, or a user at level 100 in an older room. Onbot restored it from what it last wrote there itself (a changed marker's content is never taken over) and reports each change once. Find out who did it in the room's history; if it keeps happening, take that user's level away. |
+| `Rooms: room !..., the room of group X: the onbot marker was removed` (or `rewritten`, or `the power level required to change its onbot marker had been lowered`; or `Rooms: the admin control room !...: ...` for the control room itself) in the admin room | Somebody at Onbot's own level changed the marker or its protection in a room Onbot already manages: an extra creator from `chatroom_params` in a version 12 room, or a user at level 100 in an older room. Onbot restored it from what it last wrote there itself (a changed marker's content is never taken over) and reports each change once. Find out who did it in the room's history; if it keeps happening, take that user's level away. |
 | `Rooms: room !..., the room of group X, was blocked by @...` in the admin room | A server admin blocked the room. Onbot only lifts its own blocks, so it leaves the room blocked and stops managing it (no joins, kicks, levels or renames) until the block is lifted with Synapse's admin API (`PUT /_synapse/admin/v1/rooms/<room_id>/block` with `{"block": false}`). |
 | `Rooms: room !..., the room of group X, is obsolete (its group is no longer synced), but @... blocked it, not the bot` in the admin room | The room's group is gone, but somebody else (a server admin, for moderation or a legal hold) blocked the room. Onbot treats the block as a hold (D23): it removes nobody and deletes nothing while the block exists, and the room does not count against the guard. Once the block is lifted, the room is torn down (and deleted, with `delete_disabled_rooms`) on the next pass. |
 | `room setup failed: HTTP 5..` for a group room or lobby | Synapse could not say whether the room is blocked. Onbot leaves the room alone for that pass (no joins, kicks, levels, renames or repairs), since the block might be a server admin's, and tries again on the next. |
@@ -67,7 +67,7 @@
 | Editing an `!announce` does nothing | Intended: edits are not commands. Send a new message. |
 | An admin who left the control room is not invited back | Intended: declined or left is remembered. Remove them from `admin_user_ids` or the admin group and add them again to send a new invitation. |
 | A new logo at the same avatar URL does not show | Onbot looks at each avatar URL again about once a day, so it shows within a day; a restart picks it up at once. A failing re-check keeps the old picture and is logged (`could not check the avatar image ...`). |
-| `!announce` answers `You sent the same announcement ... seconds ago, so this one was not sent` | The same text from the same admin within 60 seconds. If you really want it sent twice, answer `!confirm <id>` with the id from that message within 10 minutes; `!reject <id>` drops it. |
+| `!announce` answers `You sent the same announcement ... seconds ago, so this one was not sent` | The same text from the same admin within 60 seconds. If you really want it sent twice, answer `!confirm <id>` with the id from that message within 10 minutes (in any case); `!reject <id>` drops it. `!pending` lists held announcements beside the guard's batches. |
 | `The announcement was interrupted by a shutdown of the bot after N of M rooms` | The bot was stopped while it sent. The other rooms did not get it; send it again after the restart if it still matters. |
 | `Authentik answered the sync scope query with N user(s) whose own user object names none of the groups in sync_only_users_of_groups_with_id` | Authentik returned users the group filter should have excluded (it ignored `groups_by_pk`), or user objects without their groups. Onbot leaves those users out of the sync scope. If the line says none of them names any group at all, Authentik leaves the groups out of its user objects: the whole scope may then be empty, which the guard holds (`!pending`); fix Authentik before confirming anything. |
 | `admin control room ... is end-to-end encrypted` (or `new notice boards are end-to-end encrypted`) at error level | Synapse encrypts new private rooms by itself. See [Encrypted control room or notice boards](#encrypted-control-room-or-notice-boards) below. |
@@ -134,15 +134,21 @@ To hand the room back to Onbot, do one of these:
 
    ```text
    !room adopt <group pk> <room id or alias>
+   !room adopt lobby <group pk> <room id or alias>
    ```
 
-   Onbot checks that it created the room (it never takes over a room somebody else created), that the
-   group is one it keeps a room for, and that the group has no other room yet. Only a group room whose
-   marker was removed or written by somebody else qualifies. Then it protects the marker, writes it as
-   the bot, answers `Adopted ... as the room of group ...` and manages the room from the next pass on.
-   Otherwise it answers why not and changes nothing. If a reconcile pass is running, it waits for it
-   (up to a minute). Take the level away from whoever removed the marker, or it can happen again.
-   `!room adopt` covers group rooms; for a visitor lobby use the next way.
+   The first form hands back a group room, the second (with `lobby`) a group's visitor lobby. The
+   group pk may be written in any form of its UUID (with or without hyphens, any case). Onbot checks
+   that it created the room (it never takes over a room somebody else created), that the group is one
+   it keeps a room for (for `lobby`: one that has a visitor lobby in the configuration), and that the
+   group has no other room (or lobby) yet. Only a room whose group room marker (or lobby marker) was
+   removed or written by somebody else qualifies; a space, a user's notice board, or, as a group
+   room, a room with a lobby's `restricted` join rule never does. Then it protects the marker, writes
+   it as the bot, answers `Adopted ... as the room of group ...` (or `... as the visitor lobby of
+   group ...`) and manages the room from the next pass on. Otherwise it answers why not and changes
+   nothing. If protecting the marker worked but writing it failed, the answer says so: the protection
+   stays, and sending the command again finishes the job. If a reconcile pass is running, it waits for
+   it (up to a minute). Take the level away from whoever removed the marker, or it can happen again.
 2. **Restore the marker as the bot account by hand**, when the admin room is off. Only a marker the
    bot account wrote counts, so send it with the bot's access token (from the deployment's
    `synapse_server.bot_access_token`). For a group room of group `<group pk>` on a server named
