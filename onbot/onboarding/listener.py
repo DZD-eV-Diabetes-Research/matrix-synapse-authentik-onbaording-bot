@@ -1,4 +1,4 @@
-"""Onboarding listener (AD-3): who gets a notice board, and a worker queue that delivers it.
+"""Onboarding listener (ADR-0003): who gets a notice board, and a worker queue that delivers it.
 
 **Who.** Only the accounts the last reconcile pass mapped (SEC-06, ONB-13): the Matrix accounts of the
 Authentik users in the sync scope, without held identity conflicts (D8, D21), the bot and ignored

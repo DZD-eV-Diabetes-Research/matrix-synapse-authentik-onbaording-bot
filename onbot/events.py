@@ -1,4 +1,4 @@
-"""Tiny async signal bus (AD-4).
+"""Tiny async signal bus (ADR-0004).
 
 Explicit, in-process coupling between the bounded domains: the reconciler emits signals (e.g. a
 user was synced) and onboarding (Phase 4) subscribes. Kept deliberately minimal — no broker, no
@@ -25,7 +25,6 @@ class Signal(StrEnum):
     # Synapse listed). Emitted once per pass, early, and only when users could be mapped. Onboarding
     # welcomes, and broadcasts reach, exactly ``mxids`` (SEC-06); handlers must not block the pass.
     users_mapped = "users_mapped"
-    drift_detected = "drift_detected"
     # Emitted at the end of every reconcile pass, so state that must converge on the tick but is not
     # the reconciler's business can ride along (the admin room's invites, ADR-0010).
     reconcile_completed = "reconcile_completed"

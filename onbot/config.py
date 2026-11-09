@@ -1,6 +1,6 @@
 """Configuration model (pydantic-settings).
 
-Ported and refined from the legacy ``onbot/config.py`` (AD-1, reuse-the-config decision).
+Ported and refined from the legacy ``onbot/config.py`` (ADR-0001, reuse-the-config decision).
 Changes from legacy:
 
 * pydantic v2 / ``pydantic-settings`` v2 (``SettingsConfigDict``) and modern ``X | None`` typing.
@@ -9,7 +9,7 @@ Changes from legacy:
 * Fixed legacy type/default bugs (``sync_only_users_of_groups_with_id`` defaulted to ``None`` on a
   non-optional ``list``; ``only_groups_with_attributes`` / ``only_for_groupnames_starting_with``
   carried list defaults on non-list fields).
-* No ``matrix-nio`` references — the Matrix client library is a Phase 6 decision (AD, BATTLE_PLAN §5).
+* No ``matrix-nio`` references: the bot drives the CS API over httpx (ADR-0008).
 * Phase 8: dropped the vestigial ``storage_dir`` / ``storage_encryption_key`` fields — they backed
   the libolm key store, which ADR-0009 removed (the bot operates outside encrypted rooms and keeps
   no on-disk crypto state). They were unused everywhere in the codebase; the lifecycle ledger lives
@@ -538,7 +538,7 @@ class AuthentikServer(_StrictModel):
 
 
 class DeactivateDisabledAuthentikUsersInMatrix(_StrictModel):
-    """Lifecycle settings (Phase 5: quarantined, dry-run/audit default; AD-5, ADR-0005)."""
+    """Lifecycle settings (Phase 5: quarantined, dry-run/audit default; ADR-0005)."""
 
     enabled: Annotated[
         bool,

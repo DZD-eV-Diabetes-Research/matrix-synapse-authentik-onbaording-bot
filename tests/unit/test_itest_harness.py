@@ -70,6 +70,51 @@ def test_unusable_values_are_rejected(env: dict[str, str]) -> None:
         StackInstance.from_env(env)
 
 
+def test_without_xdist_and_on_worker_0_the_instance_itself_is_used() -> None:
+    plain = StackInstance.from_env({"ONBOT_ITEST_INSTANCE": "1"})
+    gw0 = StackInstance.from_env({"ONBOT_ITEST_INSTANCE": "1", "PYTEST_XDIST_WORKER": "gw0"})
+    assert gw0 == plain
+    assert plain.worker == 0
+
+
+def test_every_further_worker_gets_a_stack_of_its_own() -> None:
+    """D17: parallel workers never share a stack, the tests share one bot account and room list."""
+    gw1 = StackInstance.from_env({"ONBOT_ITEST_INSTANCE": "1", "PYTEST_XDIST_WORKER": "gw1"})
+    gw2 = StackInstance.from_env({"ONBOT_ITEST_INSTANCE": "1", "PYTEST_XDIST_WORKER": "gw2"})
+    assert (gw1.project, gw1.worker) == ("onbot-itest-1-w1", 1)
+    assert (gw1.synapse_port, gw1.mas_port, gw1.authentik_port) == (20113, 20114, 20115)
+    assert gw2.project == "onbot-itest-1-w2"
+    assert (gw2.synapse_port, gw2.mas_port, gw2.authentik_port) == (20123, 20124, 20125)
+    assert "worker gw1" in gw1.describe()
+
+
+def test_worker_stacks_never_collide_with_any_instance_or_each_other() -> None:
+    # Instances themselves collide from 92 on (MAS of n+92 is Authentik of n), so stay below.
+    instances = [StackInstance.from_env({"ONBOT_ITEST_INSTANCE": str(n)}) for n in range(90)]
+    workers = [s.for_worker(w) for s in instances for w in range(1, 10)]
+    stacks = instances + workers
+    ports = [p for s in stacks for p in (s.synapse_port, s.mas_port, s.authentik_port)]
+    assert len(set(ports)) == len(ports)
+    assert all(p <= 65535 for p in ports)
+    assert len({s.project for s in stacks}) == len(stacks)
+
+
+def test_a_worker_of_an_overridden_project_keeps_the_override_as_prefix() -> None:
+    env = {"ONBOT_ITEST_PROJECT": "mine", "PYTEST_XDIST_WORKER": "gw3"}
+    assert StackInstance.from_env(env).project == "mine-w3"
+
+
+@pytest.mark.parametrize("worker", ["gw10", "main", "gw", "gwx"])
+def test_unusable_worker_ids_are_rejected(worker: str) -> None:
+    with pytest.raises(StackConfigError):
+        StackInstance.from_env({"PYTEST_XDIST_WORKER": worker})
+
+
+def test_worker_stacks_need_an_instance_whose_ports_fit() -> None:
+    with pytest.raises(StackConfigError):
+        StackInstance.from_env({"ONBOT_ITEST_INSTANCE": "455", "PYTEST_XDIST_WORKER": "gw1"})
+
+
 def test_the_compose_file_reads_exactly_the_variables_the_harness_writes() -> None:
     """Harness and compose file must agree, or the tests talk to a port nothing listens on."""
     used = set(re.findall(r"\$\{(ONBOT_ITEST_[A-Z_]+)", COMPOSE_FILE.read_text()))

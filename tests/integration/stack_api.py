@@ -2,10 +2,10 @@
 
 Two things live here:
 
-* :class:`AuthentikAdmin` — a thin wrapper over the Authentik API (using the bootstrapped admin
+* :class:`AuthentikAdmin`: a thin wrapper over the Authentik API (using the bootstrapped admin
   token) to create the *desired* state the reconciler converges towards: groups, users, membership,
   and the disable/enable transitions the lifecycle + §7 Q1 experiment need.
-* :func:`mas_login` — performs a **real** OIDC authorization-code login through MAS into the
+* :func:`mas_login`: performs a **real** OIDC authorization-code login through MAS into the
   Authentik upstream IdP, exactly as a Matrix client would. This is the only way to provision a
   Matrix account under the MAS topology (ADR-0006: the bot never pre-creates accounts). It walks the
   browser flow headlessly (Authentik's flow executor + MAS's link/consent forms) and returns the
@@ -24,6 +24,7 @@ import hashlib
 import os
 import re
 import secrets
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -276,12 +277,38 @@ def login_chain_ready() -> bool:
     return True
 
 
+class _UserNotProvisionedYet(LoginError):
+    """MAS answered the token exchange with a 500 because Synapse does not know the user yet."""
+
+
+# How often a first login is retried while MAS still provisions the new user into Synapse.
+_PROVISION_RETRIES = 4
+_PROVISION_RETRY_WAIT_SEC = 2.0
+
+
 def mas_login(username: str, password: str) -> LoginResult:
     """Drive a real authorization-code login (client -> MAS -> Authentik) and return the session.
 
     Raises :class:`LoginError` if the flow fails to complete (e.g. the Authentik account is
     disabled), which the §7 Q1 experiment relies on to observe whether upstream disable blocks login.
+
+    A user's first login races MAS's background job that creates the user in Synapse: when the token
+    exchange arrives first, MAS cannot create the device and answers 500 ("User not found" from
+    Synapse's ``upsert_device`` in the MAS log). That happens when Synapse is slow, right after a
+    restart or with several stacks on one machine (D17), so the whole login is repeated a few times.
+    Only that answer is retried; a refused login fails at once.
     """
+    for attempt in range(_PROVISION_RETRIES + 1):
+        try:
+            return _mas_login_once(username, password)
+        except _UserNotProvisionedYet:
+            if attempt == _PROVISION_RETRIES:
+                raise
+            time.sleep(_PROVISION_RETRY_WAIT_SEC)
+    raise AssertionError("unreachable")
+
+
+def _mas_login_once(username: str, password: str) -> LoginResult:
     device = "onbotITEST" + secrets.token_hex(6)
     authorize, verifier = _authorize_url(device)
     hdr = {"Accept": "application/json"}
@@ -301,6 +328,8 @@ def mas_login(username: str, password: str) -> LoginResult:
                 "code_verifier": verifier,
             },
         )
+        if token.status_code == 500:
+            raise _UserNotProvisionedYet(f"token exchange failed: 500 {token.text[:200]}")
         if token.status_code != 200:
             raise LoginError(f"token exchange failed: {token.status_code} {token.text[:200]}")
         access = token.json()["access_token"]

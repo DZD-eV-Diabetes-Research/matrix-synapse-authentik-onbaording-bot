@@ -1,4 +1,4 @@
-"""MAS-aware access-token providers (AD-6, Phase 6).
+"""MAS-aware access-token providers (ADR-0006, Phase 6).
 
 The bot authenticates to the Synapse CS + admin APIs with a bearer token. Under the
 MAS topology two ways of obtaining that token coexist, and the rest of the code must
@@ -25,11 +25,14 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import httpx
 
 from onbot.logging import get_logger
+
+if TYPE_CHECKING:
+    from onbot.config import SynapseServer
 
 log = get_logger(__name__)
 
@@ -71,6 +74,16 @@ class StaticTokenProvider:
 
     async def aclose(self) -> None:  # symmetry with the OAuth2 provider; nothing to close
         return None
+
+
+def build_matrix_token_provider(synapse: SynapseServer) -> TokenProvider:
+    """The bot's credential for the Synapse APIs (ADR-0006): its static compatibility token.
+
+    OAuth2 client credentials are used for the MAS admin API only (``mas_admin``); MAS does not grant
+    the Matrix API scopes to that grant (RUN-11). It lives here rather than in :mod:`onbot.app` so
+    the healthcheck does not have to import the composition root (MNT-14).
+    """
+    return StaticTokenProvider(synapse.bot_access_token.get_secret_value())
 
 
 class OAuth2ClientCredentialsTokenProvider:

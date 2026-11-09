@@ -40,7 +40,7 @@ it with ``!guard reset``, which keeps a verbatim copy of the unreadable blob (se
 :meth:`MatrixAccountDataGuardStore.reset_unreadable`).
 
 The pure part (:func:`input_drops`, :func:`decide`, :func:`record`) is side-effect free; the
-:class:`DestructiveActionGuard` service persists the state in the bot's account data (AD-1) and emits
+:class:`DestructiveActionGuard` service persists the state in the bot's account data (ADR-0001) and emits
 the reports on the event bus.
 """
 
@@ -900,7 +900,7 @@ class MemoryGuardStore:
 
 
 class MatrixAccountDataGuardStore:
-    """Persists the guard state as an account-data blob on the bot user (AD-1)."""
+    """Persists the guard state as an account-data blob on the bot user (ADR-0001)."""
 
     def __init__(self, client: Any, bot_id: str, server_name: str) -> None:
         self.client = client

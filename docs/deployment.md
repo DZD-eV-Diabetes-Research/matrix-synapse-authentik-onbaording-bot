@@ -11,27 +11,48 @@ Mount your config and run:
 ```bash
 docker run --rm \
   -v "$PWD/config.yml:/config/config.yml:ro" \
-  dzdde/onbot:latest
+  dzdde/onbot:X.Y.Z
 ```
+
+**Pin a version.** Replace `X.Y.Z` with the release you have read the [changelog](../CHANGELOG.md)
+for (the tags are listed on [Docker Hub](https://hub.docker.com/r/dzdde/onbot/tags)), or pin the
+image digest. Avoid `latest`: the bot kicks users, locks accounts and deletes rooms, and with `latest`
+a plain restart can bring a release whose destructive behaviour changed without anyone reading its
+notes.
 
 The image sets `ONBOT_CONFIG_FILE_PATH=/config/config.yml` and defaults to the `run` command, so
 the two together start the long-lived service. A built-in `HEALTHCHECK` calls `onbot healthcheck`,
 which checks the service's own heartbeat (see [Healthcheck](#healthcheck)). `tini` runs as PID 1 and
 forwards signals, so `docker stop` ends the bot cleanly (see [Stopping](#stopping)).
 
+**The config file must be readable by uid 10001,** the user the image runs as. It holds the bot's
+access token and API keys, so do not make it world-readable (`chmod 644`) to get there. Give it to
+that uid instead:
+
+```bash
+sudo chown 10001 config.yml && chmod 600 config.yml
+```
+
+Or keep the secrets out of the file altogether, see [Config without a file on disk](#config-without-a-file-on-disk).
+
 ## docker-compose
 
 ```yaml
 services:
   onbot:
-    image: dzdde/onbot:latest
+    image: dzdde/onbot:X.Y.Z
     restart: unless-stopped
     volumes:
       - ./config.yml:/config/config.yml:ro
+    # Hardening: onbot writes nothing but its heartbeat file (in /tmp) and needs no capabilities.
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
 ```
 
-With `read_only: true` the heartbeat file needs a writable place: add `tmpfs: [/tmp]`, or point
-`ONBOT_HEARTBEAT_FILE` at a writable volume.
+The hardening lines are optional but supported as they are. With `read_only: true` the heartbeat file
+needs a writable place: the `tmpfs` above, or point `ONBOT_HEARTBEAT_FILE` at a writable volume.
 
 ## Config without a file on disk
 
@@ -41,7 +62,7 @@ secrets off disk:
 ```yaml
 services:
   onbot:
-    image: dzdde/onbot:latest
+    image: dzdde/onbot:X.Y.Z
     restart: unless-stopped
     environment:
       ONBOT_SYNAPSE_SERVER__SERVER_NAME: company.org
@@ -95,7 +116,7 @@ from the config, and the bot's onboarding rooms are read-only notice boards that
 ```bash
 docker run --rm \
   -v "$PWD/config.yml:/config/config.yml:ro" \
-  dzdde/onbot:latest broadcast "Maintenance window tonight at 22:00 UTC"
+  dzdde/onbot:X.Y.Z broadcast "Maintenance window tonight at 22:00 UTC"
 ```
 
 For example, a one-shot reconcile:
@@ -103,7 +124,7 @@ For example, a one-shot reconcile:
 ```bash
 docker run --rm \
   -v "$PWD/config.yml:/config/config.yml:ro" \
-  dzdde/onbot:latest reconcile-once
+  dzdde/onbot:X.Y.Z reconcile-once
 ```
 
 ## Healthcheck
@@ -152,6 +173,37 @@ MAS token, which is why this is not the container healthcheck any more.
 ```bash
 docker exec onbot onbot healthcheck --deep
 ```
+
+## Upgrading from the legacy bot
+
+The rewrite (0.0.1 and later) does not take over the per-user rooms of the legacy bot (the code in
+`legacy/`). The legacy bot found a user's welcome room by scanning for its own state event and never
+recorded it in `m.direct`, and it counted sent messages by their position in the list. The new bot
+looks a user's room up in `m.direct` only and records messages by content. So on its first pass after
+the cutover it:
+
+- **opens a fresh notice board for every user** (read-only, unencrypted, the user force-joined) and
+- **sends the whole welcome sequence again,** to everybody at once.
+
+The old welcome rooms stay as they were: encrypted, and writable by their user. Onbot does not touch
+them; a server admin can delete them once the new notice boards are in place.
+
+Before the cutover:
+
+1. **Stop the legacy bot for good.** Two bots acting on the same server fight over rooms and members.
+2. **Decide what everybody should receive again.** If the full sequence would be noise for existing
+   users, shorten `welcome_new_users_messages` for the first run to what still matters (or one line
+   pointing at the new room), and restore the full list for new users afterwards. Give the messages
+   [ids](features.md#message-ids) so later edits do not re-send them.
+3. **Translate the config.** The settings changed; start from `config.example.yml` and
+   [configuration.md](configuration.md), not from the legacy file. Unknown keys stop the bot at
+   startup with a list of the offending fields.
+4. **Run a preview first:** `onbot reconcile-once --dry-run` logs every room, membership and
+   offboarding change the first pass would make, without changing anything.
+
+Group rooms are a separate question: whether the new bot adopts an existing room depends on who
+created it and on its marker, see "Upgrading from a version before room identity" in
+[features.md](features.md#group-rooms).
 
 ## Startup
 

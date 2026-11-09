@@ -291,7 +291,7 @@ async def test_a_subject_linked_to_two_accounts_is_held_on_both() -> None:
 async def test_the_lookup_is_off_without_a_subject_attribute() -> None:
     mas = FakeMasLinks({"hash-1": "alice"})
     resolver, _ = _resolver(_config(mas=True, upstream_subject_attribute=None), MemoryBindings(), mas)
-    assert not resolver.uses_mas
+    assert resolver.mas is None
     assert (await resolver.resolve([_user(1, "bob")])).mxids == {"1": mx("bob")}
     assert mas.asked_provider == []
 

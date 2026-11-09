@@ -9,7 +9,7 @@ Unit and contract tests, no live stack. Runs in seconds and is the quick local f
 
 ```bash
 pdm run pytest -m "not integration"
-# or the wrapper, which also reports coverage (ungated):
+# or the wrapper, which also checks the fast suite's coverage floor (90 %):
 ./run_tests.sh
 ```
 
@@ -41,7 +41,11 @@ skip the integration tests of a plain `pdm run pytest` explicitly.
 
 Useful knobs:
 
+- `ONBOT_ITEST_WORKERS=<k>` splits the run over `k` parallel workers, each with a stack of its own
+  (2 to 3 GB of RAM per worker). See
+  [tests/README.md](../tests/README.md#faster-runs).
 - `ONBOT_ITEST_KEEP=1` leaves the stack running after the run, for fast local iteration.
+  `./run_integration_tests.sh --down` tears down every stack of the instance.
 - `ONBOT_ITEST_INSTANCE=<n>` runs an isolated stack instance with its own compose project and host
   ports, so several checkouts (for example git worktrees) can run the suite at the same time. See
   [tests/README.md](../tests/README.md#several-stacks-in-parallel-one-per-worktree).

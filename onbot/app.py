@@ -1,6 +1,6 @@
 """Composition root: build clients, wire the reconciler + onboarding, manage lifecycle.
 
-Keeps construction in one place (AD-4) so the CLI stays thin. The reconciler converges
+Keeps construction in one place (ADR-0004) so the CLI stays thin. The reconciler converges
 Authentik→Matrix state; onboarding reacts (event-driven) to the reconciler's "user provisioned"
 signal and to Matrix join events. They share the async API clients and an in-process event bus.
 
@@ -55,15 +55,14 @@ from onbot.admin.control_room import ControlRoomHandler
 from onbot.admin.notifier import AdminRoomNotifier
 from onbot.auth.token_provider import (
     OAuth2ClientCredentialsTokenProvider,
-    StaticTokenProvider,
-    TokenProvider,
+    build_matrix_token_provider,
 )
 from onbot.avatar import ensure_bot_avatar
 from onbot.clients.authentik import ApiClientAuthentik
 from onbot.clients.mas_admin import ApiClientMasAdmin
 from onbot.clients.matrix import ApiClientMatrix, CSApiEffectors
 from onbot.clients.synapse_admin import ApiClientSynapseAdmin
-from onbot.config import OnbotConfig, SynapseServer
+from onbot.config import OnbotConfig
 from onbot.discovery import DiscoveryPoller
 from onbot.events import EventBus, Signal
 from onbot.guard import (
@@ -116,15 +115,6 @@ __all__ = [
 ]
 
 log = get_logger(__name__)
-
-
-def build_matrix_token_provider(synapse: SynapseServer) -> TokenProvider:
-    """The bot's credential for the Synapse APIs (AD-6): its static compatibility token.
-
-    OAuth2 client credentials are used for the MAS admin API only (``mas_admin``); MAS does not grant
-    the Matrix API scopes to that grant (RUN-11).
-    """
-    return StaticTokenProvider(synapse.bot_access_token.get_secret_value())
 
 
 def _fetch_policy(config: OnbotConfig) -> FetchPolicy:
@@ -207,7 +197,7 @@ class App:
         if self._onboarding_open:
             return
         self._onboarding_open = True
-        self.listener.start()  # the reconciler's user-provisioned signal (AD-4)
+        self.listener.start()  # the reconciler's user-provisioned signal (ADR-0004)
         self.pump.register(self.listener)
         if self.engine.passes_started:
             # Users seen by passes that ran before this point were not welcomed; do not make them
@@ -353,7 +343,7 @@ def _notice_boards(matrix: ApiClientMatrix, bot_id: str) -> Callable[[], Awaitab
 def _matrix_clients(
     stack: AsyncExitStack, config: OnbotConfig
 ) -> tuple[ApiClientMatrix, ApiClientSynapseAdmin]:
-    # One MAS-aware token provider shared by the admin + CS clients (same bot identity, AD-6).
+    # One MAS-aware token provider shared by the admin + CS clients (same bot identity, ADR-0006).
     token_provider = build_matrix_token_provider(config.synapse_server)
     stack.push_async_callback(token_provider.aclose)
     admin = ApiClientSynapseAdmin(

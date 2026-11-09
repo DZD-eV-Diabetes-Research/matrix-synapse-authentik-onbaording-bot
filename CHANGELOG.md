@@ -5,8 +5,11 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-> Versions are not yet published. The first tagged release is **blocked on the Phase 1 security
-> hand-off** (rotate leaked credentials + scrub git history — see `BATTLE_PLAN.md` §5 and the README).
+> Releases 0.0.1 to 0.0.11 of the rewrite are published on PyPI (`onbot`) and Docker Hub
+> (`dzdde/onbot`). Their sections below were reconstructed from the git history in November 2026;
+> the changelog itself was only kept from 0.0.1-beta.1 on, and until then it listed everything under
+> "Unreleased". The leaked-token release blocker of BATTLE_PLAN Phase 1 is closed (review decisions
+> D1 and D2, see "Security" below).
 
 ## [Unreleased]
 
@@ -484,3 +487,178 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   expire after 72 h. Configurable under `destructive_action_guard`. Before, a narrowed Authentik token
   kicked everyone and locked every known user, and a collapsed answer withdrew every bot-granted power
   level. Replaces the S2 kick heuristic.
+
+## [0.0.11] - 2026-08-04
+
+### Changed
+- Renaming a group room and setting its topic from Authentik are logged at INFO.
+
+## [0.0.10] - 2026-08-04
+
+### Changed
+- **The room name comes from the group's `chatroom_name` attribute by default** and falls back to the
+  group's own name when the attribute is missing or empty (`matrix_name_from_authentik_attribute`
+  now defaults to `attributes.chatroom_name`; set it to `name` for the old behaviour). A numeric
+  attribute value is turned into text.
+
+### Fixed
+- **Visitor lobbies follow a renamed group room:** with `keep_updating_matrix_attributes_from_authentik`
+  the lobby's name and topic are re-applied on every pass, like the group room's.
+
+## [0.0.9] - 2026-08-04
+
+### Fixed
+- **A reconcile pass no longer aborts on the first room the bot is not in.** Looking for obsolete group
+  rooms read the state of every room on the server, and the 403 for a room a user created for
+  themselves stopped the pass before space and room membership were synced.
+
+## [0.0.8] - 2026-08-04
+
+### Fixed
+- **The bot's profile picture is no longer re-set on every restart,** which posted a "changed their
+  profile picture" event into every room the bot shares. The bot records the source URL and the
+  uploaded picture in its account data; on the first start after the upgrade it compares the image
+  bytes instead and adopts a matching picture.
+
+## [0.0.7] - 2026-08-04
+
+### Added
+- **`global_room_admins`:** Authentik usernames that are joined to every group room, visitor lobby and
+  the space at power level 100 regardless of their groups, and never kicked by the membership sync.
+- **`docs/authentik-groups.md`:** how to set up Authentik groups and their attributes for onbot.
+
+### Fixed
+- **Group room topics were rewritten on every reconcile pass,** because the Synapse room list never
+  returns a topic. The topic is now read from the room's `m.room.topic` state before it is written.
+
+## [0.0.6] - 2026-08-04
+
+### Added
+- **Markdown welcome messages** with the placeholders `{space_link}`, `{space_alias}`, `{space_name}`
+  and `{user_id}`. A message using a space placeholder while no space is configured is held back with
+  a warning.
+- **Visitor lobbies wear their group room's avatar.**
+
+## [0.0.5] - 2026-07-13
+
+### Added
+- **Visitor lobby rooms ([ADR-0012](docs/adr/0012-lobby-rooms.md)):** an optional second room per
+  group that every member of the space can find and join, next to the unchanged private group room
+  (`visitor_lobby_*` settings, per group via `matrix_room_visitor_lobby_from_authentik_attribute`).
+- **Room version 12 support ([ADR-0011](docs/adr/0011-room-version-12.md)):** power levels and room
+  IDs are read correctly in v12 rooms, where the creator holds an infinite level. New setting
+  `synapse_server.room_version` (default: the homeserver's default version).
+
+## [0.0.4] - 2026-07-10
+
+### Fixed
+- **New bot admins are invited to the admin control room** on every reconcile pass, not only at
+  startup.
+
+## [0.0.3] - 2026-07-10
+
+### Added
+- **`authentik_poll_rate_sec` (default 15):** a cheap poll asks Authentik whether users or groups
+  changed and runs a reconcile right away when they did. New users no longer wait for the full pass.
+
+### Changed
+- **`server_tick_rate_sec` now defaults to 300 instead of 20,** since the poll above handles new users;
+  the full pass only repairs drift made inside Matrix.
+
+### Fixed
+- **A new user could receive the welcome messages twice** when the reconcile signal and the user's own
+  join event arrived together. Welcomes for one user are serialised, and each sent message is recorded
+  right away.
+
+## [0.0.2] - 2026-07-10
+
+### Added
+- **The onboarding room is a read-only notice board:** created as a private room in which only the
+  bot may post, with the user force-joined once (`force_join_onboarding_room`), and with its own name,
+  topic and avatar. Its power levels are repaired when they drift. Rooms created by earlier versions
+  stay writable for their user; see [docs/troubleshooting.md](docs/troubleshooting.md).
+- **`onbot broadcast "<message>"`** sends a notice into every user's onboarding room.
+- **Admin control room ([ADR-0010](docs/adr/0010-admin-control-room.md)):** allowlisted admins send
+  `!announce`, `!status` and `!help`. Admins come from `admin_room.admin_user_ids` and from the
+  members of the Authentik groups in `admin_room.authentik_group_pks_granting_bot_admin`.
+- **Obsolete group rooms are torn down:** a room whose Authentik group disappeared is blocked and
+  emptied (`disable_rooms_when_mapped_authentik_group_disappears`) and optionally deleted
+  (`delete_disabled_rooms`).
+
+### Changed
+- **The sliding-sync loop moved into `onbot/sync.py` (`SyncPump`),** shared by onboarding and the
+  admin control room.
+
+### Fixed
+- **`ONBOT_*` environment variables override the config file again;** they were ignored as soon as a
+  config file was present. The file and the environment are merged, so a single secret can come from
+  the environment.
+- **`log_level` from the config file takes effect** (before, only `--log-level` and `ONBOT_LOG_LEVEL`
+  did).
+
+## [0.0.1] - 2026-07-08
+
+First stable release of the rewrite. It contains everything from the 0.0.1 pre-releases plus:
+
+### Added
+- **Space and group room avatars** are applied on every pass and re-uploaded only when the URL
+  changes, so they also reach existing rooms.
+- **`scripts/provision-bot-account.sh`** registers the bot in MAS and issues its compatibility token.
+- **Docs:** `docs/architecture.md`, `configuration.md`, `deployment.md`, `development.md`,
+  `testing.md` and `troubleshooting.md`; `BATTLE_PLAN.md` and `GOALS.md` moved to `docs/project/`.
+
+### Fixed
+- The PyPI upload of the release workflow, and the package version derived from the git tag.
+
+## [0.0.1-beta.3] - 2026-07-08
+
+### Changed
+- The release workflow publishes the image to Docker Hub (`dzdde/onbot`) instead of GHCR.
+
+## [0.0.1-beta.2] - 2026-07-08
+
+### Changed
+- **Release workflow:** runs on published GitHub Releases. A pre-release publishes the image as `beta`
+  plus the version and uploads the pre-release to PyPI; a full release publishes `latest`, the
+  version, major.minor and major, and the stable version on PyPI.
+
+## [0.0.1-beta.1] - 2026-06-23
+
+First pre-release of the rewrite. The legacy bot (kept read-only in `legacy/`) was replaced by a new
+async code base for Matrix 2.0 with MAS and Authentik as its upstream identity provider (ADR-0001 to
+ADR-0009). Operators coming from the legacy bot: read
+[Upgrading from the legacy bot](docs/deployment.md#upgrading-from-the-legacy-bot) first.
+
+### Added
+- **Reconciler:** Authentik groups become rooms (optionally inside a space), group membership becomes
+  room membership and power levels, idempotently on a timer.
+- **Onboarding:** new users get a welcome room with the configured messages, triggered by the
+  reconciler and by the sync stream (sliding sync).
+- **Offboarding lifecycle:** disabled Authentik users are locked out and later erased after
+  configurable cooldowns, through the MAS admin API when `mas_admin` is set; `dry_run` is on by default.
+- **Matrix 2.0:** MAS compatibility tokens, authenticated media, CS API version negotiation.
+- **`onbot healthcheck`**, a multi-stage Docker image with a healthcheck, and the generated config
+  reference (`docs/CONFIG_REFERENCE.md`, `config.example.yml`).
+- **Tests:** unit and contract tests, and an integration suite against a live Synapse, MAS, Postgres
+  and Authentik stack.
+
+### Removed
+- The libolm crypto stack: the bot works outside encrypted rooms (ADR-0009), so `storage_dir` and
+  `storage_encryption_key` are gone. In this release unknown keys below the top level were ignored;
+  since the review (S13) every unknown key is rejected, so remove both settings from old configs.
+
+[Unreleased]: https://github.com/DZD-eV-Diabetes-Research/matrix-synapse-authentik-onbaording-bot/compare/0.0.11...HEAD
+[0.0.11]: https://github.com/DZD-eV-Diabetes-Research/matrix-synapse-authentik-onbaording-bot/compare/0.0.10...0.0.11
+[0.0.10]: https://github.com/DZD-eV-Diabetes-Research/matrix-synapse-authentik-onbaording-bot/compare/0.0.9...0.0.10
+[0.0.9]: https://github.com/DZD-eV-Diabetes-Research/matrix-synapse-authentik-onbaording-bot/compare/0.0.8...0.0.9
+[0.0.8]: https://github.com/DZD-eV-Diabetes-Research/matrix-synapse-authentik-onbaording-bot/compare/0.0.7...0.0.8
+[0.0.7]: https://github.com/DZD-eV-Diabetes-Research/matrix-synapse-authentik-onbaording-bot/compare/0.0.6...0.0.7
+[0.0.6]: https://github.com/DZD-eV-Diabetes-Research/matrix-synapse-authentik-onbaording-bot/compare/0.0.5...0.0.6
+[0.0.5]: https://github.com/DZD-eV-Diabetes-Research/matrix-synapse-authentik-onbaording-bot/compare/0.0.4...0.0.5
+[0.0.4]: https://github.com/DZD-eV-Diabetes-Research/matrix-synapse-authentik-onbaording-bot/compare/0.0.3...0.0.4
+[0.0.3]: https://github.com/DZD-eV-Diabetes-Research/matrix-synapse-authentik-onbaording-bot/compare/0.0.2...0.0.3
+[0.0.2]: https://github.com/DZD-eV-Diabetes-Research/matrix-synapse-authentik-onbaording-bot/compare/0.0.1...0.0.2
+[0.0.1]: https://github.com/DZD-eV-Diabetes-Research/matrix-synapse-authentik-onbaording-bot/compare/0.0.1-beta.3...0.0.1
+[0.0.1-beta.3]: https://github.com/DZD-eV-Diabetes-Research/matrix-synapse-authentik-onbaording-bot/compare/0.0.1-beta.2...0.0.1-beta.3
+[0.0.1-beta.2]: https://github.com/DZD-eV-Diabetes-Research/matrix-synapse-authentik-onbaording-bot/compare/0.0.1-beta.1...0.0.1-beta.2
+[0.0.1-beta.1]: https://github.com/DZD-eV-Diabetes-Research/matrix-synapse-authentik-onbaording-bot/releases/tag/0.0.1-beta.1

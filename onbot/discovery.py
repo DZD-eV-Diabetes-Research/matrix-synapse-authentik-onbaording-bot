@@ -1,4 +1,4 @@
-"""Cheap change detection on Authentik, so the expensive reconcile can run rarely (AD-2).
+"""Cheap change detection on Authentik, so the expensive reconcile can run rarely (ADR-0002).
 
 One loop used to do two jobs with wildly different costs. A reconcile pass reads the whole Matrix
 side — every managed room's members, power levels and state — while the thing it is usually reacting

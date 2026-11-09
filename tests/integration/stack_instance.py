@@ -10,6 +10,14 @@ separate compose project with its own published host ports. Everything is derive
 Single values can still be overridden one by one: ``ONBOT_ITEST_PROJECT``,
 ``ONBOT_ITEST_SYNAPSE_PORT``, ``ONBOT_ITEST_MAS_PORT``, ``ONBOT_ITEST_AUTHENTIK_PORT``.
 
+**Parallel workers (D17).** ``run_integration_tests.sh`` can split one run over several pytest-xdist
+workers (``ONBOT_ITEST_WORKERS``). The tests share one bot account, its account data and the server
+wide room list, so two tests on one stack would disturb each other; instead every worker gets a stack
+of its own. Worker ``gw0`` (and a run without xdist) uses the instance itself; worker ``gwK`` with
+``K >= 1`` uses the compose project ``<project>-w<K>`` and host ports from a separate range,
+``20000 + 100 * instance + 10 * K`` plus 3 (Synapse), 4 (MAS) and 5 (Authentik). Those end in 3 to 5,
+while every instance port ends in 0 or 8, so worker stacks never collide with any instance's stack.
+
 The compose file reads the same variable names (with instance 0 values as defaults), and the harness
 hands them over through an env file, so the containers and the host-side helpers always agree.
 Only host ports change per instance; container ports and the in-network URLs (``mas:8080``,
@@ -35,12 +43,19 @@ MAS_PORT_VAR = "ONBOT_ITEST_MAS_PORT"
 AUTHENTIK_PORT_VAR = "ONBOT_ITEST_AUTHENTIK_PORT"
 # Opt-out for machines without Docker: skip the integration tests instead of failing the run.
 SKIP_VAR = "ONBOT_ITEST_SKIP"
+# Set by pytest-xdist in every worker process ("gw0", "gw1", ...).
+XDIST_WORKER_VAR = "PYTEST_XDIST_WORKER"
 
 DEFAULT_PROJECT = "onbot-itest"
 DEFAULT_SYNAPSE_PORT = 8008
 DEFAULT_MAS_PORT = 8080
 DEFAULT_AUTHENTIK_PORT = 9000
 PORT_STEP = 10
+# Worker stacks (see the module docstring): ports 20000 + 100 * instance + 10 * worker + 3/4/5.
+WORKER_PORT_BASE = 20000
+WORKER_INSTANCE_STEP = 100
+MAX_WORKER = 9
+MAX_WORKER_INSTANCE = (65535 - WORKER_PORT_BASE - 100) // WORKER_INSTANCE_STEP
 
 
 class StackConfigError(ValueError):
@@ -57,6 +72,16 @@ def _int(env: Mapping[str, str], name: str, default: int) -> int:
         raise StackConfigError(f"{name}={raw!r} is not an integer") from None
 
 
+def _worker(env: Mapping[str, str]) -> int:
+    """The pytest-xdist worker number of this process, 0 without xdist."""
+    raw = env.get(XDIST_WORKER_VAR, "").strip()
+    if not raw:
+        return 0
+    if not raw.startswith("gw") or not raw[2:].isdigit():
+        raise StackConfigError(f"{XDIST_WORKER_VAR}={raw!r} is not a pytest-xdist worker id")
+    return int(raw[2:])
+
+
 def _port(env: Mapping[str, str], name: str, default: int) -> int:
     port = _int(env, name, default)
     if not 1 <= port <= 65535:
@@ -71,6 +96,7 @@ class StackInstance:
     synapse_port: int
     mas_port: int
     authentik_port: int
+    worker: int = 0
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> StackInstance:
@@ -89,7 +115,28 @@ class StackInstance:
         ports = [stack.synapse_port, stack.mas_port, stack.authentik_port]
         if len(set(ports)) != len(ports):
             raise StackConfigError(f"integration stack host ports collide: {ports}")
-        return stack
+        worker = _worker(env)
+        return stack.for_worker(worker) if worker else stack
+
+    def for_worker(self, worker: int) -> StackInstance:
+        """The stack pytest-xdist worker ``gw<worker>`` uses (worker 0 uses this one)."""
+        if worker == 0:
+            return self
+        if not 1 <= worker <= MAX_WORKER:
+            raise StackConfigError(f"at most {MAX_WORKER + 1} parallel workers, got worker gw{worker}")
+        if self.instance > MAX_WORKER_INSTANCE:
+            raise StackConfigError(
+                f"{INSTANCE_VAR}={self.instance}: parallel workers need an instance <= {MAX_WORKER_INSTANCE}"
+            )
+        base = WORKER_PORT_BASE + WORKER_INSTANCE_STEP * self.instance + PORT_STEP * worker
+        return StackInstance(
+            instance=self.instance,
+            project=f"{self.project}-w{worker}",
+            synapse_port=base + 3,
+            mas_port=base + 4,
+            authentik_port=base + 5,
+            worker=worker,
+        )
 
     @property
     def synapse_url(self) -> str:
@@ -117,8 +164,9 @@ class StackInstance:
         return path
 
     def describe(self) -> str:
+        worker = f" worker gw{self.worker}," if self.worker else ""
         return (
-            f"instance {self.instance}, compose project {self.project!r}, host ports "
+            f"instance {self.instance},{worker} compose project {self.project!r}, host ports "
             f"synapse={self.synapse_port} mas={self.mas_port} authentik={self.authentik_port}"
         )
 

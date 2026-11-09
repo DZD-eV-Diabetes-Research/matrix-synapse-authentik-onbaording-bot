@@ -1,4 +1,4 @@
-"""Authentik user to Matrix ID resolution (AD-6, D8): the critical MAS integration contract.
+"""Authentik user to Matrix ID resolution (ADR-0006, D8): the critical MAS integration contract.
 
 Under MAS, accounts are auto-provisioned on first login and the MXID localpart is fixed by MAS at
 that moment, from an upstream Authentik claim. The bot does **not** create accounts; it must find the
@@ -87,7 +87,7 @@ def compute_mxid(
     username_attribute: str,
     server_name: str,
 ) -> str:
-    """Compute the MXID the mapping attribute names for an Authentik user (G1.2, AD-6).
+    """Compute the MXID the mapping attribute names for an Authentik user (G1.2, ADR-0006).
 
     This is the fallback for users onbot has never seen (see :class:`IdentityResolver`); callers
     resolve users through the resolver, not through this function.
@@ -214,15 +214,6 @@ class IdentityResolver:
         self._mas_failing = False
         # Users whose missing mapping attribute was already logged at WARNING.
         self._unmappable_logged: set[str] = set()
-
-    @property
-    def uses_mas(self) -> bool:
-        return self.mas is not None
-
-    @property
-    def bindings(self) -> Mapping[str, str]:
-        """``pk -> MXID`` as recorded (after the last :meth:`refresh` and :meth:`resolve`)."""
-        return {pk: known.mxid for pk, known in self._known.users.items()}
 
     async def refresh(self) -> None:
         """Read the bindings and the MAS links for this pass.

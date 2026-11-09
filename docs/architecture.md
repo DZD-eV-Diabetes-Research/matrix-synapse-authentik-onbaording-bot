@@ -58,5 +58,8 @@ The ADRs in [docs/adr/](adr/) capture the reasoning behind these choices:
 - [0008](adr/0008-matrix-client-library.md) the Matrix client library choice
 - [0009](adr/0009-e2ee-stance.md) the end-to-end encryption stance
 - [0010](adr/0010-admin-control-room.md) the admin control room as a bounded exception
+- [0011](adr/0011-room-version-12.md) room version 12 readiness
+- [0012](adr/0012-lobby-rooms.md) visitor lobby rooms
 
-For intent see [GOALS.md](../GOALS.md); for the build plan see [BATTLE_PLAN.md](../BATTLE_PLAN.md).
+For intent see [GOALS.md](project/GOALS.md); for the original build plan see
+[BATTLE_PLAN.md](project/BATTLE_PLAN.md).
