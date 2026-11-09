@@ -136,6 +136,15 @@ Defaults (configurable):
 Placement: S3 builds the batch store, `!confirm`, `!pending` and the expiry, and uses them for layers
 1 and 2. S5 only adds layer 3 on top.
 
+Confirmed 2026-11-09 (implemented conservatively by W3R):
+
+- A rejected batch that holds irreversible actions stays held until it expires; it does not end
+  early once fewer than `confirm_irreversible_actions_from` actions remain (otherwise the remaining
+  one or two erasures would run without asking).
+- Confirmed batches expire too: an action still waiting after the expiry window (for example a room
+  deletion waiting for its teardown) is proposed again instead of running on an old confirmation.
+- `!confirm` restarts the batch's expiry window, so a confirmation shortly before expiry is not lost.
+
 ## D14 Known user disabled and out of scope at the same time (wave 1 review, decided 2026-11-06)
 
 A user with a `KnownUsers` binding (positively mapped by onbot earlier) who is disabled in Authentik is
@@ -225,3 +234,18 @@ integration suite stays a required gate, but:
   account data by hand (documented).
 - The production Authentik provider uses the hashed user ID as `sub`, matching the default
   `mas_admin.upstream_subject_attribute: uid`.
+- Added 2026-11-09: a recorded binding wins in the same way as a MAS link. When MAS is not configured
+  or does not link the account, the holder of a recorded binding wins over claimants that only
+  resolve by the mapping attribute; those are skipped and reported. (Before: both failed closed.)
+  Implementation: W4R.
+
+## D22 Wave 4 confirmations (S7, S8, decided 2026-11-09)
+
+- S8: with `sync_authentik_users_with_matrix_rooms.enabled: false` nobody is mapped, so welcomes and
+  broadcasts stop completely. Intended; document it.
+- S8: `onbot broadcast` (CLI) maps the users first and therefore needs Authentik to be reachable. It
+  fails with a clear message otherwise. Intended.
+- S7: when the alias settings change, the room additionally gets the new alias if it is free; its
+  canonical alias stays the old one. Intended.
+- S7: D16 covers closing only. A lobby that a human made `public` is reverted to the config (opening
+  is the risky direction).
