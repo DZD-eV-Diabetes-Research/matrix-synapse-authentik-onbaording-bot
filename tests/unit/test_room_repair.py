@@ -25,6 +25,7 @@ from onbot.reconciler.state import (
     VisitorLobbyRoomState,
     dump_room_state,
 )
+from onbot.rooms.identity import RoomIdentityResolver
 from tests.unit.room_fakes import room_state
 from tests.unit.test_engine import (
     _BASE,
@@ -310,26 +311,46 @@ async def test_a_converged_room_gets_no_writes() -> None:
 # --- REC-09: marker and lock -----------------------------------------------------------------------
 
 
-class SharedStateAdmin(FakeAdmin):
-    """The admin Room State API serves the markers the effectors hold, so the identity scan and the
-    repair see one room (W4R-06: the repair tests used to pass only because the scan kept seeing the
-    intact marker while the effectors showed it removed)."""
+class _SharedState:
+    """The admin Room State API serves the markers (and join rules) the effectors hold, so the identity
+    scan and the repair see one room (W4R-06: the repair tests used to pass only because the scan kept
+    seeing the intact marker while the effectors showed it removed)."""
 
-    def __init__(self, effectors: RecordingEffectors) -> None:
-        super().__init__()
-        self.effectors = effectors
+    effectors: RecordingEffectors
 
     async def get_room_state_events(self, room_id: str) -> list[dict[str, Any]]:
-        events = [e for e in await super().get_room_state_events(room_id) if not _is_marker(e["type"])]
+        events = [
+            e
+            for e in await super().get_room_state_events(room_id)  # type: ignore[misc]
+            if not _shared(e["type"])
+        ]
         for key, content in self.effectors.state_store.items():
-            if len(key) == 2 and key[0] == room_id and _is_marker(key[1]):
+            if len(key) == 2 and key[0] == room_id and _shared(key[1]):
                 sender = self.effectors.senders.get(key, BOT)
                 events.append({"type": key[1], "state_key": "", "sender": sender, "content": content})
         return events
 
 
+class SharedStateAdmin(_SharedState, FakeAdmin):
+    def __init__(self, effectors: RecordingEffectors) -> None:
+        super().__init__()
+        self.effectors = effectors
+
+
+class SharedLobbyAdmin(_SharedState, LobbyAdmin):
+    """:class:`SharedStateAdmin` over the g1 room and its visitor lobby."""
+
+    def __init__(self, effectors: RecordingEffectors) -> None:
+        super().__init__(with_lobby_room=True)
+        self.effectors = effectors
+
+
 def _is_marker(event_type: str) -> bool:
     return event_type.startswith("org.company.onbot.")
+
+
+def _shared(event_type: str) -> bool:
+    return _is_marker(event_type) or event_type == JOIN_RULES
 
 
 def _running(
@@ -1148,3 +1169,186 @@ async def test_room_adopt_waits_for_a_running_pass_and_gives_up_after_a_while(
         reply = await engine.adopt_room("g1", ROOM1, by="@admin:company.org")
     assert reply.startswith("A reconcile pass is still running")
     assert len(effectors.state_writes) == writes
+
+
+# --- W6R-05: `!room adopt` checks what kind of room it takes ---------------------------------------
+
+
+async def test_room_adopt_refuses_a_space_that_carries_a_foreign_group_room_marker() -> None:
+    class SpaceAt(SharedStateAdmin):
+        async def get_room_state_events(self, room_id: str) -> list[dict[str, Any]]:
+            events = await super().get_room_state_events(room_id)
+            if room_id == ROOM1:
+                for event in events:
+                    if event["type"] == "m.room.create":
+                        event["content"] = {**event["content"], "type": "m.space"}
+            return events
+
+    effectors = RecordingEffectors()
+    _seed_converged(effectors)
+    effectors.state_store[(ROOM1, GROUP_MARKER)] = dump_room_state(GroupRoomState(group_id="g1"))
+    effectors.senders[(ROOM1, GROUP_MARKER)] = MODERATOR
+    effectors.aliases["#g1:company.org"] = ROOM1
+    engine, _admin, effectors, _attention = _engine(SpaceAt(effectors), effectors)
+    writes = len(effectors.state_writes)
+
+    reply = await engine.adopt_room("g1", ROOM1, by=HUMAN_ADMIN)
+
+    assert "is a space, not a group room" in reply and "Nothing was changed" in reply
+    assert len(effectors.state_writes) == writes
+
+
+async def test_room_adopt_refuses_a_notice_board() -> None:
+    effectors = RecordingEffectors()
+    _seed_converged(effectors)
+    effectors.state_store[(ROOM1, GROUP_MARKER)] = {}
+    effectors.aliases["#g1:company.org"] = ROOM1
+    admin = SharedStateAdmin(effectors)
+
+    async def boards() -> list[str]:
+        return [ROOM1]  # in the bot's m.direct
+
+    rooms = RoomIdentityResolver(admin, effectors, bot_id=BOT, server_name="company.org", direct_rooms=boards)
+    engine = ReconcilerEngine(
+        OnbotConfig.model_validate(_BASE),
+        FakeAuthentik(),  # type: ignore[arg-type]
+        admin,  # type: ignore[arg-type]
+        effectors,
+        EventBus(),
+        rooms=rooms,
+    )
+    writes = len(effectors.state_writes)
+
+    reply = await engine.adopt_room("g1", ROOM1, by=HUMAN_ADMIN)
+
+    assert "is a user's notice board" in reply and "Nothing was changed" in reply
+    assert len(effectors.state_writes) == writes
+
+
+async def test_room_adopt_refuses_an_ex_lobby_as_a_group_room() -> None:
+    effectors = RecordingEffectors()
+    _seed_converged(effectors)
+    effectors.state_store[(ROOM1, GROUP_MARKER)] = {}
+    effectors.state_store[(ROOM1, JOIN_RULES)] = RESTRICTED
+    engine, _admin, effectors, _attention = _restarted(effectors)
+    writes = len(effectors.state_writes)
+
+    reply = await engine.adopt_room("g1", ROOM1, by=HUMAN_ADMIN)
+
+    assert "join rule of a visitor lobby" in reply and "!room adopt lobby" in reply
+    assert len(effectors.state_writes) == writes
+
+
+async def test_room_adopt_whose_marker_write_fails_after_the_lock_says_what_changed() -> None:
+    """Before W6R-05 the reply said "Nothing was changed" although the marker lock had been raised."""
+
+    class RefusingMarker(RecordingEffectors):
+        async def put_room_state(
+            self, room_id: str, event_type: str, content: dict[str, Any], state_key: str = ""
+        ) -> None:
+            if room_id == ROOM1 and event_type == GROUP_MARKER:
+                raise ApiError("PUT", "/state", 403, {"errcode": "M_FORBIDDEN"})
+            await super().put_room_state(room_id, event_type, content, state_key)
+
+        async def get_room_power_levels(self, room_id: str) -> dict[str, Any]:
+            return dict(self.levels.get(room_id, {"users": {}}))
+
+        async def set_room_power_levels(self, room_id: str, power_levels: dict[str, Any]) -> None:
+            self.levels[room_id] = power_levels
+
+    effectors = RefusingMarker()
+    effectors.levels = {}  # type: ignore[attr-defined]
+    _seed_converged(effectors)
+    effectors.state_store[(ROOM1, GROUP_MARKER)] = {}
+    engine, _admin, effectors, _attention = _restarted(effectors)
+
+    reply = await engine.adopt_room("g1", ROOM1, by=HUMAN_ADMIN)
+
+    assert "Writing the marker into" in reply and "Nothing was changed" not in reply
+    assert "raised the power level" in reply and "send the command again" in reply
+    assert effectors.levels[ROOM1]["events"][GROUP_MARKER] > 100  # type: ignore[attr-defined]
+
+
+# --- D25: `!room adopt lobby` hands a visitor lobby that lost its marker back -------------------------
+
+
+def _restarted_lobby(
+    effectors: RecordingEffectors,
+) -> tuple[ReconcilerEngine, Any, RecordingEffectors, list[Event]]:
+    """A fresh process over the g1 room and its lobby as they are now; the lobby alias points at it."""
+    effectors.state_store.setdefault((LOBBY, JOIN_RULES), RESTRICTED)
+    effectors.aliases["#g1:company.org"] = ROOM1
+    effectors.aliases["#g1-lobby:company.org"] = LOBBY
+    return _engine(SharedLobbyAdmin(effectors), effectors, config=_lobby_config())
+
+
+async def test_room_adopt_lobby_takes_back_a_lobby_whose_marker_was_removed_while_the_bot_was_stopped() -> (
+    None
+):
+    effectors = RecordingEffectors()
+    _seed_converged(effectors, LOBBY, suggested=True)
+    effectors.state_store[(LOBBY, LOBBY_MARKER)] = {}
+    engine, _admin, effectors, _attention = _restarted_lobby(effectors)
+    await engine.reconcile_once()
+    assert engine.last_pass_report.rooms  # skipped and reported, as for a group room
+    assert effectors.lobbies_created == []
+
+    reply = await engine.adopt_room("g1", LOBBY, by=HUMAN_ADMIN, kind=OnbotRoomType.visitor_lobby)
+
+    assert reply.startswith(f"Adopted {LOBBY} as the visitor lobby of group g1"), reply
+    assert effectors.state_store[(LOBBY, LOBBY_MARKER)]["group_id"] == "g1"
+    assert effectors.senders[(LOBBY, LOBBY_MARKER)] == BOT
+    await engine.reconcile_once()
+    assert engine.last_pass_report.rooms == []
+    assert LOBBY in engine.active_lobbies
+
+
+async def test_room_adopt_lobby_takes_back_a_lobby_whose_marker_somebody_else_rewrote() -> None:
+    effectors = RecordingEffectors()
+    _seed_converged(effectors, LOBBY, suggested=True)
+    effectors.state_store[(LOBBY, LOBBY_MARKER)] = dump_room_state(VisitorLobbyRoomState(group_id="g-gone"))
+    effectors.senders[(LOBBY, LOBBY_MARKER)] = MODERATOR
+    engine, _admin, effectors, _attention = _restarted_lobby(effectors)
+
+    reply = await engine.adopt_room(
+        "g1", "#g1-lobby:company.org", by=HUMAN_ADMIN, kind=OnbotRoomType.visitor_lobby
+    )
+
+    assert reply.startswith("Adopted"), reply
+    assert effectors.state_store[(LOBBY, LOBBY_MARKER)] == dump_room_state(
+        VisitorLobbyRoomState(group_id="g1")
+    )
+
+
+async def test_room_adopt_lobby_refusals() -> None:
+    effectors = RecordingEffectors()
+    _seed_converged(effectors, LOBBY, suggested=True)
+    engine, _admin, effectors, _attention = _restarted_lobby(effectors)
+    writes = len(effectors.state_writes)
+
+    managed = await engine.adopt_room("g1", LOBBY, by=HUMAN_ADMIN, kind=OnbotRoomType.visitor_lobby)
+    assert "Group g1 is already that visitor lobby" in managed
+
+    effectors.state_store[(LOBBY, LOBBY_MARKER)] = {}  # both lost their markers while it was stopped
+    effectors.state_store[(ROOM1, GROUP_MARKER)] = {}
+    engine = _restarted_lobby(effectors)[0]
+    group_room = await engine.adopt_room("g1", ROOM1, by=HUMAN_ADMIN, kind=OnbotRoomType.visitor_lobby)
+    assert "not a lost visitor lobby marker" in group_room and "Nothing was changed" in group_room
+    assert len(effectors.state_writes) == writes
+
+    off = _engine(SharedStateAdmin(effectors), effectors)[0]  # lobbies switched off
+    switched_off = await off.adopt_room("g1", LOBBY, by=HUMAN_ADMIN, kind=OnbotRoomType.visitor_lobby)
+    assert "has no visitor lobby" in switched_off and "Nothing was changed" in switched_off
+
+
+def test_only_a_lost_lobby_marker_qualifies_for_lobby_adoption() -> None:
+    from onbot.reconciler.engine import _adoption_refusal
+    from onbot.rooms.identity import RoomIdentity
+
+    group, lobby = OnbotRoomType.group_room, OnbotRoomType.visitor_lobby
+    removed = RoomIdentity(room_id=LOBBY, key=None, removed_markers=(lobby,), join_rule="restricted")
+    assert _adoption_refusal(removed, lobby) is None
+    lost_group = RoomIdentity(room_id=ROOM1, key=None, removed_markers=(group,))
+    assert "not a lost visitor lobby marker" in (_adoption_refusal(lost_group, lobby) or "")
+    space = RoomIdentity(room_id=SPACE, key=None, removed_markers=(lobby,), is_space=True)
+    assert "is a space" in (_adoption_refusal(space, lobby) or "")

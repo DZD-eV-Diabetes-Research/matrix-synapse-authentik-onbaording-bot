@@ -74,6 +74,7 @@ from onbot.admin.commands import (
     REJECT,
     ROOM,
     ROOM_ADOPT,
+    ROOM_ADOPT_LOBBY,
     STATUS,
     Command,
     help_text,
@@ -91,7 +92,7 @@ from onbot.guard import (
 )
 from onbot.logging import get_logger
 from onbot.reconciler.engine import ReconcilerEngine
-from onbot.reconciler.state import event_type_name
+from onbot.reconciler.state import OnbotRoomType, event_type_name
 
 log = get_logger(__name__)
 
@@ -505,20 +506,26 @@ class ControlRoomHandler:
         await self._reply(await self.engine.reopen_lobby(target))
 
     async def _room_command(self, command: Command, sender: str) -> None:
-        """``!room adopt <group> <room>``: re-adopt a group room that lost its marker (W4R-06, D20)."""
+        """``!room adopt [lobby] <group> <room>``: re-adopt a group room or visitor lobby that lost
+        its marker (W4R-06, D20, D25)."""
         parts = command.argument.split()
+        lobby = len(parts) == 4 and parts[1].lower() == ROOM_ADOPT_LOBBY
+        if lobby:
+            parts = [parts[0], *parts[2:]]
         if len(parts) != 3 or parts[0].lower() != ROOM_ADOPT:
             await self._reply(
-                f"Usage: !{ROOM} {ROOM_ADOPT} <group pk> <room id or alias>. It hands a group room the bot "
-                "created, whose onbot marker was removed or rewritten by somebody else, back to the bot "
-                "(see 'A room lost its onbot marker' in docs/troubleshooting.md)."
+                f"Usage: !{ROOM} {ROOM_ADOPT} [{ROOM_ADOPT_LOBBY}] <group pk> <room id or alias>. It hands "
+                "a group room the bot created (with `lobby`: a group's visitor lobby), whose onbot marker "
+                "was removed or rewritten by somebody else, back to the bot (see 'A room lost its onbot "
+                "marker' in docs/troubleshooting.md)."
             )
             return
         if self.engine is None:
             await self._reply("The reconciler is not available in this process.")
             return
-        log.info("admin %s asked to adopt %s as the room of group %s", sender, parts[2], parts[1])
-        await self._reply(await self.engine.adopt_room(parts[1], parts[2], by=sender))
+        kind = OnbotRoomType.visitor_lobby if lobby else OnbotRoomType.group_room
+        log.info("admin %s asked to adopt %s as the %s of group %s", sender, parts[2], kind.value, parts[1])
+        await self._reply(await self.engine.adopt_room(parts[1], parts[2], by=sender, kind=kind))
 
     async def _decide_batch(self, command: Command, sender: str) -> None:
         """``!confirm <id>`` / ``!reject <id>``: exactly one batch, never all of them (D13)."""

@@ -14,6 +14,7 @@ from onbot.admin.broadcast import BroadcastResult
 from onbot.admin.control_room import ControlRoomHandler
 from onbot.clients.matrix import RoomSync, SyncResult
 from onbot.config import AdminRoom, AuthentikServer, OnbotConfig, SynapseServer
+from onbot.reconciler.state import OnbotRoomType
 
 BOT = "@bot:matrix.test"
 ADMIN = "@admin:matrix.test"
@@ -796,10 +797,10 @@ async def test_pending_lists_the_held_announcements_with_who_may_release_them() 
 
 class _AdoptEngine:
     def __init__(self) -> None:
-        self.adopted: list[tuple[str, str, str]] = []
+        self.adopted: list[tuple[str, str, str, str]] = []
 
-    async def adopt_room(self, group_pk: str, target: str, *, by: str) -> str:
-        self.adopted.append((group_pk, target, by))
+    async def adopt_room(self, group_pk: str, target: str, *, by: str, kind: OnbotRoomType) -> str:
+        self.adopted.append((group_pk, target, by, kind.value))
         return f"Adopted {target} for {group_pk}"
 
 
@@ -809,8 +810,20 @@ async def test_room_adopt_asks_the_engine_with_the_admin_and_answers_with_its_re
 
     await _run(_handler(client, broadcast, engine=engine), _message("!room adopt g1 !old:matrix.test"))
 
-    assert engine.adopted == [("g1", "!old:matrix.test", ADMIN)]
+    assert engine.adopted == [("g1", "!old:matrix.test", ADMIN, "group_room")]
     assert client.sends == [(ROOM, "Adopted !old:matrix.test for g1")]
+
+
+async def test_room_adopt_lobby_asks_the_engine_for_the_visitor_lobby() -> None:
+    """D25: `!room adopt lobby <group> <room>` hands a lobby that lost its marker back."""
+    client, broadcast = _FakeClient(), _FakeBroadcast()
+    engine = _AdoptEngine()
+
+    await _run(
+        _handler(client, broadcast, engine=engine), _message("!room adopt Lobby g1 #g1-lobby:matrix.test")
+    )
+
+    assert engine.adopted == [("g1", "#g1-lobby:matrix.test", ADMIN, "visitor_lobby")]
 
 
 async def test_room_adopt_explains_the_usage_and_is_refused_off_the_allowlist() -> None:

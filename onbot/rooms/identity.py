@@ -76,6 +76,8 @@ log = get_logger(__name__)
 CREATE_EVENT_TYPE = "m.room.create"
 POWER_LEVELS_EVENT_TYPE = "m.room.power_levels"
 TOMBSTONE_EVENT_TYPE = "m.room.tombstone"
+JOIN_RULES_EVENT_TYPE = "m.room.join_rules"
+SPACE_ROOM_TYPE = "m.space"
 
 # Parallel state reads during a scan. The first scan of a process reads every room the bot created.
 SCAN_CONCURRENCY = 8
@@ -128,6 +130,10 @@ class RoomIdentity:
     """Managed marker types whose state event somebody other than the bot wrote."""
     marker_types: tuple[OnbotRoomType, ...] = ()
     """Managed marker types the room carries with content, whoever wrote them."""
+    is_space: bool = False
+    """The room was created as a space (``type: m.space`` in its create event)."""
+    join_rule: str | None = None
+    """The room's join rule (``restricted`` for a visitor lobby), as last read."""
 
     @property
     def trusted(self) -> bool:
@@ -165,12 +171,15 @@ def classify_room(
     room_version = str(create_content.get("room_version") or "1")
     predecessor = (create_content.get("predecessor") or {}).get("room_id")
     tombstone = (by_type.get(TOMBSTONE_EVENT_TYPE, {}).get("content") or {}).get("replacement_room")
+    join_rule = (by_type.get(JOIN_RULES_EVENT_TYPE, {}).get("content") or {}).get("join_rule")
     identity = RoomIdentity(
         room_id=room_id,
         key=None,
         room_version=room_version,
         tombstone=tombstone if isinstance(tombstone, str) else None,
         predecessor=predecessor if isinstance(predecessor, str) else None,
+        is_space=create_content.get("type") == SPACE_ROOM_TYPE,
+        join_rule=join_rule if isinstance(join_rule, str) else None,
     )
 
     markers: list[tuple[OnbotRoomType, str, dict[str, Any]]] = []
@@ -269,6 +278,14 @@ class RoomIndex:
         return (
             f"the state of {len(self.unreadable)} room(s) the bot created could not be read ({sample}{more})"
         )
+
+
+class MarkerWriteFailed(Exception):
+    """:meth:`RoomIdentityResolver.adopt` protected the marker types, but writing the marker failed."""
+
+    def __init__(self, cause: ApiError) -> None:
+        super().__init__(str(cause))
+        self.cause = cause
 
 
 @dataclass(slots=True)
@@ -379,6 +396,10 @@ class RoomIdentityResolver:
             )
         return index
 
+    async def is_notice_board(self, room_id: str) -> bool:
+        """Whether ``room_id`` is one of the notice boards in the bot's ``m.direct``."""
+        return self._direct_rooms is not None and room_id in await self._direct_rooms()
+
     async def identify(self, room_id: str) -> RoomIdentity | None:
         """The identity of one room (``None``: not the bot's), from the cache or one state read."""
         if room_id in self._cache:
@@ -409,7 +430,9 @@ class RoomIdentityResolver:
 
         Locks the marker types first, so nobody below the bot can change the marker in between, then
         writes the marker as the bot. From then on the room is trusted like any room the bot created
-        for ``key``. The caller has checked that the room may take the role.
+        for ``key``. The caller has checked that the room may take the role. A failed lock raises the
+        :class:`ApiError` (nothing changed); a failed marker write after it raises
+        :class:`MarkerWriteFailed` (the lock stays, W6R-05).
         """
         marker_type = event_type_name(self.server_name, key.kind)
         await lock_markers(
@@ -419,7 +442,10 @@ class RoomIdentityResolver:
             bot_id=self.bot_id,
             room_version=identity.room_version,
         )
-        await self.writer.put_room_state(identity.room_id, marker_type, dict(content))
+        try:
+            await self.writer.put_room_state(identity.room_id, marker_type, dict(content))
+        except ApiError as exc:
+            raise MarkerWriteFailed(exc) from exc
         identity.key, identity.marker_type, identity.marker_content = key, marker_type, dict(content)
         identity.problem = None
         identity.removed_markers = identity.foreign_markers = ()
