@@ -1,4 +1,4 @@
-"""Quarantined account lifecycle (AD-5, G9.*): the scariest code in the repo.
+"""Quarantined account lifecycle (ADR-0005, G9.*): the scariest code in the repo.
 
 When an Authentik account is disabled or deleted, the matching Matrix account must eventually be
 locked out and, optionally, erased. This is destructive and irreversible past a point, so the module
@@ -13,7 +13,7 @@ is built around these safety principles:
   tracked user who leaves the sync scope is *frozen* (no unlock, no further step) and reported (D9).
   The one exception (D14): a *known* user who is disabled is offboarded normally even outside the
   scope, because "disable, archive and strip the groups" is the usual way to remove somebody.
-* **Dry-run + audit by default (Q6, AD-5).** While ``dry_run`` is on, no effector is called at all,
+* **Dry-run + audit by default (Q6, ADR-0005).** While ``dry_run`` is on, no effector is called at all,
   not even the restorative unlock; the manager only records bookkeeping timestamps and logs an audit
   line describing what *would* happen.
 * **Pure decisions, isolated effects.** :func:`classify_accounts` and :func:`decide_account_action`
@@ -24,7 +24,7 @@ is built around these safety principles:
   irreversible step.
 
 **Two stages.** Stage one (``deactivate_after_n_sec``, despite the name) locks the user out: under
-MAS (AD-6) a MAS lock, which blocks new logins reversibly, plus finishing every session so an unlock
+MAS (ADR-0006) a MAS lock, which blocks new logins reversibly, plus finishing every session so an unlock
 cannot revive them (LIF-07, ADR-0005). Stage two (``delete_after_n_sec``, counted from the lock)
 erases the account (G9.4), GDPR-erasing it when ``gdpr_erase_on_delete`` says so (D7), and optionally
 its uploaded media (G9.5).
@@ -36,7 +36,7 @@ through the same cooldowns (LIF-02); a known user who is disabled is offboarded 
 (D14). A Matrix account that was never mapped (service accounts, MAS-only
 users) is never touched.
 
-There is no database (AD-1): the ledger and the known-users record are blobs in the bot's Matrix
+There is no database (ADR-0001): the ledger and the known-users record are blobs in the bot's Matrix
 *account data*.
 """
 
@@ -443,7 +443,7 @@ async def delete_all_user_media(admin: Any, mxid: str) -> MediaDeletion:
 
 @runtime_checkable
 class LifecycleEffectors(Protocol):
-    """The destructive Matrix/Synapse operations, isolated behind a seam (separate boundary, AD-5).
+    """The destructive Matrix/Synapse operations, isolated behind a seam (separate boundary, ADR-0005).
 
     Every method raises when it could not do its job (for example :class:`LifecycleTargetNotFound`);
     returning normally means the action happened. The returned text says exactly what was done; it
@@ -715,7 +715,7 @@ class LifecycleLedgerStore(Protocol):
 
 
 class MatrixAccountDataLedgerStore:
-    """Persists the ledger and the known users as account-data blobs on the bot user (AD-1)."""
+    """Persists the ledger and the known users as account-data blobs on the bot user (ADR-0001)."""
 
     def __init__(self, client: Any, bot_id: str, server_name: str) -> None:
         self.client = client

@@ -1,7 +1,7 @@
 """Dependency probe for ``onbot healthcheck --deep`` (BATTLE_PLAN §5 Phase 8).
 
-Probes the services the bot actually talks to — the Matrix CS API, the Synapse admin API, the
-Authentik API, and (when configured) the MAS admin API — using the *real* configured credentials, so
+Probes the services the bot actually talks to (the Matrix CS API, the Synapse admin API, the
+Authentik API, and when configured the MAS admin API) using the *real* configured credentials, so
 the check verifies connectivity **and** authorization, not just that a port is open. Each probe is a
 single lightweight authenticated request.
 
@@ -12,8 +12,8 @@ the plain ``onbot healthcheck``, which reads the service's heartbeat file (:mod:
 
 Exit code contract:
 
-* ``0`` — every required dependency answered successfully.
-* ``1`` — at least one probe failed (unreachable, auth rejected, or unexpected response).
+* ``0``: every required dependency answered successfully.
+* ``1``: at least one probe failed (unreachable, auth rejected, or unexpected response).
 
 The bot user id from ``/whoami`` is compared against ``synapse_server.bot_user_id``; a mismatch is a
 warning (the token authenticates as a different user than configured) but not a hard failure, since
@@ -25,8 +25,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 
-from onbot.app import build_matrix_token_provider
-from onbot.auth.token_provider import OAuth2ClientCredentialsTokenProvider
+from onbot.auth.token_provider import OAuth2ClientCredentialsTokenProvider, build_matrix_token_provider
 from onbot.clients.authentik import ApiClientAuthentik
 from onbot.clients.mas_admin import ApiClientMasAdmin, mxid_localpart
 from onbot.clients.matrix import ApiClientMatrix

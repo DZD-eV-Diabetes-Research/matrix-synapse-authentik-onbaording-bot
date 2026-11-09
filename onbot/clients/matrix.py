@@ -1,6 +1,6 @@
 """Matrix Client-Server API client (async) + the concrete :class:`MatrixEffectors`.
 
-Phase 4. Drives the CS API over the shared async :class:`BaseApiClient` (AD-7) — *not* a Matrix
+Phase 4. Drives the CS API over the shared async :class:`BaseApiClient` (ADR-0007) — *not* a Matrix
 library: the library decision (``matrix-nio`` vs. raw httpx vs. ``mautrix``) is an explicit Phase 6
 ADR (BATTLE_PLAN §5). Building on the base client keeps everything async, pooled and uniformly
 authenticated, and lets the reconciler's :class:`~onbot.reconciler.effectors.MatrixEffectors` seam
@@ -14,7 +14,7 @@ Two things live here:
 * :class:`CSApiEffectors` — adapts that client to the reconciler's ``MatrixEffectors`` protocol,
   replacing the dry-run effectors when the bot runs for real.
 
-The sync transport is **Simplified Sliding Sync** (MSC4186, AD-3). Its endpoint is still unstable;
+The sync transport is **Simplified Sliding Sync** (MSC4186, ADR-0003). Its endpoint is still unstable;
 Phase 6 adds CS-API version negotiation. To keep that churn out of the onboarding listener, the
 response is normalised to :class:`SyncResult` here, so the listener consumes membership events
 without knowing the wire shape.
@@ -612,7 +612,7 @@ class ApiClientMatrix(BaseApiClient):
 
         Long-polls server-side for up to ``timeout_ms``; pass the returned ``pos`` back to continue
         the stream. Subscribes to all rooms and asks for member state so the listener can react to
-        joins (AD-3). The wire shape is unstable (Phase 6 negotiation) — kept behind this method.
+        joins (ADR-0003). The wire shape is unstable (Phase 6 negotiation) — kept behind this method.
 
         Raises :class:`SyncNotSupportedError` if version negotiation ran and the server does not
         advertise Simplified Sliding Sync, so the listener can fall back to the signal-only path.

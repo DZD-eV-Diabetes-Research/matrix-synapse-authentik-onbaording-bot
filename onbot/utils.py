@@ -2,7 +2,7 @@
 
 Ported from legacy ``onbot/utils.py`` — we keep the nested-dict helpers (used pervasively to read
 dotted attribute paths out of Authentik objects) and drop the legacy ``synchronize_async_helper``
-sync/async bridge (AD-7: async everything) and the ``requests``-based media download (Phase 6,
+sync/async bridge (ADR-0007: async everything) and the ``requests``-based media download (Phase 6,
 authenticated media). The ``Any``-as-sentinel hack is replaced with an explicit ``_MISSING`` marker.
 """
 

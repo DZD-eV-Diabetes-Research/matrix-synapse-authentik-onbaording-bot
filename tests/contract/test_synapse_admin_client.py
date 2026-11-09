@@ -57,7 +57,7 @@ async def test_get_user_returns_the_account_or_none_when_unknown() -> None:
 
 
 @respx.mock
-async def test_list_rooms_follows_next_batch_and_excludes_spaces() -> None:
+async def test_list_rooms_follows_next_batch() -> None:
     respx.get("https://matrix.test/_synapse/admin/v1/rooms").mock(
         side_effect=[
             httpx.Response(
@@ -75,10 +75,10 @@ async def test_list_rooms_follows_next_batch_and_excludes_spaces() -> None:
     )
     client = _client()
     try:
-        rooms = await client.list_non_space_rooms()
+        rooms = await client.list_rooms()
     finally:
         await client.aclose()
-    assert [r["room_id"] for r in rooms] == ["!r1:x", "!r2:x"]
+    assert [r["room_id"] for r in rooms] == ["!r1:x", "!s1:x", "!r2:x"]
 
 
 ADMIN = "https://matrix.test/_synapse/admin"
@@ -292,40 +292,6 @@ async def test_room_is_blocked_returns_bool() -> None:
 
 
 @respx.mock
-async def test_make_room_admin_hits_correct_endpoint() -> None:
-    route = respx.post("https://matrix.test/_synapse/admin/v1/rooms/!r:x/make_room_admin").mock(
-        return_value=httpx.Response(200, json={})
-    )
-    client = _client()
-    try:
-        await client.make_room_admin("!r:x", "@u:x")
-    finally:
-        await client.aclose()
-    assert json.loads(route.calls[0].request.content) == {"user_id": "@u:x"}
-
-
-@respx.mock
-async def test_list_spaces_keeps_only_space_rooms() -> None:
-    respx.get("https://matrix.test/_synapse/admin/v1/rooms").mock(
-        return_value=httpx.Response(
-            200,
-            json={
-                "rooms": [
-                    {"room_id": "!r:x", "room_type": None},
-                    {"room_id": "!s:x", "room_type": "m.space"},
-                ]
-            },
-        )
-    )
-    client = _client()
-    try:
-        spaces = await client.list_spaces()
-    finally:
-        await client.aclose()
-    assert [r["room_id"] for r in spaces] == ["!s:x"]
-
-
-@respx.mock
 async def test_list_room_members_and_details() -> None:
     respx.get("https://matrix.test/_synapse/admin/v1/rooms/!r:x/members").mock(
         return_value=httpx.Response(200, json={"members": ["@a:x", "@b:x"]})
@@ -344,23 +310,6 @@ async def test_list_room_members_and_details() -> None:
 
 
 @respx.mock
-async def test_list_user_media_paginates() -> None:
-    route = respx.get("https://matrix.test/_synapse/admin/v1/users/@u:x/media").mock(
-        side_effect=[
-            httpx.Response(200, json={"media": [{"media_id": "m1"}], "next_token": "1"}),
-            httpx.Response(200, json={"media": [{"media_id": "m2"}]}),
-        ]
-    )
-    client = _client()
-    try:
-        media = await client.list_user_media("@u:x")
-    finally:
-        await client.aclose()
-    assert [m["media_id"] for m in media] == ["m1", "m2"]
-    assert route.calls[1].request.url.params.get("from") == "1"
-
-
-@respx.mock
 async def test_add_user_to_room_posts_user_id() -> None:
     route = respx.post("https://matrix.test/_synapse/admin/v1/join/!r:x").mock(
         return_value=httpx.Response(200, json={"room_id": "!r:x"})
@@ -374,20 +323,15 @@ async def test_add_user_to_room_posts_user_id() -> None:
 
 
 @respx.mock
-async def test_set_user_server_admin_state_and_room_block() -> None:
-    admin = respx.put("https://matrix.test/_synapse/admin/v1/users/@u:x/admin").mock(
-        return_value=httpx.Response(200, json={})
-    )
+async def test_room_set_blocked_sends_the_flag() -> None:
     block = respx.put("https://matrix.test/_synapse/admin/v1/rooms/!r:x/block").mock(
         return_value=httpx.Response(200, json={})
     )
     client = _client()
     try:
-        await client.set_user_server_admin_state("@u:x", admin=True)
         await client.room_set_blocked("!r:x", blocked=True)
     finally:
         await client.aclose()
-    assert json.loads(admin.calls[0].request.content) == {"admin": True}
     assert json.loads(block.calls[0].request.content) == {"block": True}
 
 

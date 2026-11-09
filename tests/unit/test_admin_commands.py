@@ -47,10 +47,8 @@ def test_surrounding_whitespace_is_ignored() -> None:
 def test_unknown_verbs_parse_so_the_caller_can_answer_them() -> None:
     command = parse_command("!frobnicate")
     assert command == Command(name="frobnicate", argument="")
-    assert not command.is_known
 
 
 @pytest.mark.parametrize("verb", ["announce", "help", "status", "pending", "confirm", "reject"])
-def test_the_supported_verbs_are_known_and_documented(verb: str) -> None:
-    assert parse_command(f"!{verb}").is_known
+def test_the_supported_verbs_are_documented(verb: str) -> None:
     assert f"!{verb}" in help_text()

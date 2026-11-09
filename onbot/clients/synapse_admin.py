@@ -6,8 +6,6 @@ fixing the BATTLE_PLAN §3 bugs:
 * full pagination on users/rooms/media (legacy read only page 1, ``limit=None`` was a no-op);
 * ``delete_room`` now actually sends its body (legacy built it then discarded it), and uses the
   asynchronous v2 API, so a long purge is neither cut off by the client timeout nor repeated;
-* ``set_room_admin`` / ``set_user_server_admin_state`` call the correct endpoints (legacy did a
-  stray GET / raised ``NotImplementedError``);
 * ``room_is_blocked`` returns a plain bool instead of string-matching.
 """
 
@@ -130,12 +128,6 @@ class ApiClientSynapseAdmin(BaseApiClient):
             item_key=lambda room: room["room_id"],
         )
 
-    async def list_non_space_rooms(self, *, search_term: str | None = None) -> list[dict[str, Any]]:
-        return [r for r in await self.list_rooms(search_term=search_term) if r.get("room_type") != "m.space"]
-
-    async def list_spaces(self) -> list[dict[str, Any]]:
-        return [r for r in await self.list_rooms() if r.get("room_type") == "m.space"]
-
     async def list_room_members(self, room_id: str) -> list[str]:
         # https://element-hq.github.io/synapse/latest/admin_api/rooms.html#room-members-api
         result = await self.get_json(f"v1/rooms/{path_segment(room_id)}/members")
@@ -155,17 +147,6 @@ class ApiClientSynapseAdmin(BaseApiClient):
         # https://element-hq.github.io/synapse/latest/admin_api/rooms.html#room-details-api
         details: dict[str, Any] = await self.get_json(f"v1/rooms/{path_segment(room_id)}")
         return details
-
-    async def list_user_media(self, user_id: str) -> list[dict[str, Any]]:
-        # https://element-hq.github.io/synapse/latest/admin_api/user_admin_api.html#list-media-uploaded-by-a-user
-        return await self.paginate_collect(
-            f"v1/users/{path_segment(user_id)}/media",
-            params={"limit": _DEFAULT_PAGE_SIZE},
-            extract_items=lambda page: page["media"],
-            next_params=_next_token_params("next_token"),
-            total=lambda page: page.get("total"),
-            item_key=lambda media: media["media_id"],
-        )
 
     # --- room membership / state --------------------------------------------
 
@@ -187,16 +168,6 @@ class ApiClientSynapseAdmin(BaseApiClient):
                 resend=lambda: self.post_json(path, json_body=body),
                 what=f"joining {user_id} to {room_id}",
             )
-
-    async def make_room_admin(self, room_id: str, user_id: str) -> None:
-        # https://element-hq.github.io/synapse/latest/admin_api/rooms.html#make-room-admin-api
-        await self.post_json(
-            f"v1/rooms/{path_segment(room_id)}/make_room_admin", json_body={"user_id": user_id}
-        )
-
-    async def set_user_server_admin_state(self, user_id: str, *, admin: bool) -> None:
-        # https://element-hq.github.io/synapse/latest/admin_api/user_admin_api.html#change-whether-a-user-is-a-server-administrator-or-not
-        await self.put_json(f"v1/users/{path_segment(user_id)}/admin", json_body={"admin": admin})
 
     async def override_ratelimit(
         self, user_id: str, *, messages_per_second: int = 0, burst_count: int = 0

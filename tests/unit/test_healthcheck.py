@@ -107,3 +107,13 @@ async def test_healthcheck_mas_admin_failure_is_fatal() -> None:
         return_value=httpx.Response(403, json={"error": "unauthorized_client"})
     )
     assert await run_healthcheck(_config(with_mas=True)) == 1
+
+
+def test_the_probe_does_not_import_the_composition_root() -> None:
+    """MNT-14: ``onbot.healthcheck`` used to import ``onbot.app`` for one helper, which pulled the
+    whole service (reconciler, onboarding, admin room) into a short-lived probe."""
+    import subprocess
+    import sys
+
+    code = "import sys, onbot.healthcheck; sys.exit('onbot.app' in sys.modules)"
+    assert subprocess.run([sys.executable, "-c", code], check=False).returncode == 0

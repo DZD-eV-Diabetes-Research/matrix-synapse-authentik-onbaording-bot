@@ -1,4 +1,4 @@
-"""Welcome / onboarding flow (AD-3, G4.*).
+"""Welcome / onboarding flow (ADR-0003, G4.*).
 
 When a user is provisioned/seen, the bot opens a 1:1 room with them and sends the configured welcome
 messages. The room is a **read-only notice board**, not a conversation: the bot force-joins the user
@@ -33,7 +33,7 @@ recipient and the result is rendered from markdown to HTML, both in :mod:`onbot.
 step touches the idempotency key, which comes from the configured text (or id): a message is
 identified by what the operator wrote, not by what one user saw.
 
-No database: all bookkeeping lives in Matrix account data + room state (AD-1).
+No database: all bookkeeping lives in Matrix account data + room state (ADR-0001).
 """
 
 from __future__ import annotations

@@ -1,6 +1,6 @@
 """Async HTTP base client shared by the Authentik, Synapse-admin, MAS-admin and Matrix CS clients.
 
-AD-7: one pooled ``httpx.AsyncClient`` with bearer-auth injection, retries on transient failures
+ADR-0007: one pooled ``httpx.AsyncClient`` with bearer-auth injection, retries on transient failures
 (tenacity), a generic pagination helper, and typed errors. This replaces the legacy per-call
 ``requests`` churn and the ``access_token.lstrip("Bearer ")`` token-corruption bug (BATTLE_PLAN §3):
 tokens are stored bare and the ``Bearer`` prefix is added exactly once here.
@@ -249,7 +249,7 @@ class BaseApiClient:
     ) -> None:
         self._base_url = base_url.rstrip("/") + "/"
         self._max_retry_attempts = max_retry_attempts
-        # Auth is resolved per request (AD-6): a static token or an OAuth2 provider that may
+        # Auth is resolved per request (ADR-0006): a static token or an OAuth2 provider that may
         # rotate the token underneath this long-lived client. A bare token is just the static case.
         if token_provider is None:
             if auth_token is None:
@@ -446,23 +446,6 @@ class BaseApiClient:
 
     async def delete_json(self, path: str, *, json_body: Any = None) -> Any:
         return await self.request_json("DELETE", path, json_body=json_body)
-
-    async def paginate(
-        self,
-        path: str,
-        *,
-        params: Mapping[str, Any] | None = None,
-        extract_items: Callable[[Any], list[Any]],
-        next_params: Callable[[Any, dict[str, Any]], dict[str, Any] | None],
-    ) -> AsyncIterator[Any]:
-        """Yield items across all pages (fixes the legacy 'no pagination → silent truncation' bug).
-
-        ``extract_items`` pulls the item list out of a page; ``next_params`` returns the query params
-        for the next page given the current page and current params, or ``None`` when exhausted.
-        """
-        async for page in self._pages(path, params=params, next_params=next_params):
-            for item in extract_items(page):
-                yield item
 
     async def _pages(
         self,

@@ -32,8 +32,6 @@ LOBBY_REOPEN = "reopen"
 ROOM = "room"
 ROOM_ADOPT = "adopt"
 
-KNOWN_COMMANDS = frozenset({ANNOUNCE, HELP, STATUS, PENDING, CONFIRM, REJECT, GUARD, LOBBY, ROOM})
-
 
 @dataclass(frozen=True, slots=True)
 class Command:
@@ -41,10 +39,6 @@ class Command:
 
     name: str
     argument: str = ""
-
-    @property
-    def is_known(self) -> bool:
-        return self.name in KNOWN_COMMANDS
 
 
 def parse_command(body: str) -> Command | None:
