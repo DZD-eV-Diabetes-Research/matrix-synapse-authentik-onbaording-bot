@@ -28,12 +28,12 @@ import respx
 from onbot import app as app_module
 from onbot import runtime
 from onbot.admin.control_room import ControlRoomHandler
+from onbot.admin.provisioner import AdminRoomProvisioner
 from onbot.app import build_app, run_broadcast, run_reconcile_once, run_service
 from onbot.clients.base import ApiError, BaseApiClient
 from onbot.clients.matrix import ApiClientMatrix
 from onbot.config import AdminRoom, AuthentikServer, MasAdmin, OnbotConfig, SynapseServer
 from onbot.events import Signal
-from onbot.rooms.admin import AdminRoomProvisioner
 from onbot.runtime import (
     Shutdown,
     StartupStep,

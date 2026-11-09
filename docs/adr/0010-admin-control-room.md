@@ -1,4 +1,4 @@
-# ADR-0010 — The admin control room is a bounded exception to "reconcile, don't react"
+# ADR-0010: The admin control room is a bounded exception to "reconcile, don't react"
 
 - **Status:** Accepted (2026-07-10), amended 2026-07-10 (see [Amendment](#amendment-2026-07-10--an-authentik-group-may-also-grant-bot-admin))
 - **Context:** Operators need a way to address every user at once (GOALS G4.6). The bot already owns
@@ -29,13 +29,13 @@ are enough:
   state. Nothing said in the room changes what the reconciler computes on its next tick; delete the
   room and the bot converges identically. The reconciler remains the sole authority on desired state,
   and Authentik remains the sole source of it.
-- **It converges nothing, so it must not be idempotent — it must be *exactly-once-ish*.** This is the
+- **It converges nothing, so it must not be idempotent; it must be *exactly-once-ish*.** This is the
   inversion that makes the room dangerous, and it is why the guards look nothing like the rest of the
   codebase. Everywhere else the bot re-runs a flow freely because re-running converges to the same
   state. `!announce` is not convergent: running it twice sends two messages to every employee. The
   sync stream *does* replay (the pump starts at `pos=None`; the server returns up to 50 timeline
-  events per room), so the handler carries its own replay protection — an origin-timestamp floor at
-  process start, plus a bounded ring buffer of handled event ids persisted in account data — and
+  events per room), so the handler carries its own replay protection (an origin-timestamp floor at
+  process start, plus a bounded ring buffer of handled event ids persisted in account data) and
   commits an event as handled *before* executing it. At-most-once, chosen deliberately over
   at-least-once: a lost announcement is an inconvenience, a repeated one is a company-wide page.
 - **The blast radius is bounded by an allowlist, not by Matrix.** Authorisation is the sender's MXID
@@ -43,7 +43,7 @@ are enough:
   power level in the room: a power level says what someone may do inside a room, and `!announce`
   reaches far outside it. The room's power levels (`events_default: 0`, everything governing at 100)
   are a fence that keeps members from reshaping the room; the allowlist is the gate. Defence in
-  depth — someone who gets into the room still cannot command the bot.
+  depth: someone who gets into the room still cannot command the bot.
 - **Bare messages are inert.** Only the `!` prefix addresses the bot, so the room is also a place
   admins can talk, without a sentence about an outage announcing itself to the company.
 
@@ -52,18 +52,18 @@ are enough:
 - The bot now reads message content, which ADR-0009 permits only outside encrypted rooms. The control
   room is therefore created unencrypted, and `m.federate: false` keeps a room that commands the bot
   from being reachable off-server. Should the room ever need to be encrypted, this ADR and ADR-0009
-  must be revisited together — the bot would be unable to hear it.
+  must be revisited together: the bot would be unable to hear it.
 - `OnboardingListener` no longer owns the sync loop. Two features consume the same stream, so it
   moved to `onbot/sync.py` as `SyncPump`, which fans each slice out to registered handlers.
-- The allowlist is maintained by hand. Deriving it from Authentik superusers is tempting — the
-  reconciler already computes `is_superuser` — but a capability reaching every user on the server
+- The allowlist is maintained by hand. Deriving it from Authentik superusers is tempting (the
+  reconciler already computes `is_superuser`), but a capability reaching every user on the server
   should not silently widen because somebody was granted an unrelated role upstream. Noted as a
   possible future addition in the config field's description; deliberately not built.
-- A future debug room (BATTLE_PLAN, deferred) can reuse `onbot/rooms/admin.py` for its shape. It must
+- A future debug room (BATTLE_PLAN, deferred) can reuse `onbot/admin/provisioner.py` for its shape. It must
   not reuse the command router: an admin room that reads and one that only writes have very different
   risk profiles.
 
-## Amendment (2026-07-10) — an Authentik group may also grant bot admin
+## Amendment (2026-07-10): an Authentik group may also grant bot admin
 
 The consequence above ("the allowlist is maintained by hand") is now half-wrong, and the decision it
 rests on is refined rather than reversed. `admin_room.authentik_group_pks_granting_bot_admin` names
@@ -71,12 +71,12 @@ Authentik groups whose members may command the bot; the effective allowlist is t
 and `admin_user_ids`, resolved in `onbot/admin/admins.py`.
 
 **Why a group is admissible where superusers were not.** The original objection was to a capability
-that *widens silently* — somebody is granted an unrelated upstream role and inherits the ability to
+that *widens silently*: somebody is granted an unrelated upstream role and inherits the ability to
 page every employee. A superuser fallback has exactly that shape: the role means "administers the
 identity provider", and its members change for reasons that have nothing to do with this bot. A
 dedicated group does not. Somebody must create it, name it in `config.yml`, and put people in it;
 every one of those steps is a deliberate act about *this* capability, and the group's only meaning is
-the one the config field states. It is still an explicit opt-in list — it has simply moved to where
+the one the config field states. It is still an explicit opt-in list; it has simply moved to where
 the organisation already administers access, and stopped requiring a deploy to change.
 
 **Deriving admins from Authentik superusers remains rejected**, and there is no config option for it.
@@ -87,7 +87,7 @@ Three properties follow, and the tests pin all three:
 
 - **The set is dynamic.** `ControlRoomHandler` re-resolves it per command, cached for one TTL (the
   reconcile interval). Freezing it at construction would make revocation *look* possible while
-  requiring a restart — worse than the hand-maintained list, which was at least honest.
+  requiring a restart, worse than the hand-maintained list, which was at least honest.
 - **Failure never opens the gate, and never slams it.** A refresh that cannot reach Authentik keeps
   the previous set. Before any successful fetch the set is `admin_user_ids` alone: the explicit list
   needs no Authentik call, so it is the floor an operator still has when the identity provider is

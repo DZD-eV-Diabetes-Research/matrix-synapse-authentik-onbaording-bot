@@ -53,6 +53,7 @@ from onbot.admin.admins import AdminResolver
 from onbot.admin.broadcast import BroadcastService
 from onbot.admin.control_room import ControlRoomHandler
 from onbot.admin.notifier import AdminRoomNotifier
+from onbot.admin.provisioner import AdminRoomProvisioner
 from onbot.auth.token_provider import (
     OAuth2ClientCredentialsTokenProvider,
     build_matrix_token_provider,
@@ -60,7 +61,7 @@ from onbot.auth.token_provider import (
 from onbot.avatar import ensure_bot_avatar
 from onbot.clients.authentik import ApiClientAuthentik
 from onbot.clients.mas_admin import ApiClientMasAdmin
-from onbot.clients.matrix import ApiClientMatrix, CSApiEffectors
+from onbot.clients.matrix import ApiClientMatrix
 from onbot.clients.synapse_admin import ApiClientSynapseAdmin
 from onbot.config import OnbotConfig
 from onbot.discovery import DiscoveryPoller
@@ -88,9 +89,8 @@ from onbot.logging import get_logger
 from onbot.media import MediaUploader
 from onbot.onboarding.listener import OnboardingListener
 from onbot.onboarding.welcome import WelcomeService
-from onbot.reconciler.effectors import DryRunEffectors, DryRunSynapseAdmin, MatrixEffectors
+from onbot.reconciler.effectors import CSApiEffectors, DryRunEffectors, DryRunSynapseAdmin, MatrixEffectors
 from onbot.reconciler.engine import ReconcilerEngine
-from onbot.rooms.admin import AdminRoomProvisioner
 from onbot.rooms.identity import RoomIdentityResolver
 from onbot.runtime import (
     SHUTDOWN_GRACE_SEC,
@@ -319,16 +319,13 @@ class App:
 
 
 def _notice_boards(matrix: ApiClientMatrix, bot_id: str) -> Callable[[], Awaitable[set[str]]]:
-    """The bot's notice boards (its ``m.direct``), which a room identity scan need not read."""
+    """The bot's notice boards (its ``m.direct``), which a room identity scan need not read.
+
+    A read error propagates: the scan then reads every bot room, and ``!room adopt`` refuses (W7R-02).
+    """
 
     async def read() -> set[str]:
-        try:
-            direct = await matrix.get_account_data(bot_id, "m.direct")
-        except Exception:
-            log.warning(
-                "could not read the bot's m.direct; the room scan reads every bot room", exc_info=True
-            )
-            return set()
+        direct = await matrix.get_account_data(bot_id, "m.direct")
         return {
             room
             for rooms in direct.values()

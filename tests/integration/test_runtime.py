@@ -36,12 +36,12 @@ from testcontainers.compose import DockerCompose
 from onbot.admin.admins import AdminResolver
 from onbot.admin.broadcast import BroadcastService
 from onbot.admin.control_room import ControlRoomHandler
+from onbot.admin.provisioner import AdminRoomProvisioner
 from onbot.clients.authentik import ApiClientAuthentik
 from onbot.clients.base import ApiError
 from onbot.clients.matrix import ApiClientMatrix
 from onbot.clients.synapse_admin import ApiClientSynapseAdmin
 from onbot.config import OnbotConfig
-from onbot.rooms.admin import AdminRoomProvisioner
 from onbot.rooms.identity import RoomIdentityResolver
 from onbot.sync import SyncPump
 from tests.integration import stack_api as S

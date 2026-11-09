@@ -19,16 +19,16 @@ import pytest
 from onbot.admin.admins import AdminResolver
 from onbot.admin.broadcast import BroadcastService
 from onbot.admin.control_room import ControlRoomHandler
+from onbot.admin.provisioner import AdminRoomProvisioner
 from onbot.app import run_reconcile_once
 from onbot.clients.authentik import ApiClientAuthentik
 from onbot.clients.matrix import ApiClientMatrix
 from onbot.clients.synapse_admin import ApiClientSynapseAdmin
 from onbot.config import OnbotConfig
 from onbot.events import Event, Signal
-from onbot.reconciler.state import OnbotRoomType, event_type_name
-from onbot.rooms.admin import AdminRoomProvisioner
 from onbot.rooms.identity import RoomIdentityResolver
 from onbot.rooms.provision import markers_locked
+from onbot.state import OnbotRoomType, event_type_name
 from tests.integration import stack_api as S
 
 pytestmark = pytest.mark.integration

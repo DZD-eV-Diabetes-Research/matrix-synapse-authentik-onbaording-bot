@@ -28,7 +28,7 @@ from onbot.clients.matrix import ApiClientMatrix
 from onbot.clients.synapse_admin import ApiClientSynapseAdmin
 from onbot.config import OnbotConfig
 from onbot.reconciler.rooms import compute_room_attributes
-from onbot.reconciler.state import OnbotRoomType, event_type_name
+from onbot.state import OnbotRoomType, event_type_name
 from tests.integration import stack_api as S
 
 pytestmark = pytest.mark.integration

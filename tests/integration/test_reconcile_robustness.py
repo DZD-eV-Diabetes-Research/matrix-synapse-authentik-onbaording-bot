@@ -22,7 +22,7 @@ from onbot.clients.matrix import ApiClientMatrix
 from onbot.clients.synapse_admin import ApiClientSynapseAdmin
 from onbot.lifecycle.accounts import lifecycle_account_data_type
 from onbot.reconciler.rooms import compute_room_attributes
-from onbot.reconciler.state import granted_power_levels_type
+from onbot.state import granted_power_levels_type
 from tests.integration import stack_api as S
 
 pytestmark = pytest.mark.integration
@@ -67,7 +67,7 @@ async def test_a_banned_group_member_does_not_stop_rooms_or_offboarding(
     life = config.sync_authentik_users_with_matrix_rooms.deactivate_disabled_authentik_users_in_matrix
     life.enabled = True
     life.dry_run = True  # marking is all this test needs from the lifecycle
-    life.deactivate_after_n_sec = 3600
+    life.lock_after_n_sec = 3600
     await run_reconcile_once(config)
 
     room_a = await matrix_client.resolve_room_alias(

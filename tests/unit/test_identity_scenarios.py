@@ -22,7 +22,7 @@ from onbot.lifecycle.accounts import (
     MatrixAccountDataLedgerStore,
 )
 from onbot.reconciler.engine import ReconcilerEngine
-from onbot.reconciler.state import OnbotRoomType
+from onbot.state import OnbotRoomType
 from tests.unit.room_fakes import IdentityScanMixin
 from tests.unit.test_engine import RecordingEffectors
 from tests.unit.test_lifecycle_scenarios import Clock, FakeMas, FakeMediaAdmin, Store
@@ -98,13 +98,13 @@ class Synapse(IdentityScanMixin):
     async def list_users(self) -> list[dict[str, Any]]:
         return [{"name": m} for m in self.mxids]
 
-    async def list_non_space_rooms(self) -> list[dict[str, Any]]:
+    async def fake_rooms(self) -> list[dict[str, Any]]:
         return [
             {"room_id": ROOM1, "canonical_alias": f"#g1:{SERVER}", "name": "Team"},
             {"room_id": ROOM2, "canonical_alias": f"#g2:{SERVER}", "name": "Other"},
         ]
 
-    async def list_spaces(self) -> list[dict[str, Any]]:
+    async def fake_spaces(self) -> list[dict[str, Any]]:
         return []
 
     async def list_room_members(self, room_id: str) -> list[str]:
@@ -173,7 +173,7 @@ class World:
         lc = sync.deactivate_disabled_authentik_users_in_matrix
         lc.enabled = True
         lc.dry_run = False
-        lc.deactivate_after_n_sec = 0
+        lc.lock_after_n_sec = 0
         self.directory = Directory()
         self.synapse = Synapse()
         self.effectors = Effectors(self.synapse)

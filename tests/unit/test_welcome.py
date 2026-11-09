@@ -22,9 +22,9 @@ from onbot.config import (
 )
 from onbot.onboarding.notice_board import notice_board_power_levels
 from onbot.onboarding.welcome import NoticeBoardUnreadable, WelcomeService, welcome_txn_id
-from onbot.reconciler.state import OnbotRoomType
 from onbot.rooms.identity import RoomIdentity, RoomKey
 from onbot.safe_fetch import FetchedImage
+from onbot.state import OnbotRoomType
 
 BOT = "@bot:matrix.test"
 ALICE = "@alice:matrix.test"

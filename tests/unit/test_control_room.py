@@ -14,7 +14,7 @@ from onbot.admin.broadcast import BroadcastResult
 from onbot.admin.control_room import ControlRoomHandler
 from onbot.clients.matrix import RoomSync, SyncResult
 from onbot.config import AdminRoom, AuthentikServer, OnbotConfig, SynapseServer
-from onbot.reconciler.state import OnbotRoomType
+from onbot.state import OnbotRoomType
 
 BOT = "@bot:matrix.test"
 ADMIN = "@admin:matrix.test"
@@ -212,7 +212,7 @@ def _dynamic_handler(
 
 async def test_a_group_member_gains_and_then_loses_command_access_without_a_restart() -> None:
     # The whole point of sourcing admins from Authentik: revocation that does not need a deploy. The
-    # handler is never reconstructed here — the same object must refuse what it just allowed.
+    # handler is never reconstructed here; the same object must refuse what it just allowed.
     client, broadcast, clock = _FakeClient(), _FakeBroadcast(), [1000.0]
     authentik = _FakeAuthentik("alice")
     handler = _dynamic_handler(client, broadcast, authentik, clock)
@@ -363,7 +363,8 @@ async def test_status_reports_version_reconcile_time_and_room_count() -> None:
     body = client.sends[0][1]
     assert "onbot " in body
     assert "2023-11-14" in body  # the reconcile timestamp, rendered in UTC
-    assert "managed rooms: 2" in body
+    assert "; managed rooms: 2" in body
+    assert chr(0x2014) not in body and chr(0x2013) not in body  # no em or en dash (S14)
 
 
 async def test_status_without_mapped_users_says_the_room_count_is_unknown() -> None:
@@ -842,3 +843,57 @@ async def test_room_adopt_explains_the_usage_and_is_refused_off_the_allowlist() 
     assert engine.adopted == []
     assert sum("Usage: !room adopt" in body for _, body in client.sends) == 3
     assert "not on the bot's admin allowlist" in client.sends[-1][1]
+
+
+# --- W7R-04: an unreadable guard state does not swallow a held announcement ------------------------
+
+
+class _UnreachableGuard:
+    def reserve_ids(self, ids: object) -> None:
+        pass
+
+    async def open_batches(self) -> list[object]:
+        from onbot.clients.base import ApiError
+
+        raise ApiError("GET", "https://matrix.test/account_data", 502, "bad gateway")
+
+
+async def test_a_repeated_announce_is_held_when_the_guard_state_cannot_be_fetched() -> None:
+    client, broadcast, clock = _FakeClient(), _FakeBroadcast(), _Clock()
+    handler = _handler(client, broadcast, clock=clock)
+    handler.guard = _UnreachableGuard()  # type: ignore[assignment]
+    first, repeat, status = (
+        _message("!announce hello", event_id=e).rooms[0].timeline[0] for e in ("$a", "$b", "$c")
+    )
+    status["content"]["body"] = "!status"
+    await _run(handler, SyncResult(pos="s1", rooms=[RoomSync(room_id=ROOM, timeline=[first])]))
+    sent = len(client.sends)
+
+    await _run(handler, SyncResult(pos="s2", rooms=[RoomSync(room_id=ROOM, timeline=[repeat, status])]))
+
+    assert broadcast.calls == ["hello"]
+    held, answer = (body for _, body in client.sends[sent:])
+    _held_id(held)  # the repeat got its answer
+    assert "the guard state cannot be fetched right now" in answer  # and !status after it, too
+
+    await _run(handler, _message("!pending", event_id="$d"))
+    assert "The guard state cannot be fetched right now" in client.sends[-1][1]
+    assert "!confirm" in client.sends[-1][1]  # the held announcement is still listed
+
+
+async def test_a_failing_command_does_not_drop_the_rest_of_the_slice() -> None:
+    client, broadcast = _FakeClient(), _FakeBroadcast()
+    handler = _handler(client, broadcast)
+
+    async def broken() -> dict[str, str]:
+        raise RuntimeError("connection reset")
+
+    broadcast.target_rooms = broken  # type: ignore[method-assign]
+    status, announce = (
+        _message(body, event_id=e).rooms[0].timeline[0]
+        for body, e in (("!status", "$a"), ("!announce hello", "$b"))
+    )
+    await _run(handler, SyncResult(pos="s1", rooms=[RoomSync(room_id=ROOM, timeline=[status, announce])]))
+
+    assert "The last command failed" in client.sends[0][1] and "connection reset" in client.sends[0][1]
+    assert broadcast.calls == ["hello"]

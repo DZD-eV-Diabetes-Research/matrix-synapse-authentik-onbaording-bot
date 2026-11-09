@@ -1,7 +1,7 @@
 """Unit tests for the pure join-rule computation (ADR-0012)."""
 
 from onbot.reconciler.join_rules import desired_join_rules, join_rules_change
-from onbot.reconciler.state import OnbotRoomType
+from onbot.state import OnbotRoomType
 
 
 def test_lobby_is_restricted_to_the_space() -> None:

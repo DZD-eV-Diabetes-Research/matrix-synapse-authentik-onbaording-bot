@@ -1,7 +1,7 @@
 """Versioned onbot room-state schemas.
 
 The bot has no database; it persists its own bookkeeping as **custom Matrix room-state events**
-(AD-1 keeps this idea). Event types are namespaced with the reversed server name, e.g.
+(ADR-0001 keeps this idea). Event types are namespaced with the reversed server name, e.g.
 ``org.company.onbot.group_room``. Legacy stored these as bare, unversioned dicts; we give them
 explicit, validated pydantic schemas carrying a ``schema_version`` so future migrations are possible.
 

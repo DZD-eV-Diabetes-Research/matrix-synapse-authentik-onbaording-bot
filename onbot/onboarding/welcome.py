@@ -54,15 +54,15 @@ from onbot.formatting import placeholders_in, render_markdown, substitute
 from onbot.logging import get_logger
 from onbot.media import MediaUploader
 from onbot.onboarding.notice_board import notice_board_power_levels, power_level_drift
-from onbot.reconciler.state import (
+from onbot.rooms.identity import RoomIdentityResolver, RoomKey
+from onbot.rooms.provision import ManagedRoomSpec, create_managed_room
+from onbot.state import (
     DirectRoomState,
     OnbotRoomType,
     dump_room_state,
     event_type_name,
     parse_room_state,
 )
-from onbot.rooms.identity import RoomIdentityResolver, RoomKey
-from onbot.rooms.provision import ManagedRoomSpec, create_managed_room
 
 log = get_logger(__name__)
 

@@ -1,4 +1,4 @@
-"""Highest-rigor tests for the quarantined account lifecycle (AD-5, G9.*).
+"""Highest-rigor tests for the quarantined account lifecycle (ADR-0005, G9.*).
 
 Covers the pure state machine and account classification exhaustively, the known-users record, the
 manager's dry-run/live behaviour and full multi-tick progression, the account-data ledger store, and
@@ -111,8 +111,8 @@ class TestDecideAccountAction:
             marked_ts=None,
             disabled_ts=None,
             now=100.0,
-            deactivate_after_n_sec=DAY,
-            delete_after_n_sec=DAY,
+            lock_after_n_sec=DAY,
+            remove_after_n_sec=DAY,
         )
         assert action is LifecycleAction.none
 
@@ -128,8 +128,8 @@ class TestDecideAccountAction:
             marked_ts=marked_ts,
             disabled_ts=disabled_ts,
             now=100.0,
-            deactivate_after_n_sec=DAY,
-            delete_after_n_sec=DAY,
+            lock_after_n_sec=DAY,
+            remove_after_n_sec=DAY,
         )
         assert action is LifecycleAction.reenable
 
@@ -139,8 +139,8 @@ class TestDecideAccountAction:
             marked_ts=None,
             disabled_ts=None,
             now=100.0,
-            deactivate_after_n_sec=DAY,
-            delete_after_n_sec=DAY,
+            lock_after_n_sec=DAY,
+            remove_after_n_sec=DAY,
         )
         assert action is LifecycleAction.mark
 
@@ -150,8 +150,8 @@ class TestDecideAccountAction:
             marked_ts=100.0,
             disabled_ts=None,
             now=100.0 + DAY - 1,
-            deactivate_after_n_sec=DAY,
-            delete_after_n_sec=DAY,
+            lock_after_n_sec=DAY,
+            remove_after_n_sec=DAY,
         )
         assert action is LifecycleAction.wait
 
@@ -161,8 +161,8 @@ class TestDecideAccountAction:
             marked_ts=100.0,
             disabled_ts=None,
             now=100.0 + DAY,  # exactly at the boundary (>=)
-            deactivate_after_n_sec=DAY,
-            delete_after_n_sec=DAY,
+            lock_after_n_sec=DAY,
+            remove_after_n_sec=DAY,
         )
         assert action is LifecycleAction.logout
 
@@ -172,8 +172,8 @@ class TestDecideAccountAction:
             marked_ts=1.0,
             disabled_ts=100.0,
             now=100.0 + DAY - 1,
-            deactivate_after_n_sec=DAY,
-            delete_after_n_sec=DAY,
+            lock_after_n_sec=DAY,
+            remove_after_n_sec=DAY,
         )
         assert action is LifecycleAction.wait
 
@@ -183,8 +183,8 @@ class TestDecideAccountAction:
             marked_ts=1.0,
             disabled_ts=100.0,
             now=100.0 + DAY,
-            deactivate_after_n_sec=DAY,
-            delete_after_n_sec=DAY,
+            lock_after_n_sec=DAY,
+            remove_after_n_sec=DAY,
         )
         assert action is LifecycleAction.erase
 
@@ -194,8 +194,8 @@ class TestDecideAccountAction:
             marked_ts=1.0,
             disabled_ts=100.0,
             now=100.0 + DAY * 1000,
-            deactivate_after_n_sec=DAY,
-            delete_after_n_sec=None,  # erasure disabled
+            lock_after_n_sec=DAY,
+            remove_after_n_sec=None,  # erasure disabled
         )
         assert action is LifecycleAction.wait
 
@@ -209,8 +209,8 @@ class TestDecideAccountAction:
             marked_ts=marked_ts,
             disabled_ts=disabled_ts,
             now=100.0 + DAY * 1000,
-            deactivate_after_n_sec=DAY,
-            delete_after_n_sec=DAY,
+            lock_after_n_sec=DAY,
+            remove_after_n_sec=DAY,
         )
         assert action is LifecycleAction.freeze
 
@@ -221,8 +221,8 @@ class TestDecideAccountAction:
             marked_ts=None,
             disabled_ts=None,
             now=100.0,
-            deactivate_after_n_sec=DAY,
-            delete_after_n_sec=DAY,
+            lock_after_n_sec=DAY,
+            remove_after_n_sec=DAY,
         )
         assert action is LifecycleAction.none
 
@@ -232,8 +232,8 @@ class TestDecideAccountAction:
             marked_ts=None,
             disabled_ts=100.0,
             now=100.0 + DAY,
-            deactivate_after_n_sec=DAY,
-            delete_after_n_sec=DAY,
+            lock_after_n_sec=DAY,
+            remove_after_n_sec=DAY,
         )
         assert action is LifecycleAction.erase
 
@@ -573,7 +573,7 @@ class TestManagerDryRun:
             )
         )
         eff, clock = RecordingEffectors(), Clock(1000.0 + DAY)
-        mgr = _manager(store, eff, clock, delete_after_n_sec=DAY)
+        mgr = _manager(store, eff, clock, remove_after_n_sec=DAY)
         outcomes = await mgr.reconcile_accounts(ORPHAN_X)
         assert [o.action for o in outcomes] == [LifecycleAction.erase]
         assert eff.calls == 0
@@ -631,7 +631,7 @@ class TestManagerLive:
             eff,
             clock,
             dry_run=False,
-            delete_after_n_sec=DAY,
+            remove_after_n_sec=DAY,
             include_user_media_on_delete=media,
             gdpr_erase_on_delete=gdpr,
         )
@@ -680,7 +680,7 @@ class TestManagerLive:
     async def test_full_progression_across_ticks(self) -> None:
         """mark, wait, logout, wait, erase, driven by a moving clock (live mode)."""
         store, eff, clock = InMemoryLedgerStore(), RecordingEffectors(), Clock(0.0)
-        mgr = _manager(store, eff, clock, dry_run=False, deactivate_after_n_sec=DAY, delete_after_n_sec=DAY)
+        mgr = _manager(store, eff, clock, dry_run=False, lock_after_n_sec=DAY, remove_after_n_sec=DAY)
 
         # t=0: first sight: mark
         assert [o.action for o in await mgr.reconcile_accounts(ORPHAN_X)] == [LifecycleAction.mark]
@@ -1004,7 +1004,7 @@ class TestMediaDeletion:
             )
         )
         mgr = AccountLifecycleManager(
-            _config(dry_run=False, delete_after_n_sec=0, include_user_media_on_delete=True),
+            _config(dry_run=False, remove_after_n_sec=0, include_user_media_on_delete=True),
             store,
             _synapse_effectors(admin),
             clock=Clock(DAY),
@@ -1026,7 +1026,7 @@ class TestMediaDeletion:
             )
         )
         mgr = AccountLifecycleManager(
-            _config(dry_run=False, delete_after_n_sec=0, include_user_media_on_delete=True),
+            _config(dry_run=False, remove_after_n_sec=0, include_user_media_on_delete=True),
             store,
             _synapse_effectors(admin),
             clock=Clock(DAY),
@@ -1214,7 +1214,7 @@ class TestMasEffectors:
         )
         mas = FakeMasAdmin(caps=MAS_0_14)
         mgr = AccountLifecycleManager(
-            _config(dry_run=False, delete_after_n_sec=0), store, MasLifecycleEffectors(mas), clock=Clock(DAY)
+            _config(dry_run=False, remove_after_n_sec=0), store, MasLifecycleEffectors(mas), clock=Clock(DAY)
         )
         outcomes = await mgr.reconcile_accounts(ORPHAN_X)
         assert [(o.action, o.failed) for o in outcomes] == [(LifecycleAction.erase, True)]
@@ -1251,7 +1251,7 @@ class TestPreflight:
 def _refusing_manager(
     store: InMemoryLedgerStore, admin: FakeAdmin, matrix: FakeMatrix, **lifecycle: Any
 ) -> AccountLifecycleManager:
-    settings: dict[str, Any] = {"dry_run": False, "delete_after_n_sec": 0} | lifecycle
+    settings: dict[str, Any] = {"dry_run": False, "remove_after_n_sec": 0} | lifecycle
     return AccountLifecycleManager(
         _config(**settings),
         store,
@@ -1445,7 +1445,7 @@ class TestLedgerRobustness:
             known=_known(x="pk-x"),
         )
         eff, clock = RecordingEffectors(), Clock(locked_at + LEDGER_RETENTION_SEC - 1)
-        mgr = _manager(store, eff, clock, dry_run=False, delete_after_n_sec=None)
+        mgr = _manager(store, eff, clock, dry_run=False, remove_after_n_sec=None)
         deleted = snapshot(matrix={X})  # the Authentik user is gone, the Matrix account is not
         assert await mgr.reconcile_accounts(deleted) == []
         assert X in store.ledger.entries
@@ -1474,7 +1474,7 @@ class TestLedgerRobustness:
             RecordingEffectors(),
             Clock(LEDGER_RETENTION_SEC * 5),
             dry_run=False,
-            delete_after_n_sec=delete_after,
+            remove_after_n_sec=delete_after,
         )
         await mgr.reconcile_accounts(snap)
         assert X in store.ledger.entries

@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from onbot.reconciler.effectors import DryRunEffectors, MatrixEffectors
-from onbot.reconciler.state import GroupRoomState, SpaceRoomState
 from onbot.rooms.provision import ManagedRoomSpec
+from onbot.state import GroupRoomState, SpaceRoomState
 
 
 def test_dry_run_effectors_satisfy_protocol() -> None:

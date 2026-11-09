@@ -19,8 +19,8 @@ Isolate the lifecycle domain in its own module (`lifecycle/`) with:
 
 - A **pure state machine** (`decide_account_action`), the only place the cooldown logic lives,
   exhaustively unit-tested. Stages: detect → `mark` (start clock, no destructive action) →
-  `logout` after `deactivate_after_n_sec` (revoke all sessions, G9.2) → `erase` after a further
-  `delete_after_n_sec` (deactivate account + optional media, G9.4/G9.5). A user who reappears in
+  `logout` after `lock_after_n_sec` (revoke all sessions, G9.2) → `erase` after a further
+  `remove_after_n_sec` (deactivate account + optional media, G9.4/G9.5). A user who reappears in
   Authentik before erasure is `reenable`d (G9.6).
 - **Two-stage semantics.** Stage one logs the user out rather than hard-deactivating: under the MAS
   topology (ADR-0006) re-login is gated by MAS→Authentik, so a session revoke is the effective
@@ -99,10 +99,12 @@ decision rules are now:
 
 ## Implementation update (review S4, 2026-11-06): what each stage really does
 
-- **Names versus effects (LIF-15).** `deactivate_after_n_sec` triggers the *lock* (MAS lock, or
-  Synapse device deletion without MAS), not a deactivation. `delete_after_n_sec` triggers the
-  *erase* (MAS or Synapse deactivation) and counts from the lock, not from the mark. The names stay
-  for compatibility; the config descriptions say what happens.
+- **Names versus effects (LIF-15).** `lock_after_n_sec` triggers the *lock* (MAS lock, or
+  Synapse device deletion without MAS), not a deactivation. `remove_after_n_sec` triggers the
+  *erase* (MAS or Synapse deactivation) and counts from the lock, not from the mark. Until review
+  decision D27 (2026-11-09) they were called `deactivate_after_n_sec` and `delete_after_n_sec`; the
+  rename is a hard break, and a config with an old name stops at startup with a message naming the
+  new one.
 - **A lock ends sessions (LIF-07).** The MAS admin API documents that a lock "DOES NOT invalidate
   any existing session", and live check 1 confirmed that an unlock revives the pre-lock token. The
   MAS effector now finishes every compat, OAuth 2.0 and browser session right after the lock (best

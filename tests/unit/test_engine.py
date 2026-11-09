@@ -13,8 +13,8 @@ from onbot.lifecycle.accounts import DirectorySnapshot, DirectoryUser
 from onbot.media import SourceImage, UploadedImage
 from onbot.reconciler.effectors import DryRunEffectors
 from onbot.reconciler.engine import ReconcilerEngine
-from onbot.reconciler.state import OnbotRoomType
 from onbot.rooms.provision import ManagedRoomSpec, marker_event_types
+from onbot.state import OnbotRoomType
 from tests.unit.room_fakes import IdentityScanMixin, room_state
 
 BOT = "@bot:company.org"
@@ -69,10 +69,10 @@ class FakeAdmin(IdentityScanMixin):
     async def list_users(self) -> list[dict[str, Any]]:
         return [{"name": f"@{u}:company.org"} for u in ("alice", "bob", "carol")]
 
-    async def list_non_space_rooms(self) -> list[dict[str, Any]]:
+    async def fake_rooms(self) -> list[dict[str, Any]]:
         return [{"room_id": "!room1:company.org", "canonical_alias": "#g1:company.org", "name": "Team"}]
 
-    async def list_spaces(self) -> list[dict[str, Any]]:
+    async def fake_spaces(self) -> list[dict[str, Any]]:
         return [{"room_id": "!space:company.org", "canonical_alias": "#OnBotSpace:company.org"}]
 
     async def list_room_members(self, room_id: str) -> list[str]:
@@ -390,9 +390,9 @@ _ORPHAN = "!orphan:company.org"
 class OrphanAdmin(FakeAdmin):
     """Serves an extra room besides the live g1 room, for the obsolete-room paths."""
 
-    async def list_non_space_rooms(self) -> list[dict[str, Any]]:
+    async def fake_rooms(self) -> list[dict[str, Any]]:
         return [
-            *await super().list_non_space_rooms(),
+            *await super().fake_rooms(),
             {"room_id": _ORPHAN, "canonical_alias": "#gone:company.org", "name": "Gone"},
         ]
 
@@ -475,9 +475,9 @@ async def test_a_squatted_alias_skips_the_group_and_creates_nothing() -> None:
             return "!squat:company.org" if alias == "#g2:company.org" else None
 
     class SquatAdmin(FakeAdmin):
-        async def list_non_space_rooms(self) -> list[dict[str, Any]]:
+        async def fake_rooms(self) -> list[dict[str, Any]]:
             return [
-                *await super().list_non_space_rooms(),
+                *await super().fake_rooms(),
                 {
                     "room_id": "!squat:company.org",
                     "canonical_alias": "#g2:company.org",
@@ -861,8 +861,8 @@ class LobbyAdmin(FakeAdmin):
         self._with_lobby_room = with_lobby_room
         self.room_markers = {**FakeAdmin.room_markers, _LOBBY_ID: (OnbotRoomType.visitor_lobby, "g1")}
 
-    async def list_non_space_rooms(self) -> list[dict[str, Any]]:
-        rooms = await super().list_non_space_rooms()
+    async def fake_rooms(self) -> list[dict[str, Any]]:
+        rooms = await super().fake_rooms()
         if self._with_lobby_room:
             rooms = [
                 *rooms,
@@ -999,9 +999,9 @@ _ORPHAN_LOBBY = "!orphanlobby:company.org"
 
 
 class OrphanLobbyAdmin(FakeAdmin):
-    async def list_non_space_rooms(self) -> list[dict[str, Any]]:
+    async def fake_rooms(self) -> list[dict[str, Any]]:
         return [
-            *await super().list_non_space_rooms(),
+            *await super().fake_rooms(),
             {"room_id": _ORPHAN_LOBBY, "canonical_alias": "#gone-lobby:company.org", "name": "Gone (Lobby)"},
         ]
 
@@ -1127,9 +1127,9 @@ def _teardown_config() -> OnbotConfig:
 class ForeignRoomAdmin(FakeAdmin):
     """The admin room list is server-wide, so it also returns a user's own private room."""
 
-    async def list_non_space_rooms(self) -> list[dict[str, Any]]:
+    async def fake_rooms(self) -> list[dict[str, Any]]:
         return [
-            *await super().list_non_space_rooms(),
+            *await super().fake_rooms(),
             {
                 "room_id": "!private:company.org",
                 "canonical_alias": None,

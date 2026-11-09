@@ -2,37 +2,37 @@
 
 This page explains, in plain language, what Onbot can do for you. It is written for two readers:
 
-- **Users** — people who log into the chat and end up in rooms. You do not configure anything; this
+- **Users**: people who log into the chat and end up in rooms. You do not configure anything; this
   tells you what the bot is doing on your behalf and why a room appeared.
-- **Admins** — people who run Onbot. Each feature says what it is for, when to turn it on, and where
+- **Admins**: people who run Onbot. Each feature says what it is for, when to turn it on, and where
   to find the exact settings.
 
 Every feature is optional unless noted, and each links to its settings in the
 [configuration reference](CONFIG_REFERENCE.md). For the practical "what do I type into an Authentik
 group to get a room with this topic, icon and lobby" version, see
 [Configuring Authentik groups](authentik-groups.md). Onbot's guiding idea: **Authentik is the source of
-truth, and Onbot mirrors it into Matrix** — groups become rooms, membership becomes room membership,
+truth, and Onbot mirrors it into Matrix**: groups become rooms, membership becomes room membership,
 roles become power levels. You manage people in Authentik; the chat follows.
 
 ## Feature overview
 
-- **[Visitor lobby](#visitor-lobby)** — an open "front door" room beside a private group room, that
+- **[Visitor lobby](#visitor-lobby)**: an open "front door" room beside a private group room, that
   anyone in the wider space can find and join.
-- **[Group rooms](#group-rooms)** — each Authentik group becomes a Matrix room.
-- **[Membership sync](#membership-sync)** — group membership becomes room membership, added and
+- **[Group rooms](#group-rooms)**: each Authentik group becomes a Matrix room.
+- **[Membership sync](#membership-sync)**: group membership becomes room membership, added and
   removed automatically.
-- **[Power levels from Authentik](#power-levels-from-authentik)** — roles and group attributes decide
+- **[Power levels from Authentik](#power-levels-from-authentik)**: roles and group attributes decide
   who is a room moderator or admin.
-- **[Parent space](#parent-space)** — all the group rooms are gathered under one space in the user's
+- **[Parent space](#parent-space)**: all the group rooms are gathered under one space in the user's
   room list.
-- **[Welcome messages](#welcome-messages)** — a new user gets a friendly 1:1 notice board with
+- **[Welcome messages](#welcome-messages)**: a new user gets a friendly 1:1 notice board with
   getting-started messages.
-- **[Room names, topics and icons](#room-names-topics-and-icons)** — kept in step with Authentik.
-- **[Offboarding](#offboarding)** — when someone is disabled in Authentik, their chat access is wound
+- **[Room names, topics and icons](#room-names-topics-and-icons)**: kept in step with Authentik.
+- **[Offboarding](#offboarding)**: when someone is disabled in Authentik, their chat access is wound
   down safely, with a dry-run/audit default.
-- **[Admin control room and broadcasts](#admin-control-room-and-broadcasts)** — announce a message to
+- **[Admin control room and broadcasts](#admin-control-room-and-broadcasts)**: announce a message to
   everyone, from a room or the command line.
-- **[Cleaning up orphaned rooms](#cleaning-up-orphaned-rooms)** — when a group disappears, its room is
+- **[Cleaning up orphaned rooms](#cleaning-up-orphaned-rooms)**: when a group disappears, its room is
   closed.
 - **[Guard against mass removals](#guard-against-mass-removals)**: when a pass would remove far more
   than usual, the removals wait for an administrator's confirmation.
@@ -42,18 +42,18 @@ roles become power levels. You manage people in Authentik; the chat follows.
 ## Visitor lobby
 
 **In one sentence:** the private group room stays exactly as private as it is today, and beside it
-Onbot can keep a second, open room — its *lobby* — that anyone in the wider space can find and walk
+Onbot can keep a second, open room, its *lobby*, that anyone in the wider space can find and walk
 into, and that nobody is ever kicked out of.
 
 ### The problem it solves
 
 A group room like *Düsseldorf* is private: only members of the Authentik *Düsseldorf* group are in
-it, and outsiders cannot see it. That is usually what you want — but sometimes you want the group to
+it, and outsiders cannot see it. That is usually what you want, but sometimes you want the group to
 be **reachable**. Someone from another team should be able to find *Düsseldorf*, drop in, and ask a
 question, without being made a full member of the group.
 
 You cannot simply "open up" the existing room. A Matrix room remembers its history, and by default a
-newcomer who joins can scroll all the way back to the day it was created — through months of
+newcomer who joins can scroll all the way back to the day it was created, through months of
 conversations nobody held with visitors in mind. Opening a live room exposes its past.
 
 A lobby avoids that completely, because **it is a brand-new, empty room**. There is no history to
@@ -62,12 +62,12 @@ leak. The group's real working room is left untouched; the lobby sits next to it
 ### What a user sees
 
 - **If you are in the group** (e.g. you are in Authentik's *Düsseldorf* group): you are in **both**
-  rooms — *Düsseldorf* (your private working room) and *Düsseldorf (Lobby)* (where visitors may turn
+  rooms: *Düsseldorf* (your private working room) and *Düsseldorf (Lobby)* (where visitors may turn
   up). Onbot puts you in the lobby automatically so a visitor who walks in finds somebody there.
 - **If you are not in the group** but you are in the shared space: in the space's room list you see
-  **the lobby, and only the lobby** — not the private group room. You can join the lobby yourself,
+  **the lobby, and only the lobby**, not the private group room. You can join the lobby yourself,
   with one click, no invitation needed. You **cannot** see or join the private group room.
-- **Nobody is ever kicked from a lobby.** Once you are in, you stay — even if you were never in the
+- **Nobody is ever kicked from a lobby.** Once you are in, you stay, even if you were never in the
   group, and even if you later leave the group. (The one exception is if your whole account is
   deactivated, which removes you from every room.)
 
@@ -81,24 +81,26 @@ arrangement, so a visitor is never confused about where they have landed, and it
 - **It is off by default.** A lobby is a deliberate choice, not something that appears on upgrade.
 - **Turn it on per deployment or per group.** Set `visitor_lobby_enabled` on the default room
   settings to give every group a lobby, or let a group owner opt in from Authentik by setting the
-  group attribute named in `matrix_room_visitor_lobby_from_authentik_attribute` — no config redeploy
+  group attribute named in `matrix_room_visitor_lobby_from_authentik_attribute`; no config redeploy
   needed.
 - **A lobby needs the parent space.** The lobby is joinable precisely by members of the space, so the
   space feature (`create_matrix_rooms_in_a_matrix_space`) must be on. Onbot refuses to start if you
   enable a lobby without a space, rather than quietly creating a room nobody can join.
-- **Lobbies are unencrypted by default**, on purpose — and this is *weaker* than the group room's
+- **Lobbies are unencrypted by default**, on purpose, and this is *weaker* than the group room's
   default. A room open to the whole space gains little from encryption, while encryption would greet
   every visitor with a screen of "unable to decrypt". You can turn it on
-  (`visitor_lobby_end2end_encryption_enabled`), but only before the lobby is first created —
+  (`visitor_lobby_end2end_encryption_enabled`), but only before the lobby is first created:
   encryption can never be switched off again.
 - **The group's members are seeded into the lobby** by default, so it is not a ghost town. If you run
   a large group and would rather staff an empty lobby deliberately, turn
   `visitor_lobby_inject_group_members` off.
 - **Switching a lobby off closes it.** When a group no longer wants a lobby (the group attribute set
   to `false`, or `visitor_lobby_enabled` turned off), Onbot sets the lobby's join rule to invite-only
-  and takes it out of the space. Nobody is kicked; the people in it can stay and talk. Closing counts
-  as a removal for the [guard](#guard-against-mass-removals), so many lobbies closing at once wait for
-  a confirmation. Turn the lobby on again and Onbot reopens it and puts it back into the space.
+  and takes it out of the space. Nobody is kicked; the people in it can stay and talk. The power
+  levels Onbot granted there (the global room admins) are withdrawn. Closing and each withdrawal count
+  as removals for the [guard](#guard-against-mass-removals), so many lobbies closing at once wait for
+  a confirmation. Turn the lobby on again and Onbot reopens it, puts it back into the space and seats
+  the global room admins again.
 - **A lobby somebody closed by hand stays closed.** If a room admin of the lobby changes its join rule
   to invite-only (or knock, or private), Onbot leaves it that way, logs a warning and reports it once
   in the admin control room. To hand the lobby back to Onbot, an admin types
@@ -109,7 +111,7 @@ arrangement, so a visitor is never confused about where they have landed, and it
 - **One honest limitation.** The lobby hides the group room's *contents*, not the bare fact that it
   exists. A determined person can learn that a room with that ID exists (though they still cannot
   join it, read it, or see its members). If even the existence must be secret, the answer is a second
-  space, not a lobby — see [troubleshooting.md](troubleshooting.md#the-lobby-room-id-leak-and-why-a-lobby-is-a-second-room-not-a-visitable-first-one).
+  space, not a lobby; see [troubleshooting.md](troubleshooting.md#the-lobby-room-id-leak-and-why-a-lobby-is-a-second-room-not-a-visitable-first-one).
 
 **Settings:** all the `visitor_lobby_*` fields under
 [`matrix_room_default_settings`](CONFIG_REFERENCE.md), plus
@@ -125,7 +127,7 @@ once and then kept as the place that group meets.
 
 ### The problem it solves
 
-You already decide who belongs together in Authentik — a team, a site, a project is a group there.
+You already decide who belongs together in Authentik: a team, a site, a project is a group there.
 Building the same set of rooms by hand in Matrix, and keeping it current as groups are created and
 retired, is exactly the busywork Onbot removes: you manage the group, and the room follows. Because
 not every group is meant to be a chat room, Onbot only turns a group into a room when the group opts
@@ -134,7 +136,7 @@ in, so your identity directory and your chat rooms need not be the same list.
 ### What a user sees
 
 - A room appears in your list for each mirrored group you belong to. You did not create it or ask to
-  join — it is simply there because you are in the group.
+  join; it is simply there because you are in the group.
 - The room is named after the group, and it is **private**: only members of that Authentik group are
   in it, and outsiders cannot see or join it. Inside, you chat normally.
 - You never manage the room's membership yourself; that is what the group is for.
@@ -150,7 +152,7 @@ in, so your identity directory and your chat rooms need not be the same list.
   (`only_for_children_of_groups_with_uid`). `authentik_group_id_ignore_list` excludes named groups
   outright, before every other filter. Group pks can be written with or without hyphens, in any case.
 - **A room is created once and then reused.** By default its permanent Matrix alias is derived from
-  the group's stable primary key, not its name (`matrix_alias_from_authentik_attribute`) — precisely
+  the group's stable primary key, not its name (`matrix_alias_from_authentik_attribute`), precisely
   so that renaming the group in Authentik does not strand the room, because a Matrix alias can never
   be changed after the room exists.
 - **Onbot recognises its rooms by who created them, not by their alias.** A room belongs to a group
@@ -178,7 +180,8 @@ in, so your identity directory and your chat rooms need not be the same list.
   on a difference, that each of its rooms is still linked into the space (and, for a lobby, suggested
   there), still carries its marker as Onbot wrote it, and that the marker is still protected. A room
   whose creation was cut off halfway, a room from before the space existed, or the rooms of a space
-  that was recreated are linked in again. A marker somebody at Onbot's own level removed or rewrote,
+  that was recreated are linked in again (the links Onbot wrote to the old space are removed, a
+  link a human added to another space stays). A marker somebody at Onbot's own level removed or rewrote,
   or whose protection they lowered, is restored from what Onbot last wrote there itself, and
   reported once; Onbot never takes over what such a marker claims. Each repair stands on its own: one
   the server refuses is reported, and the others still run. This works while Onbot runs: a marker
@@ -219,7 +222,7 @@ Authentik side of this, every attribute you can set on a group and what it does,
 
 ## Membership sync
 
-**In one sentence:** whoever is in the Authentik group is put into its room, and — by default —
+**In one sentence:** whoever is in the Authentik group is put into its room, and (by default)
 whoever leaves the group is removed from its room, so room membership stays a faithful mirror of the
 group.
 
@@ -232,7 +235,7 @@ follows.
 
 ### What a user sees
 
-- Join a group in Authentik and you appear in its room, with no invitation to accept — you are simply
+- Join a group in Authentik and you appear in its room, with no invitation to accept: you are simply
   a member.
 - Leave the group and you are removed from the room (unless your admin has turned removals off).
 - You are never asked to manage any of this.
@@ -252,7 +255,7 @@ follows.
   using `authentik_username_mapping_attribute`. On a homeserver fronted by the Matrix Authentication
   Service this *must* agree with the localpart the login flow produces, or the computed Matrix IDs
   name accounts that do not exist and nobody is ever added. If users never land in their rooms, this
-  is almost always why — see the first row of [troubleshooting.md](troubleshooting.md) and the
+  is almost always why; see the first row of [troubleshooting.md](troubleshooting.md) and the
   [configuration guide](configuration.md#the-mxid-localpart-contract). With `mas_admin` configured,
   Onbot asks MAS which account each user owns, and it records every user's account the first time it
   sees it: a user renamed in Authentik keeps their account, rooms and power levels, and two
@@ -288,8 +291,8 @@ follows.
 
 ## Power levels from Authentik
 
-**In one sentence:** an Authentik group can carry an attribute that sets its members' power level —
-their moderator or admin rank — in the room, and Authentik superusers become room admins
+**In one sentence:** an Authentik group can carry an attribute that sets its members' power level
+(their moderator or admin rank) in the room, and Authentik superusers become room admins
 automatically.
 
 ### The problem it solves
@@ -374,7 +377,7 @@ joinable at all.
 - **Its name, topic and icon are configurable.** The icon is downloaded at startup, looked at again
   about once a day, and re-applied only when its source URL or the picture behind it changed, so it
   also updates an already existing space.
-- **Space membership is add-only** — Onbot never kicks anyone out of the space, only out of
+- **Space membership is add-only**: Onbot never kicks anyone out of the space, only out of
   individual rooms.
 - Onboarding notice-board rooms can optionally be gathered here too
   (`place_onboarding_rooms_in_space`, off by default).
@@ -391,14 +394,14 @@ with them and posts your configured getting-started messages, once.
 
 ### The problem it solves
 
-A new person lands in a chat system they may never have used and needs orienting — who this bot is,
+A new person lands in a chat system they may never have used and needs orienting: who this bot is,
 where the documentation lives, the warning to save their encryption security key. One small,
 read-only room delivers that reliably to everyone, without an admin having to greet each arrival by
 hand.
 
 ### What a user sees
 
-- A room (by default named *Announcements*) that the bot opened and put you straight into — there is
+- A room (by default named *Announcements*) that the bot opened and put you straight into; there is
   no invitation to accept.
 - The bot posts a few welcome messages. You **cannot** reply: it is a read-only notice board, not a
   conversation. It is unencrypted, so your first impression is the messages themselves rather than a
@@ -526,7 +529,7 @@ default, kept in step as the group changes.
 
 ### The problem it solves
 
-Rooms should be recognisable and self-describing — and that description should not rot when a group is
+Rooms should be recognisable and self-describing, and that description should not rot when a group is
 renamed or its purpose rewritten. Taking the name, topic and icon from Authentik keeps them accurate
 without anyone editing rooms by hand.
 
@@ -565,7 +568,7 @@ without anyone editing rooms by hand.
 ## Offboarding
 
 **In one sentence:** when someone is disabled or deleted in Authentik, Onbot winds their Matrix
-access down safely — but by default it only records an audit trail of what it *would* do and touches
+access down safely, but by default it only records an audit trail of what it *would* do and touches
 nothing.
 
 ### The problem it solves
@@ -573,7 +576,7 @@ nothing.
 A person who has left should not keep chat access, yet revoking it is irreversible and easy to get
 wrong, and an accidental upstream disable must not erase a real account. Onbot automates the wind-down
 while defaulting to safe: it watches, it records, and it does nothing destructive until you
-deliberately opt in — and even then it waits out generous grace periods that a mistake can be undone
+deliberately opt in, and even then it waits out generous grace periods that a mistake can be undone
 within.
 
 ### What a user sees
@@ -595,11 +598,11 @@ within.
   is `true`, Onbot only writes what it *would* do to the `onbot.lifecycle.audit` log and changes
   nothing. Set it to `false` to make offboarding act. Run with the default first and read the audit
   log before you flip it.
-- **Grace periods absorb accidents.** `deactivate_after_n_sec` (24 hours by default) is how long a
-  user stays disabled before being locked out. Despite its name nothing is deactivated then: under
-  MAS the user is locked and their sessions are ended, which a re-enable undoes. `delete_after_n_sec`
+- **Grace periods absorb accidents.** `lock_after_n_sec` (24 hours by default) is how long a
+  user stays disabled before being locked out: under MAS the user is locked and their sessions are
+  ended, which a re-enable undoes. `remove_after_n_sec`
   (365 days by default, or `null` to never erase) counts from the lock, so the account is erased
-  (deactivated for good) `deactivate_after_n_sec + delete_after_n_sec` after the user was first seen
+  (deactivated for good) `lock_after_n_sec + remove_after_n_sec` after the user was first seen
   disabled or deleted.
 - **What erasure removes is up to you.** `gdpr_erase_on_delete` (off by default) also GDPR-erases the
   account: the display name and avatar go, and the user's messages are hidden from people who join a
@@ -659,7 +662,7 @@ within.
   without overwriting anything. If the ledger is missing while MAS has locked users (the bot's
   account data was lost), Onbot logs one `ALERT`: it no longer knows which locks it set and will not
   lift them on a re-enable. A locked user who was deleted from Authentik while erasure is off
-  (`delete_after_n_sec: null`) is forgotten after 90 days; the account stays locked.
+  (`remove_after_n_sec: null`) is forgotten after 90 days; the account stays locked.
 - **A failing user does not hold up the rest.** If a step fails for one user (for example MAS does
   not know the username), the audit log says `FAILED`, the state does not advance, and Onbot retries
   that user with a growing delay (up to 6 hours) while everybody else is processed normally. Erasure
@@ -678,8 +681,8 @@ is in [ADR-0005](adr/0005-quarantine-lifecycle.md).
 
 ## Admin control room and broadcasts
 
-**In one sentence:** an optional Matrix room where allowlisted administrators type commands — most
-importantly `!announce`, which sends a message into every user's notice board — with the same
+**In one sentence:** an optional Matrix room where allowlisted administrators type commands (most
+importantly `!announce`, which sends a message into every user's notice board), with the same
 capability available as an `onbot broadcast` command on the command line.
 
 ### The problem it solves
@@ -713,7 +716,7 @@ to a shell.
   can only be let through by raising the guard's limits. Keep the allowlist short, since everyone on
   it can message every user on the server.
 - **Authorisation is an allowlist, never a room power level.** The allowlist is the union of
-  `admin_user_ids` (full Matrix IDs listed by hand — the break-glass floor that keeps working even
+  `admin_user_ids` (full Matrix IDs listed by hand: the break-glass floor that keeps working even
   when Authentik is unreachable) and the members of the Authentik groups in
   `authentik_group_pks_granting_bot_admin`. Group membership is checked on each user Authentik
   returns, not only through Authentik's group filter, so a server that ignored the filter cannot
@@ -785,7 +788,7 @@ command-reading room at all is in [ADR-0010](adr/0010-admin-control-room.md).
 
 ## Cleaning up orphaned rooms
 
-**In one sentence:** when a group that had a room disappears — deleted, or no longer opted into chat —
+**In one sentence:** when a group that had a room disappears (deleted, or no longer opted into chat),
 Onbot can close that room down, so no stale, unmanaged room is left behind.
 
 ### The problem it solves
@@ -808,8 +811,8 @@ that nobody owns.
 - **"Disappears" is broader than "deleted."** A group that loses the attribute, name prefix or parent
   that opted it into chat counts as gone too, and its room is closed the same way.
 - **Only Onbot's own rooms are ever touched.** A room is recognised as obsolete by an internal stamp
-  Onbot writes recording which group it belongs to; rooms without that stamp — unrelated rooms, the
-  onboarding notice boards — are structurally out of reach.
+  Onbot writes recording which group it belongs to; rooms without that stamp (unrelated rooms, the
+  onboarding notice boards) are structurally out of reach.
 - **Deletion is a further, irreversible step.** `delete_disabled_rooms` (off by default) also deletes
   the room through the Synapse admin API instead of only blocking it, destroying its history for good.
   Leave it off unless you are sure. From three deletions in one pass on, they wait for an

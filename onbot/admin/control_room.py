@@ -1,4 +1,4 @@
-"""Route commands sent in the control room (ADR-0010) — a :class:`~onbot.sync.SyncPump` handler.
+"""Route commands sent in the control room (ADR-0010), a :class:`~onbot.sync.SyncPump` handler.
 
 This is the one place the bot *reacts to what someone said*. Everything guarding that is here.
 
@@ -42,7 +42,7 @@ this process only; a restart drops them, which is the at-most-once direction. Th
 a new id never repeats an open one of either kind, and ``!pending`` lists both.
 
 **Authorisation is the allowlist, never the power level.** The room's power levels let any member
-speak — that is the point of a discussion room. If someone gets themselves into it, their power
+speak; that is the point of a discussion room. If someone gets themselves into it, their power
 level must not be the only thing standing between them and a message to every employee.
 
 The allowlist is resolved per command through :class:`~onbot.admin.admins.AdminResolver` and is
@@ -58,7 +58,7 @@ import time
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 from onbot import __version__
 from onbot.admin.admins import AdminResolver
@@ -91,8 +91,7 @@ from onbot.guard import (
     normalize_batch_id,
 )
 from onbot.logging import get_logger
-from onbot.reconciler.engine import ReconcilerEngine
-from onbot.reconciler.state import OnbotRoomType, event_type_name
+from onbot.state import OnbotRoomType, event_type_name
 
 log = get_logger(__name__)
 
@@ -116,6 +115,7 @@ BROADCAST_RUNNING = (
     "another; this one was not sent."
 )
 REPLY_FAILED = "The result of the last command could not be posted here ({error}); it is in the bot's log."
+COMMAND_FAILED = "The last command failed ({error}); details are in the bot's log."
 
 # W5R-04: what an announcement cut off by a shutdown, or one sent during it, says.
 INTERRUPTED = (
@@ -168,6 +168,25 @@ def edited_body(content: dict[str, Any]) -> str:
     return body.removeprefix(EDIT_FALLBACK_PREFIX)
 
 
+class ReconcilerControl(Protocol):
+    """What the control room needs of the reconciler (MNT-14): its status and three commands.
+
+    :class:`~onbot.reconciler.engine.ReconcilerEngine` is the implementation; naming only these keeps
+    the admin package from depending on the engine.
+    """
+
+    @property
+    def last_reconcile_at(self) -> float | None: ...
+
+    def trigger(self) -> None: ...
+
+    async def reopen_lobby(self, target: str) -> str: ...
+
+    async def adopt_room(
+        self, group_pk: str, target: str, *, by: str, kind: OnbotRoomType = OnbotRoomType.group_room
+    ) -> str: ...
+
+
 class ControlRoomHandler:
     """Consume ``m.room.message`` events in the control room and act on the commands among them."""
 
@@ -178,7 +197,7 @@ class ControlRoomHandler:
         broadcast: BroadcastService,
         admins: AdminResolver,
         *,
-        engine: ReconcilerEngine | None = None,
+        engine: ReconcilerControl | None = None,
         guard: DestructiveActionGuard | None = None,
         started_at_ms: int | None = None,
         remembered_events: int = MAX_REMEMBERED_EVENTS,
@@ -225,8 +244,16 @@ class ControlRoomHandler:
             if room.room_id != self.room_id:
                 continue
             for event in room.timeline:
-                if event.get("type") == MESSAGE_TYPE:
+                if event.get("type") != MESSAGE_TYPE:
+                    continue
+                try:
                     await self._handle_message(event)
+                except Exception as exc:
+                    # One command that fails must not drop the rest of the slice (W7R-04); the
+                    # replay guard already recorded it, so it is not run again.
+                    log.exception("control room: handling %s failed", event.get("event_id"))
+                    with contextlib.suppress(Exception):
+                        await self._reply(COMMAND_FAILED.format(error=describe_error(exc)))
 
     async def _handle_message(self, event: dict[str, Any]) -> None:
         sender = event.get("sender")
@@ -359,6 +386,11 @@ class ControlRoomHandler:
             return {b.id for b in await self.guard.open_batches()}
         except GuardStateUnreadable:
             return set()  # nothing can be confirmed until it is reset; the new id is still random
+        except Exception:
+            # A transport or API error must not cost the admin their answer, nor the rest of the
+            # slice its commands (W7R-04). The new id is random; a clash is very unlikely.
+            log.warning("could not read the guard's open batches to pick a new id", exc_info=True)
+            return set()
 
     def _forget_expired_announcements(self) -> None:
         now = self._clock()
@@ -458,6 +490,9 @@ class ControlRoomHandler:
             batches = await self.guard.open_batches()
         except GuardStateUnreadable as exc:
             return f"The guard cannot read its state: {exc}. {RESET_HINT}."
+        except Exception as exc:
+            log.warning("could not read the guard's open batches for !pending", exc_info=True)
+            return f"The guard state cannot be fetched right now ({describe_error(exc)}); try again later."
         if not batches:
             return "No destructive actions are waiting for a confirmation."
         return "\n\n".join(describe_batch(b) for b in batches)
@@ -563,6 +598,9 @@ class ControlRoomHandler:
                     status
                     + "; the guard cannot read its state and pauses every destructive action, see !pending"
                 )
+            except Exception as exc:
+                log.warning("could not read the guard's open batches for !status", exc_info=True)
+                return status + f"; the guard state cannot be fetched right now ({describe_error(exc)})"
             status += f"; destructive actions paused in {waiting} batch(es)" + (
                 ", see !pending" if waiting else ""
             )
@@ -577,7 +615,7 @@ class ControlRoomHandler:
             last = "not yet"
         else:
             last = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(self.engine.last_reconcile_at))
-        return f"onbot {__version__} — last reconcile: {last} — managed rooms: {managed}"
+        return f"onbot {__version__}; last reconcile: {last}; managed rooms: {managed}"
 
     def _rate_limit_status(self) -> str:
         """Whether the bot's send rate limit is lifted, which decides how fast a broadcast is (ONB-03)."""

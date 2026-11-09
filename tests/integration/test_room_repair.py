@@ -32,9 +32,11 @@ from onbot.config import OnbotConfig
 from onbot.events import EventBus
 from onbot.guard import DestructiveActionGuard, GuardLimits, MatrixAccountDataGuardStore
 from onbot.reconciler.rooms import compute_lobby_attributes, compute_room_attributes
-from onbot.reconciler.state import OnbotRoomType, event_type_name
+from onbot.rooms.identity import RoomIdentityResolver, RoomIndex
 from onbot.rooms.provision import markers_locked
 from onbot.runtime import StartupSupervisor
+from onbot.state import OnbotRoomType, event_type_name
+from onbot.utils import normalize_group_pk
 from tests.integration import stack_api as S
 from tests.integration.test_guard import _bot_messages, _confirm, _proposed_batches
 
@@ -116,36 +118,41 @@ async def _service(config: OnbotConfig) -> AsyncIterator[App]:
 # --- teardown and deletion through the guard (S5 handover) ------------------------------------------
 
 
-async def _sweep(config: OnbotConfig) -> None:
-    """Delete the bot's group rooms of every other test's groups from the shared stack.
+def _only_own_rooms(monkeypatch: pytest.MonkeyPatch, *groups: dict[str, Any]) -> None:
+    """Let teardown see this test's group rooms (and lobbies) only, not those of the other tests.
 
-    Teardown judges every room the bot created on the server: under this test's name prefix, the
-    rooms of all other tests' groups are obsolete too, and their number would trip the guard. One pass
-    with this test's groups live, the guard's limits off and deletion on removes them first.
+    Teardown judges every room the bot created on the server: under this test's name prefix, the rooms
+    of all other tests' groups on the shared stack are obsolete too. They used to be deleted by a sweep
+    pass first; now the room scan simply leaves them out, so they stay as they are.
     """
-    sweep = config.model_copy(deep=True)
-    rooms = sweep.sync_matrix_rooms_based_on_authentik_groups
-    rooms.disable_rooms_when_mapped_authentik_group_disappears = True
-    rooms.delete_disabled_rooms = True
-    guard = sweep.destructive_action_guard
-    guard.max_reversible_actions_per_pass = 1_000_000
-    guard.confirm_irreversible_actions_from = 1_000_000
-    sweep.admin_room.enabled = False
-    await run_reconcile_once(sweep)
+    own = {normalize_group_pk(g["pk"]) for g in groups}
+    kinds = (OnbotRoomType.group_room, OnbotRoomType.visitor_lobby)
+    scan = RoomIdentityResolver.scan
+
+    async def own_rooms_only(self: RoomIdentityResolver) -> RoomIndex:
+        index = await scan(self)
+        for room_id, identity in list(index.identities.items()):
+            key = identity.key
+            if key is not None and key.kind in kinds and normalize_group_pk(key.group_id) not in own:
+                del index.identities[room_id]
+        return index
+
+    monkeypatch.setattr(RoomIdentityResolver, "scan", own_rooms_only)
 
 
 async def test_teardown_blocks_and_kicks_and_a_returning_group_is_unblocked(
     make_config,
+    monkeypatch: pytest.MonkeyPatch,
     authentik_admin: S.AuthentikAdmin,
     matrix_client: ApiClientMatrix,
     admin_client: ApiClientSynapseAdmin,
 ) -> None:
     prefix = S.uniq("tdn")
-    authentik_admin.create_group(f"{prefix}-anchor", attributes={"is_chatroom": True})
+    anchor = authentik_admin.create_group(f"{prefix}-anchor", attributes={"is_chatroom": True})
     group = authentik_admin.create_group(f"{prefix}-room", attributes={"is_chatroom": True})
     _u, member = S.provision(authentik_admin, S.uniq("tdnmember"), groups=[group["pk"]])
     config = _config(make_config, prefix, teardown=True)
-    await _sweep(config)
+    _only_own_rooms(monkeypatch, anchor, group)
     await run_reconcile_once(config)
     room_id = await _room_of(matrix_client, config, group)
     assert member.mxid in await admin_client.list_room_members(room_id)
@@ -166,17 +173,18 @@ async def test_teardown_blocks_and_kicks_and_a_returning_group_is_unblocked(
 
 async def test_a_deletion_below_the_limit_runs_in_the_pass_that_closes_the_room(
     make_config,
+    monkeypatch: pytest.MonkeyPatch,
     authentik_admin: S.AuthentikAdmin,
     matrix_client: ApiClientMatrix,
     admin_client: ApiClientSynapseAdmin,
 ) -> None:
     prefix = S.uniq("del")
-    authentik_admin.create_group(f"{prefix}-anchor", attributes={"is_chatroom": True})
+    anchor = authentik_admin.create_group(f"{prefix}-anchor", attributes={"is_chatroom": True})
     group = authentik_admin.create_group(f"{prefix}-room", attributes={"is_chatroom": True})
     S.provision(authentik_admin, S.uniq("delmember"), groups=[group["pk"]])
     config = _config(make_config, prefix, teardown=True)
     config.sync_matrix_rooms_based_on_authentik_groups.delete_disabled_rooms = True
-    await _sweep(config)
+    _only_own_rooms(monkeypatch, anchor, group)
     await run_reconcile_once(config)
     room_id = await _room_of(matrix_client, config, group)
 
@@ -188,13 +196,14 @@ async def test_a_deletion_below_the_limit_runs_in_the_pass_that_closes_the_room(
 
 async def test_three_deletions_wait_for_a_confirmation_while_the_rooms_are_closed(
     make_config,
+    monkeypatch: pytest.MonkeyPatch,
     authentik_admin: S.AuthentikAdmin,
     authentik_client: ApiClientAuthentik,
     matrix_client: ApiClientMatrix,
     admin_client: ApiClientSynapseAdmin,
 ) -> None:
     prefix = S.uniq("del3")
-    authentik_admin.create_group(f"{prefix}-anchor", attributes={"is_chatroom": True})
+    anchor = authentik_admin.create_group(f"{prefix}-anchor", attributes={"is_chatroom": True})
     groups = [
         authentik_admin.create_group(f"{prefix}-room{n}", attributes={"is_chatroom": True}) for n in range(3)
     ]
@@ -205,7 +214,7 @@ async def test_three_deletions_wait_for_a_confirmation_while_the_rooms_are_close
     config.admin_room.enabled = True
     config.admin_room.alias = S.uniq("onbot-admin")
     config.admin_room.admin_user_ids = [admin.mxid]
-    await _sweep(config)
+    _only_own_rooms(monkeypatch, anchor, *groups)
     await run_reconcile_once(config)
     rooms = [await _room_of(matrix_client, config, g) for g in groups]
 
@@ -326,6 +335,7 @@ def _set_block(token: str, room_id: str, *, blocked: bool) -> None:
 
 async def test_an_obsolete_room_a_server_admin_blocked_is_held_until_the_block_is_lifted(
     make_config,
+    monkeypatch: pytest.MonkeyPatch,
     compose_stack: DockerCompose,
     authentik_admin: S.AuthentikAdmin,
     matrix_client: ApiClientMatrix,
@@ -334,12 +344,12 @@ async def test_an_obsolete_room_a_server_admin_blocked_is_held_until_the_block_i
     """W4R-02 (D23): the room of a group that disappeared was cleared and, with
     `delete_disabled_rooms`, purged, although a server admin had blocked it (a legal hold)."""
     prefix = S.uniq("hold")
-    authentik_admin.create_group(f"{prefix}-anchor", attributes={"is_chatroom": True})
+    anchor = authentik_admin.create_group(f"{prefix}-anchor", attributes={"is_chatroom": True})
     group = authentik_admin.create_group(f"{prefix}-room", attributes={"is_chatroom": True})
     _u, member = S.provision(authentik_admin, S.uniq("holdmember"), groups=[group["pk"]])
     config = _config(make_config, prefix, teardown=True)
     config.sync_matrix_rooms_based_on_authentik_groups.delete_disabled_rooms = True
-    await _sweep(config)
+    _only_own_rooms(monkeypatch, anchor, group)
     await run_reconcile_once(config)
     room_id = await _room_of(matrix_client, config, group)
     token = _server_admin_token(compose_stack)
@@ -457,11 +467,15 @@ async def test_a_switched_off_lobby_is_closed_and_detached_and_reopens_when_swit
     prefix = S.uniq("lbo")
     group = _lobby_group(authentik_admin, prefix, lobby=True)
     _v, visitor = S.provision(authentik_admin, S.uniq("lbovisitor"))
+    keeper_name = S.uniq("lbokeeper")
+    _k, keeper = S.provision(authentik_admin, keeper_name)
     config = _with_space(_config(make_config, prefix))
+    config.global_room_admins = [keeper_name]  # seated at power level 100 in the lobby
     await run_reconcile_once(config)
     space_id = await _space_of(matrix_client, config)
     lobby_id = await _lobby_of(matrix_client, config, group)
     assert S.join_room_status(visitor.access_token, lobby_id) == 200
+    assert (await matrix_client.get_room_power_levels(lobby_id))["users"].get(keeper.mxid) == 100
 
     authentik_admin.set_group_attributes(group["pk"], {"is_chatroom": True, "chatroom_visitor_lobby": False})
     await run_reconcile_once(config)
@@ -471,6 +485,8 @@ async def test_a_switched_off_lobby_is_closed_and_detached_and_reopens_when_swit
     assert not child.get("via")
     assert lobby_id not in S.space_hierarchy_room_ids(visitor.access_token, space_id)
     assert visitor.mxid in await admin_client.list_room_members(lobby_id)  # nobody is kicked
+    # The level the bot granted there goes with the close (S14 part 2).
+    assert keeper.mxid not in (await matrix_client.get_room_power_levels(lobby_id))["users"]
 
     authentik_admin.set_group_attributes(group["pk"], {"is_chatroom": True, "chatroom_visitor_lobby": True})
     await run_reconcile_once(config)
@@ -479,6 +495,7 @@ async def test_a_switched_off_lobby_is_closed_and_detached_and_reopens_when_swit
     assert rule.get("join_rule") == "restricted"
     child = await matrix_client.get_room_state_event(space_id, "m.space.child", lobby_id) or {}
     assert child.get("suggested") is True
+    assert (await matrix_client.get_room_power_levels(lobby_id))["users"].get(keeper.mxid) == 100
 
 
 async def test_a_lobby_a_human_closed_stays_closed_until_an_admin_reopens_it(

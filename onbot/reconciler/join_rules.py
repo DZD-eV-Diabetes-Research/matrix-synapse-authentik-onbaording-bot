@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from onbot.reconciler.state import OnbotRoomType
+from onbot.state import OnbotRoomType
 
 # https://spec.matrix.org/latest/client-server-api/#restricted-rooms — the allow-list entry names
 # a room whose members may join; a space is such a room.

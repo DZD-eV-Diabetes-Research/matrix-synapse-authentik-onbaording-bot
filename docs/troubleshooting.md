@@ -74,15 +74,15 @@
 | `cannot welcome @user: the onbot state of their notice board ... cannot be read` | The bot's state event in that room was edited by hand into something it cannot parse. Onbot neither guesses nor retries until the next start. Correct or remove the state event named in the line. |
 | `visitor_lobby_enabled requires create_matrix_rooms_in_a_matrix_space` at startup | A lobby's `restricted` join rule needs a space to be restricted to. Enable the parent space, or turn the lobby off. |
 | A lobby stayed invite-only | A lobby enabled by an Authentik attribute while no parent space is configured is skipped, not created invite-only. Configure the space. |
-| Someone outside the group can see the group room exists | Expected, and only its *existence* leaks — not its contents. See "The lobby room-ID leak" below. |
+| Someone outside the group can see the group room exists | Expected, and only its *existence* leaks, not its contents. See "The lobby room-ID leak" below. |
 
 For the healthcheck details, see [deployment.md](deployment.md#healthcheck). For the auth topology
 behind several of these, see [architecture.md](architecture.md).
 
 ## The lobby room-ID leak (and why a lobby is a *second* room, not a visitable first one)
 
-A visitor lobby (ADR-0012) makes a group *reachable* — a space member outside the Authentik group
-finds the lobby in the space listing and joins it — while the group's own room stays private. The
+A visitor lobby (ADR-0012) makes a group *reachable* (a space member outside the Authentik group
+finds the lobby in the space listing and joins it), while the group's own room stays private. The
 group room is left untouched precisely because opening it retroactively exposes its history:
 `history_visibility` defaults to `shared`, so the first visitor to an unencrypted group room can
 scroll back to the day it was created. A lobby starts empty, so it has no history to leak.
@@ -91,10 +91,10 @@ What a lobby does **not** hide is the group room's *existence*. The `m.space.chi
 writes onto the space carries the private room's ID, and space state is readable by any space member;
 likewise any user can resolve `#group:server` to a room ID through the room directory. A non-member
 still **cannot** join the group room, read its history, see its name or topic, or enumerate its
-members — Element will not show it to them — but a curious person with `curl` can learn that a room
+members (Element will not show it to them), but a curious person with `curl` can learn that a room
 with that ID exists.
 
-If that is unacceptable, the answer is **not** this feature — it is a **second space**. Put the
+If that is unacceptable, the answer is **not** this feature; it is a **second space**. Put the
 private group rooms in one space and the lobbies in another, and do not add the outside audience to
 the first. Do not try to paper over the ID leak within a single space.
 
@@ -142,8 +142,11 @@ To hand the room back to Onbot, do one of these:
    that it created the room (it never takes over a room somebody else created), that the group is one
    it keeps a room for (for `lobby`: one that has a visitor lobby in the configuration), and that the
    group has no other room (or lobby) yet. Only a room whose group room marker (or lobby marker) was
-   removed or written by somebody else qualifies; a space, a user's notice board, or, as a group
-   room, a room with a lobby's `restricted` join rule never does. Then it protects the marker, writes
+   removed or written by somebody else, and that carries no other onbot marker (not even a removed
+   one), qualifies; a space, a user's notice board (in the bot's `m.direct`, or with an onbot
+   `direct_room` marker, even a removed one), or, as a group room, a room with a lobby's `restricted`
+   join rule never does. While the bot's `m.direct` cannot be read, nothing is adopted. Then it
+   protects the marker, writes
    it as the bot, answers `Adopted ... as the room of group ...` (or `... as the visitor lobby of
    group ...`) and manages the room from the next pass on. Otherwise it answers why not and changes
    nothing. If protecting the marker worked but writing it failed, the answer says so: the protection
@@ -175,7 +178,7 @@ are shaped that way at creation, giving the bot power level 100 and the user 0. 
 bot re-reads the room's power levels and repairs them if somebody changed them by hand.
 
 Rooms created by an earlier onbot were `trusted_private_chat` rooms, which grant the invited user
-power level 100 — the same as the bot. The Matrix specification forbids changing a power-level entry
+power level 100, the same as the bot. The Matrix specification forbids changing a power-level entry
 greater than or equal to your own, so **the bot cannot demote those users**, and it cannot raise
 itself above them either, because nothing outranks 100. Synapse's `make_room_admin` admin API does
 not help; it also tops out at 100.
@@ -185,7 +188,7 @@ Those rooms therefore stay writable by their user. The only way out is to delete
 that user (after a restart, or when they leave a room) that it is no longer in the room, drops the
 entry from its `m.direct` account data and creates a new notice board. Be aware that this
 also re-sends every welcome message, because the per-message bookkeeping lives in the state of the
-room being destroyed — on a live server it pages every user it touches.
+room being destroyed; on a live server it pages every user it touches.
 
 ## Encrypted control room or notice boards
 

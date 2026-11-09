@@ -1,4 +1,4 @@
-"""Reconciler engine (AD-2): level-triggered, idempotent convergence.
+"""Reconciler engine (ADR-0002): level-triggered, idempotent convergence.
 
 Computes *desired* state (from Authentik) vs *actual* state (Synapse) and applies the diff. Runs on
 a schedule **and** on demand (replacing the legacy ``while True: sleep`` tick loop) until
@@ -84,7 +84,19 @@ from onbot.reconciler.repair import (
 )
 from onbot.reconciler.report import PassReport, describe_error
 from onbot.reconciler.rooms import build_group_room_maps, colliding_aliases, resolve_room_settings
-from onbot.reconciler.state import (
+from onbot.rooms.identity import (
+    MarkerWriteFailed,
+    NoticeBoardsUnreadable,
+    Resolution,
+    RoomIdentity,
+    RoomIdentityResolver,
+    RoomIndex,
+    RoomKey,
+    describe_stray,
+    stray_claims,
+)
+from onbot.rooms.provision import ManagedRoomSpec, lock_markers, markers_locked
+from onbot.state import (
     AnyRoomState,
     GrantedPowerLevels,
     GroupRoomState,
@@ -96,17 +108,6 @@ from onbot.reconciler.state import (
     granted_power_levels_type,
     parse_room_state,
 )
-from onbot.rooms.identity import (
-    MarkerWriteFailed,
-    Resolution,
-    RoomIdentity,
-    RoomIdentityResolver,
-    RoomIndex,
-    RoomKey,
-    describe_stray,
-    stray_claims,
-)
-from onbot.rooms.provision import ManagedRoomSpec, lock_markers, markers_locked
 from onbot.utils import normalize_group_pk
 
 log = get_logger(__name__)
@@ -210,19 +211,27 @@ def _adoption_refusal(identity: RoomIdentity, kind: OnbotRoomType = OnbotRoomTyp
     """Why a room the bot created cannot be adopted as a ``kind`` room; ``None`` if it can (W4R-06).
 
     Only a room whose one managed marker is a ``kind`` marker that was removed, or that somebody other
-    than the bot wrote, qualifies: the cases the bot reports with "A room lost its onbot marker". A
-    space is never one, and a room with a visitor lobby's join rule is no group room (W6R-05).
+    than the bot wrote, qualifies: the cases the bot reports with "A room lost its onbot marker". No
+    other managed marker type may be there, with content or removed (W7R-03). A space is never one, a
+    room with a visitor lobby's join rule is no group room (W6R-05), and a room with a notice board's
+    ``direct_room`` marker is never adopted (W7R-02).
     """
     name = _kind_name(kind)
     if identity.trusted:
         assert identity.key is not None
         return f"is already the {identity.key.describe()}"
+    if identity.notice_board_marker:
+        return "carries an onbot direct_room marker: it is or was a user's notice board; it is not adopted"
     if identity.tombstone is not None:
         return f"was upgraded to {identity.tombstone}; it is not adopted"
     if identity.is_space:
         return f"is a space, not a {name}; it is not adopted"
     removed = identity.removed_markers == (kind,) and not identity.marker_types
-    foreign = identity.marker_types == (kind,) and identity.foreign_markers == (kind,)
+    foreign = (
+        identity.marker_types == (kind,)
+        and identity.foreign_markers == (kind,)
+        and not identity.removed_markers
+    )
     if not (removed or foreign):
         if identity.marker_types or identity.removed_markers:
             kinds = ", ".join(sorted({k.value for k in (*identity.marker_types, *identity.removed_markers)}))
@@ -630,7 +639,7 @@ class ReconcilerEngine:
                 continue
             authentik_user = by_mxid.get(mxid)
             if authentik_user is not None:
-                mapped.append(MappedUser(authentik_obj=authentik_user, mxid=mxid, matrix_obj=matrix_user))
+                mapped.append(MappedUser(authentik_obj=authentik_user, mxid=mxid))
         return mapped, len(by_mxid), resolution.held_mxids
 
     async def _list_scoped_users(self, *, filter_is_active: bool | None) -> list[dict[str, Any]]:
@@ -1191,7 +1200,8 @@ class ReconcilerEngine:
         """Link the room into the space (``m.space.child`` there, ``m.space.parent`` here).
 
         Covers a creation cut off between ``createRoom`` and the child link, rooms from before the
-        space existed, a recreated space, and a lobby whose feature was switched on again.
+        space existed, a recreated space, and a lobby whose feature was switched on again. When the
+        parent link had to be written, links the bot wrote to an earlier space of its own are removed.
         """
         child = await self.effectors.get_room_state(space_id, SPACE_CHILD_EVENT_TYPE, room.room_id)
         if not space_child_ok(child, suggested=suggested):
@@ -1211,6 +1221,45 @@ class ReconcilerEngine:
                 state_key=space_id,
             )
             log.info("set the parent space of room %s to %s", room.room_id, space_id)
+            await self._drop_stale_space_links(room, space_id)
+
+    async def _drop_stale_space_links(self, room: MatrixRoom, space_id: str) -> None:
+        """Remove the links the bot wrote between ``room`` and a space it no longer uses.
+
+        After the space was recreated (or its alias setting changed), the room still named the old
+        space as a parent, and the old space, if it still exists, still listed the room. Only a
+        parent link the bot wrote is removed: one a human added (another space of theirs) stays.
+        Runs only when the link to the current space had to be written, so it costs nothing in a
+        converged pass.
+        """
+        bot_id = self.config.synapse_server.bot_user_id
+        for event in await self.admin.get_room_state_events(room.room_id):
+            old = event.get("state_key")
+            if (
+                event.get("type") != SPACE_PARENT_EVENT_TYPE
+                or not isinstance(old, str)
+                or not old
+                or old == space_id
+                or not event.get("content")
+                or event.get("sender") != bot_id
+            ):
+                continue
+            await self.effectors.put_room_state(room.room_id, SPACE_PARENT_EVENT_TYPE, {}, state_key=old)
+            log.info("removed the link of room %s to the earlier space %s", room.room_id, old)
+            try:
+                child = await self.effectors.get_room_state(old, SPACE_CHILD_EVENT_TYPE, room.room_id)
+                if space_child_attached(child):
+                    await self.effectors.put_room_state(
+                        old, SPACE_CHILD_EVENT_TYPE, {}, state_key=room.room_id
+                    )
+            except ApiError as exc:
+                # The old space may be gone, or the bot no longer in it: nothing left to tidy there.
+                log.info(
+                    "could not remove room %s from the earlier space %s (%s)",
+                    room.room_id,
+                    old,
+                    describe_error(exc),
+                )
 
     async def _report_once(self, key: str, text: str) -> None:
         """Log ``text`` at WARNING and tell the admin room, once per process for ``key``."""
@@ -1236,7 +1285,9 @@ class ReconcilerEngine:
         used to drop the lobby out of management while it stayed open and suggested in the space.
         Now its join rule becomes ``invite`` and it leaves the space. Members stay (nobody is
         kicked); closing counts as a reversible destructive action and goes through the guard (D19).
-        A lobby that is closed and detached already costs two reads. A lobby of a group that is gone
+        The power levels the bot granted there are withdrawn, each through the guard like any
+        withdrawal (D10). A lobby that is closed and detached already, without a grant of the bot's,
+        costs four reads. A lobby of a group that is gone
         is torn down instead (:meth:`_converge_obsolete_rooms`).
         """
         switched_off = {gm.group_pk for gm in group_maps if gm.lobby_desired is None}
@@ -1253,6 +1304,26 @@ class ReconcilerEngine:
                 group_pk=identity.key.group_id,
                 step="close",
                 work=self._plan_lobby_close(identity.room_id, identity.key.group_id, space, report, plan),
+            )
+            lobby = index.rooms.get(identity.room_id) or MatrixRoom(room_id=identity.room_id)
+            # The levels the bot granted there (the global admins) go too, through the guard like any
+            # withdrawal (D10): a closed lobby is no longer managed, so nothing would take them back.
+            await self._guarded(
+                report,
+                room_kind=OnbotRoomType.visitor_lobby,
+                room_id=identity.room_id,
+                group_pk=identity.key.group_id,
+                step="power levels",
+                work=self._converge_levels(
+                    lobby,
+                    OnbotRoomType.visitor_lobby,
+                    VisitorLobbyRoomState(group_id=identity.key.group_id),
+                    identity.key.group_id,
+                    {},
+                    report,
+                    plan,
+                    seat_global_admins=False,
+                ),
             )
 
     async def _plan_lobby_close(
@@ -1694,7 +1765,7 @@ class ReconcilerEngine:
     ) -> None:
         """Converge a lobby's membership, add-only (ADR-0012).
 
-        A lobby is **add-only**: ``kick_enabled=False``, so nobody is ever removed — a user kicked
+        A lobby is **add-only**: ``kick_enabled=False``, so nobody is ever removed: a user kicked
         from the group room keeps their seat here, and visitors who joined on purpose stay. When
         ``visitor_lobby_inject_group_members`` is set (the default) the group's members are seeded in;
         visitors are never injected anywhere. Global room admins are seeded regardless of that switch:
@@ -1894,8 +1965,16 @@ class ReconcilerEngine:
                 False,
             )
         refusal = _adoption_refusal(identity, kind)
-        if refusal is None and await self.rooms.is_notice_board(room_id):
-            refusal = "is a user's notice board (in the bot's m.direct); it is not adopted"
+        if refusal is None:
+            try:
+                if await self.rooms.is_notice_board(room_id):
+                    refusal = "is a user's notice board (in the bot's m.direct); it is not adopted"
+            except NoticeBoardsUnreadable as exc:
+                return (
+                    f"The bot cannot read its list of notice boards (m.direct: {exc}), so it cannot rule "
+                    f"out that {room_id} is one." + unchanged,
+                    False,
+                )
         if refusal is not None:
             return f"The room {room_id} {refusal}." + unchanged, False
         marker = (
@@ -1966,6 +2045,8 @@ class ReconcilerEngine:
         desired: dict[str, int],
         report: PassReport,
         plan: PassPlan,
+        *,
+        seat_global_admins: bool = True,
     ) -> None:
         """Grant now; record the withdrawals (D10) for the guard and carry out the permitted ones later.
 
@@ -1974,7 +2055,9 @@ class ReconcilerEngine:
         """
         problems: _RoomStepProblems | None = None
         try:
-            held = await self._write_power_levels(room, room_type, fresh_state, desired=desired)
+            held = await self._write_power_levels(
+                room, room_type, fresh_state, desired=desired, seat_global_admins=seat_global_admins
+            )
         except _RoomStepProblems as exc:
             problems, held = exc, exc.held
         # A held withdrawal of an account several Authentik users resolve to is never proposed: its
@@ -2001,6 +2084,7 @@ class ReconcilerEngine:
                     fresh_state,
                     desired=desired,
                     withdraw=frozenset(by_key[k] for k in allowed),
+                    seat_global_admins=seat_global_admins,
                 ),
             )
 
@@ -2016,8 +2100,12 @@ class ReconcilerEngine:
         *,
         desired: dict[str, int],
         withdraw: Collection[str] = frozenset(),
+        seat_global_admins: bool = True,
     ) -> list[str]:
         """Apply ``desired`` levels plus the global room admins at PL 100, and withdraw stale grants.
+
+        ``seat_global_admins=False`` (a switched-off lobby) seats nobody, so every grant of the bot's
+        is withdrawn.
 
         Withdrawal follows D10: only entries the bot itself wrote are taken back. They are recorded,
         with the level written, in the bot's per-room account data (:class:`GrantedPowerLevels`),
@@ -2036,7 +2124,7 @@ class ReconcilerEngine:
         """
         room_id = room.room_id
         bot_id = self.config.synapse_server.bot_user_id
-        global_admins = self.global_admins.mxids
+        global_admins = self.global_admins.mxids if seat_global_admins else frozenset()
         event_type = event_type_name(self.server_name, room_type)
         raw = await self.effectors.get_room_state(room_id, event_type)
         state = self._marker_basis(room_id, room_type, fresh_state, raw)
@@ -2188,7 +2276,7 @@ class ReconcilerEngine:
         The name comes free with the room listing, but the **topic does not**: the admin List Room API
         returns ``name`` and ``canonical_alias`` and no topic at all (only the per-room Room Details
         API carries one). So the topic is read from room state before writing, the same way the admin
-        control room repairs its own — otherwise it is compared against a field that is always
+        control room repairs its own; otherwise it is compared against a field that is always
         ``None``, and every tick rewrites every topic.
 
         The switch is read per group, through :func:`resolve_room_settings` like every other field of
@@ -2206,7 +2294,7 @@ class ReconcilerEngine:
             await self.effectors.set_room_topic(room.room_id, desired.topic)
             log.info("set topic of %s from Authentik", room.room_id)
 
-    # --- lifecycle (AD-5, G9.*): quarantined, invoked only from the reconcile result ---
+    # --- lifecycle (ADR-0005, G9.*): quarantined, invoked only from the reconcile result ---
 
     async def _plan_lifecycle(
         self,

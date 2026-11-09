@@ -229,8 +229,8 @@ def test_alias_localparts_must_not_be_empty(path: str) -> None:
         ("server_tick_rate_sec", 0),
         ("server_tick_rate_sec", -5),
         ("authentik_poll_rate_sec", -1),
-        (f"{_LIFECYCLE}.deactivate_after_n_sec", -1),
-        (f"{_LIFECYCLE}.delete_after_n_sec", -1),
+        (f"{_LIFECYCLE}.lock_after_n_sec", -1),
+        (f"{_LIFECYCLE}.remove_after_n_sec", -1),
         ("avatar_fetch.max_size_bytes", 0),
         ("avatar_fetch.timeout_sec", 0),
     ],
@@ -368,3 +368,56 @@ def test_generated_template_validates_once_required_values_are_filled() -> None:
     # The admin room is on by default, so the template also needs an admin (D19).
     data["admin_room"]["admin_user_ids"] = ["@admin:company.org"]
     OnbotConfig.model_validate(data)
+
+
+# --- D27: the offboarding delays were renamed (hard break) ---------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [("deactivate_after_n_sec", "lock_after_n_sec"), ("delete_after_n_sec", "remove_after_n_sec")],
+)
+def test_an_old_offboarding_delay_name_is_refused_with_the_new_name(old: str, new: str) -> None:
+    errors = _errors(_with(f"{_LIFECYCLE}.{old}", 3600))
+    assert [".".join(str(p) for p in e["loc"]) for e in errors] == [_LIFECYCLE]
+    message = errors[0]["msg"]
+    assert f"{old} is now {new}" in message
+    assert "Extra inputs" not in message and "3600" not in message
+
+
+def test_both_old_offboarding_delay_names_are_named_in_one_message() -> None:
+    data = _with(f"{_LIFECYCLE}.deactivate_after_n_sec", 0)
+    data["sync_authentik_users_with_matrix_rooms"]["deactivate_disabled_authentik_users_in_matrix"][
+        "delete_after_n_sec"
+    ] = None
+    message = _messages(data)
+    assert "deactivate_after_n_sec is now lock_after_n_sec" in message
+    assert "delete_after_n_sec is now remove_after_n_sec" in message
+
+
+def test_an_old_offboarding_delay_name_is_refused_from_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ONBOT_SYNAPSE_SERVER__SERVER_NAME", "company.org")
+    monkeypatch.setenv("ONBOT_SYNAPSE_SERVER__SERVER_URL", "https://internal.matrix")
+    monkeypatch.setenv("ONBOT_SYNAPSE_SERVER__BOT_USER_ID", "@bot:company.org")
+    monkeypatch.setenv("ONBOT_SYNAPSE_SERVER__BOT_ACCESS_TOKEN", "tok")
+    monkeypatch.setenv("ONBOT_AUTHENTIK_SERVER__URL", "https://authentik.company.org")
+    monkeypatch.setenv("ONBOT_AUTHENTIK_SERVER__API_KEY", "key")
+    monkeypatch.setenv(
+        "ONBOT_SYNC_AUTHENTIK_USERS_WITH_MATRIX_ROOMS__DEACTIVATE_DISABLED_AUTHENTIK_USERS_IN_MATRIX"
+        "__DELETE_AFTER_N_SEC",
+        "60",
+    )
+    with pytest.raises(ValidationError, match=r"delete_after_n_sec is now remove_after_n_sec"):
+        load_config()
+
+
+def test_the_new_offboarding_delay_names_load() -> None:
+    data = _with(f"{_LIFECYCLE}.lock_after_n_sec", 60)
+    data["sync_authentik_users_with_matrix_rooms"]["deactivate_disabled_authentik_users_in_matrix"][
+        "remove_after_n_sec"
+    ] = None
+    config = OnbotConfig.model_validate(data)
+    lifecycle = config.sync_authentik_users_with_matrix_rooms.deactivate_disabled_authentik_users_in_matrix
+    assert (lifecycle.lock_after_n_sec, lifecycle.remove_after_n_sec) == (60, None)

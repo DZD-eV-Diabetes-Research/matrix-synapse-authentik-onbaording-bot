@@ -1,7 +1,7 @@
 """Cheap change detection on Authentik, so the expensive reconcile can run rarely (ADR-0002).
 
 One loop used to do two jobs with wildly different costs. A reconcile pass reads the whole Matrix
-side — every managed room's members, power levels and state — while the thing it is usually reacting
+side (every managed room's members, power levels and state), while the thing it is usually reacting
 to is a single new user in Authentik. Running it often enough to onboard people promptly meant
 running it often enough to hammer Synapse; running it rarely enough to be polite meant new employees
 waited.
@@ -12,10 +12,12 @@ fingerprints the answer, and calls the engine's existing on-demand
 Synapse never and writes nothing. The full reconcile then drops to a slow drift-repair safety net
 (``server_tick_rate_sec``), and new-user latency is set by ``authentik_poll_rate_sec`` instead.
 
-The fingerprint covers exactly the Authentik facts a reconcile projects onto Matrix — who exists,
-what they are called, which groups they are in, which groups map to rooms and how. It deliberately
-excludes volatile fields (``last_login``, ``last_updated``): a user simply logging in changes nothing
-about the desired Matrix state, and waking the reconciler for it would defeat the purpose.
+The fingerprint covers the Authentik facts a reconcile projects onto Matrix, read with the same
+queries the engine uses (REC-15): who exists, what they are called, which groups they are in, which
+groups map to rooms and how (parent included), the groups that grant power levels (whether or not they
+map to a room) and the global room admins. It deliberately excludes volatile fields (``last_login``,
+``last_updated``): a user simply logging in changes nothing about the desired Matrix state, and waking
+the reconciler for it would defeat the purpose.
 """
 
 from __future__ import annotations
@@ -59,20 +61,44 @@ def _group_facts(group: dict[str, Any]) -> tuple[Any, ...]:
         group.get("pk"),
         group.get("name"),
         group.get("is_superuser"),
+        # `only_for_children_of_groups_with_uid` selects groups by it.
+        group.get("parent"),
         # Attributes carry the room's alias, name, topic, avatar and power level.
         json.dumps(group.get("attributes") or {}, sort_keys=True),
     )
 
 
-def fingerprint(users: list[dict[str, Any]], groups: list[dict[str, Any]], username_attribute: str) -> str:
+def _power_level_group_facts(group: dict[str, Any]) -> tuple[Any, ...]:
+    """A group that grants a power level: its attributes (the level) and its members."""
+    return (
+        group.get("pk"),
+        json.dumps(group.get("attributes") or {}, sort_keys=True),
+        tuple(sorted(str(pk) for pk in group.get("users") or [])),
+    )
+
+
+def fingerprint(
+    users: list[dict[str, Any]],
+    groups: list[dict[str, Any]],
+    username_attribute: str,
+    *,
+    power_level_groups: list[dict[str, Any]] | None = None,
+    global_admins: dict[str, list[dict[str, Any]]] | None = None,
+) -> str:
     """A stable digest of everything in Authentik that the reconciler projects onto Matrix.
 
     Order-independent (Authentik does not promise a stable page order) and free of volatile fields,
-    so an unchanged directory always yields an unchanged digest.
+    so an unchanged directory always yields an unchanged digest. ``global_admins`` maps each
+    configured global room admin's username to the active users found for it.
     """
     payload = {
         "users": sorted(repr(_user_facts(u, username_attribute)) for u in users),
         "groups": sorted(repr(_group_facts(g)) for g in groups),
+        "power_level_groups": sorted(repr(_power_level_group_facts(g)) for g in power_level_groups or []),
+        "global_admins": {
+            name: sorted(repr(_user_facts(u, username_attribute)) for u in found)
+            for name, found in (global_admins or {}).items()
+        },
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
 
@@ -125,6 +151,8 @@ class DiscoveryPoller:
             await self._list_users(),
             await self._list_groups(),
             self.config.sync_authentik_users_with_matrix_rooms.authentik_username_mapping_attribute,
+            power_level_groups=await self._list_power_level_groups(),
+            global_admins=await self._look_up_global_admins(),
         )
         previous, self._fingerprint = self._fingerprint, current
         if previous is None or previous == current:
@@ -159,6 +187,28 @@ class DiscoveryPoller:
         if not settings.enabled:
             return []
         return await self.authentik.list_groups(filter_by_attribute=settings.only_groups_with_attributes)
+
+    async def _list_power_level_groups(self) -> list[dict[str, Any]]:
+        """Every group that grants a power level, mapped to a room or not (the engine's query)."""
+        settings = self.config.sync_matrix_rooms_based_on_authentik_groups
+        if not settings.enabled or not self.config.sync_authentik_users_with_matrix_rooms.enabled:
+            return []
+        return await self.authentik.list_groups(
+            filter_has_non_empty_attributes=[settings.authentik_group_attr_for_matrix_power_level]
+        )
+
+    async def _look_up_global_admins(self) -> dict[str, list[dict[str, Any]]]:
+        """The active users each global room admin's username finds (the engine's lookup).
+
+        A global admin outside the sync scope is not among the listed users; without this, their
+        account becoming active, or a changed mapping attribute, would wait for the reconcile tick.
+        """
+        found: dict[str, list[dict[str, Any]]] = {}
+        for name in self.config.global_room_admins:
+            candidates = await self.authentik.list_users(filter_by_username=name, filter_is_active=True)
+            # The same local re-check as the engine: the username filter is only a hint.
+            found[name] = [u for u in candidates if u.get("username") == name]
+        return found
 
     async def _sleep(self, seconds: float) -> None:
         # Sleep, but wake immediately on stop.

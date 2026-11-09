@@ -1,6 +1,6 @@
 """Fixtures for the Phase 7b live integration harness.
 
-The expensive bit — the Synapse + MAS + Postgres + Authentik stack — is brought up once per session
+The expensive bit (the Synapse + MAS + Postgres + Authentik stack) is brought up once per session
 via ``testcontainers`` (compose). On top of it sit the bot's MAS-issued credentials, a loaded
 :class:`OnbotConfig` pointing at the containers, and ready API clients. Per-test state (Authentik
 groups/users) is created with unique names so tests share the stack without colliding.
@@ -30,7 +30,7 @@ import pytest_asyncio
 from testcontainers.compose import DockerCompose
 
 from onbot.clients.authentik import ApiClientAuthentik
-from onbot.clients.matrix import ApiClientMatrix, CSApiEffectors
+from onbot.clients.matrix import ApiClientMatrix
 from onbot.clients.synapse_admin import ApiClientSynapseAdmin
 from onbot.config import (
     AdminRoom,
@@ -41,6 +41,7 @@ from onbot.config import (
 )
 from onbot.guard import guard_account_data_type
 from onbot.lifecycle.accounts import known_users_account_data_type, lifecycle_account_data_type
+from onbot.reconciler.effectors import CSApiEffectors
 from onbot.rooms.identity import RoomIdentityResolver
 from tests.integration import stack_api as S
 from tests.integration.stack_instance import SKIP_VAR, StackUnavailable, skip_requested, start_stack
@@ -119,7 +120,7 @@ def compose_stack(tmp_path_factory: pytest.TempPathFactory) -> Iterator[DockerCo
 
 @pytest.fixture(scope="session")
 def bot_token(compose_stack: DockerCompose) -> str:
-    """Provision the bot user in MAS and issue an admin-scoped compatibility token (AD-6)."""
+    """Provision the bot user in MAS and issue an admin-scoped compatibility token (ADR-0006)."""
     common = ["--config", "/config/config.yaml"]
     with contextlib.suppress(Exception):  # idempotent: ignore "already exists" on a re-used stack
         compose_stack.exec_in_container(

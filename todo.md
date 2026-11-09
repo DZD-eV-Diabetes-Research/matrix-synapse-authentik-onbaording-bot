@@ -47,7 +47,7 @@ and the room-versions index, rather than trusting this summary.
 * **Every read of `m.room.power_levels`.** Start from `onbot/clients/matrix.py`
   (`get_power_levels`/`set_power_levels`) and follow callers: the reconciler's power-level pass
   (`onbot/reconciler/power_levels.py`), the admin/notice-board room provisioners
-  (`onbot/rooms/admin.py`, `onbot/onboarding/notice_board.py`), and Session A's planned DM self-heal
+  (`onbot/admin/provisioner.py`, `onbot/onboarding/notice_board.py`), and Session A's planned DM self-heal
   and `recreate-dm-rooms` predicate. Anywhere the code asks "what is the bot's level here?" or "is this
   user's level ≥ the bot's?", teach it that a creator (the bot, and anyone in `additional_creators`)
   sits above the lattice and is absent from the map by design, not that an absent user is powerless.
@@ -265,12 +265,12 @@ restart. Two guards, both:
 
 * ignore events whose `origin_server_ts` predates process start;
 * dedupe on `event_id` against a bounded ring buffer persisted in the bot's account data (namespace
-  the type with the existing `event_type_name()` helper from `onbot/reconciler/state.py`, e.g.
+  the type with the existing `event_type_name()` helper from `onbot/state.py`, e.g.
   `org.company.onbot.admin_cursor`).
 
 Write a unit test that feeds the same `SyncResult` twice and asserts one send.
 
-**The room itself.** Add `onbot/rooms/admin.py`: ensure-if-missing by alias (`#onbot-admin:server`,
+**The room itself.** Add `onbot/admin/provisioner.py`: ensure-if-missing by alias (`#onbot-admin:server`,
 configurable), marked with a new `OnbotRoomType.admin_room` state event so it is recognisably
 bot-managed, unencrypted (ADR-0009), created with `m.federate: false`, and with power levels that let
 the bot (100) manage state while members can talk (`events_default: 0`, `state_default: 100`,
@@ -342,7 +342,7 @@ decisions, so read `docs/adr/0010-admin-control-room.md` first, you will be amen
 
 `admin_room.admin_user_ids` in `onbot/config.py` is a hand-maintained list of MXIDs. It is the only
 gate on `!announce`, a command that writes into every user's room on the server. Two places read it,
-and **both snapshot it once**: `AdminRoomProvisioner._ensure_admins_invited()` (`onbot/rooms/admin.py`)
+and **both snapshot it once**: `AdminRoomProvisioner._ensure_admins_invited()` (`onbot/admin/provisioner.py`)
 iterates it on startup, and `ControlRoomHandler.__init__` (`onbot/admin/control_room.py`) freezes it
 into `self.admins`, which `_handle_message()` then checks the sender against.
 
@@ -632,7 +632,7 @@ the tick.
 **6. The model learns about a second room.**
 
 `GroupRoomMap` (`onbot/models.py`) is 1:1 group→room. Give it `lobby: MatrixRoom | None` and a second
-`RoomCreateAttributes`. Add `OnbotRoomType.visitor_lobby` to `onbot/reconciler/state.py` and stamp the
+`RoomCreateAttributes`. Add `OnbotRoomType.visitor_lobby` to `onbot/state.py` and stamp the
 lobby with it at creation, so discovery does not mistake a lobby for a group room, try to project
 Authentik membership onto it, and kick every visitor on the next tick. **This is the single most
 dangerous bug this session can produce.** Write the test that would catch it before writing the code
@@ -715,4 +715,4 @@ Visitors are never injected anywhere. They joined on purpose.
   inline, must not feed itself (posting logs through `httpx`, which logs, which posts), and that at
   `DEBUG` the bot logs every API call it makes, including bearer tokens, into a plaintext,
   unencrypted room that admins read on their phones and that cannot be un-synced once leaked. If this
-  comes back: default the room's level to `WARNING`, and reuse `onbot/rooms/admin.py` from Session B.
+  comes back: default the room's level to `WARNING`, and reuse `onbot/admin/provisioner.py` from Session B.

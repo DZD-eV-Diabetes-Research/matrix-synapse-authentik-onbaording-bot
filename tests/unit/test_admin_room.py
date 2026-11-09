@@ -7,15 +7,15 @@ from typing import Any
 import pytest
 
 from onbot.admin.admins import AdminResolver
-from onbot.clients.base import ApiError
-from onbot.config import AdminRoom, AuthentikServer, OnbotConfig, SynapseServer
-from onbot.events import Event, Signal
-from onbot.rooms.admin import (
+from onbot.admin.provisioner import (
     ENCRYPTED_ROOM_NOTICE,
     PINNED_EVENTS_TYPE,
     AdminRoomProvisioner,
     admin_room_power_levels,
 )
+from onbot.clients.base import ApiError
+from onbot.config import AdminRoom, AuthentikServer, OnbotConfig, SynapseServer
+from onbot.events import Event, Signal
 from onbot.rooms.identity import RoomIdentityResolver
 from onbot.rooms.provision import PRIVILEGED_LOCK_LEVEL, marker_event_types
 

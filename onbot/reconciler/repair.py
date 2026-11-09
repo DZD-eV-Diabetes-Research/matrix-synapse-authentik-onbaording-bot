@@ -27,7 +27,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from onbot.reconciler.state import (
+from onbot.state import (
     AnyRoomState,
     GroupRoomState,
     OnbotRoomType,

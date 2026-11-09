@@ -243,3 +243,37 @@ def test_admin_room_on_by_default_without_an_admin_exits_2(tmp_path: Path) -> No
         "admin_room.admin_user_ids or admin_room.authentik_group_pks_granting_bot_admin, or set "
         "admin_room.enabled: false to run without an admin room"
     ) in result.stderr.splitlines(), result.stderr
+
+
+RENAMED_DELAY_CONFIG = """\
+synapse_server:
+  server_name: company.org
+  server_url: https://matrix.company.org
+  bot_user_id: "@bot:company.org"
+  bot_access_token: BOT_TOK_7
+authentik_server:
+  url: https://authentik.company.org
+  api_key: AK_42
+sync_authentik_users_with_matrix_rooms:
+  deactivate_disabled_authentik_users_in_matrix:
+    dry_run: false
+    deactivate_after_n_sec: 86400
+"""
+
+
+def test_an_old_offboarding_delay_name_exits_2_naming_the_new_field(tmp_path: Path) -> None:
+    """D27: the delays were renamed as a hard break; an old config never runs with a reinterpreted
+    value or the default."""
+    path = tmp_path / "config.yml"
+    path.write_text(RENAMED_DELAY_CONFIG)
+
+    result = _run_onbot(path, "reconcile-once")
+
+    assert result.returncode == 2
+    assert "Traceback" not in result.stderr
+    (line,) = [line for line in result.stderr.splitlines() if "deactivate_after_n_sec" in line]
+    assert line.startswith(
+        "  sync_authentik_users_with_matrix_rooms.deactivate_disabled_authentik_users_in_matrix: "
+    )
+    assert "deactivate_after_n_sec is now lock_after_n_sec" in line
+    assert "Extra inputs" not in result.stderr

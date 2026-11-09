@@ -18,14 +18,14 @@ from onbot.clients.synapse_admin import RoomBlock
 from onbot.config import OnbotConfig
 from onbot.events import Event, EventBus, Signal
 from onbot.reconciler.engine import ReconcilerEngine
-from onbot.reconciler.state import (
+from onbot.rooms.identity import RoomIdentityResolver
+from onbot.state import (
     GroupRoomState,
     OnbotRoomType,
     SpaceRoomState,
     VisitorLobbyRoomState,
     dump_room_state,
 )
-from onbot.rooms.identity import RoomIdentityResolver
 from tests.unit.room_fakes import room_state
 from tests.unit.test_engine import (
     _BASE,
@@ -308,6 +308,56 @@ async def test_a_converged_room_gets_no_writes() -> None:
     assert attention == []
 
 
+OLD_SPACE = "!oldspace:company.org"
+HUMAN_SPACE = "!department:company.org"
+
+
+async def test_the_links_to_an_earlier_space_go_when_the_room_is_linked_into_a_recreated_one() -> None:
+    """S7 leftover: after the space was recreated, the room kept naming the old space as its parent."""
+    effectors = RecordingEffectors()
+    _seed_converged(effectors)
+    # The room as the old space left it, and not yet in the new one.
+    del effectors.state_store[(SPACE, CHILD, ROOM1)]
+    del effectors.state_store[(ROOM1, PARENT, SPACE)]
+    effectors.state_store[(ROOM1, PARENT, OLD_SPACE)] = {"canonical": True, "via": ["company.org"]}
+    effectors.state_store[(OLD_SPACE, CHILD, ROOM1)] = {"suggested": False, "via": ["company.org"]}
+    # A link a human added to a space of their own stays.
+    effectors.state_store[(ROOM1, PARENT, HUMAN_SPACE)] = {"via": ["company.org"]}
+    effectors.senders[(ROOM1, PARENT, HUMAN_SPACE)] = MODERATOR
+    engine, _admin, effectors, _attention = _engine(SharedStateAdmin(effectors), effectors)
+
+    await engine.reconcile_once()
+
+    assert effectors.state_store[(ROOM1, PARENT, SPACE)] == {"canonical": True, "via": ["company.org"]}
+    assert effectors.state_store[(ROOM1, PARENT, OLD_SPACE)] == {}
+    assert effectors.state_store[(OLD_SPACE, CHILD, ROOM1)] == {}
+    assert effectors.state_store[(ROOM1, PARENT, HUMAN_SPACE)] == {"via": ["company.org"]}
+    writes = len(effectors.state_writes)
+    await engine.reconcile_once()
+    assert len(effectors.state_writes) == writes  # converged: reads only
+
+
+async def test_a_stale_link_into_an_earlier_space_the_bot_left_is_not_a_room_problem() -> None:
+    class OldSpaceGone(RecordingEffectors):
+        async def get_room_state(
+            self, room_id: str, event_type: str, state_key: str = ""
+        ) -> dict[str, Any] | None:
+            if room_id == OLD_SPACE:
+                raise ApiError("GET", f"/rooms/{room_id}/state", 403, {"errcode": "M_FORBIDDEN"})
+            return await super().get_room_state(room_id, event_type, state_key)
+
+    effectors = OldSpaceGone()
+    _seed_converged(effectors)
+    del effectors.state_store[(ROOM1, PARENT, SPACE)]
+    effectors.state_store[(ROOM1, PARENT, OLD_SPACE)] = {"canonical": True, "via": ["company.org"]}
+    engine, _admin, effectors, _attention = _engine(SharedStateAdmin(effectors), effectors)
+
+    await engine.reconcile_once()
+
+    assert effectors.state_store[(ROOM1, PARENT, OLD_SPACE)] == {}
+    assert all(not r.problems for r in engine.last_pass_report.rooms)
+
+
 # --- REC-09: marker and lock -----------------------------------------------------------------------
 
 
@@ -325,9 +375,10 @@ class _SharedState:
             if not _shared(e["type"])
         ]
         for key, content in self.effectors.state_store.items():
-            if len(key) == 2 and key[0] == room_id and _shared(key[1]):
+            if key[0] == room_id and _shared(key[1]):
                 sender = self.effectors.senders.get(key, BOT)
-                events.append({"type": key[1], "state_key": "", "sender": sender, "content": content})
+                state_key = key[2] if len(key) == 3 else ""
+                events.append({"type": key[1], "state_key": state_key, "sender": sender, "content": content})
         return events
 
 
@@ -350,7 +401,7 @@ def _is_marker(event_type: str) -> bool:
 
 
 def _shared(event_type: str) -> bool:
-    return _is_marker(event_type) or event_type == JOIN_RULES
+    return _is_marker(event_type) or event_type in (JOIN_RULES, PARENT, CHILD)
 
 
 def _running(
@@ -551,7 +602,7 @@ async def test_a_lowered_marker_lock_is_raised_again() -> None:
 
 
 class NoAliasAdmin(FakeAdmin):
-    async def list_non_space_rooms(self) -> list[dict[str, Any]]:
+    async def fake_rooms(self) -> list[dict[str, Any]]:
         return [{"room_id": ROOM1, "canonical_alias": None, "name": "Team"}]
 
 
@@ -622,6 +673,65 @@ async def test_closing_a_lobby_goes_through_the_guard() -> None:
 
     assert effectors.state_store[(LOBBY, JOIN_RULES)] == RESTRICTED
     assert effectors.state_store[(SPACE, CHILD, LOBBY)]["via"] == ["company.org"]
+
+
+CAROL = "@carol:company.org"
+GRANTS = "org.company.onbot.granted_power_levels"
+
+
+class _CarolAdminInLobby(RecordingEffectors):
+    """The lobby's power levels as the bot left them: the global admin carol seated at 100."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.lobby_users: dict[str, int] = {CAROL: 100}
+        self.account_data[(LOBBY, GRANTS)] = {"users": {CAROL: 100}}
+
+    async def get_room_power_levels(self, room_id: str) -> dict[str, Any]:
+        power = await super().get_room_power_levels(room_id)
+        return {**power, "users": dict(self.lobby_users)} if room_id == LOBBY else power
+
+    async def set_room_power_levels(self, room_id: str, power_levels: dict[str, Any]) -> None:
+        await super().set_room_power_levels(room_id, power_levels)
+        if room_id == LOBBY:
+            self.lobby_users = dict(power_levels.get("users") or {})
+
+
+@pytest.mark.parametrize("still_global_admin", [True, False])
+async def test_a_switched_off_lobby_loses_the_levels_the_bot_granted_there(still_global_admin: bool) -> None:
+    """S7 leftover: a closed lobby is no longer managed, so a grant left there would stay for good."""
+    config = OnbotConfig.model_validate(_BASE)  # lobbies off by default
+    if still_global_admin:
+        config.global_room_admins = ["carol"]
+    effectors = _CarolAdminInLobby()
+    effectors.state_store[(LOBBY, JOIN_RULES)] = RESTRICTED
+    _seed_converged(effectors, LOBBY, suggested=True)
+    engine, _admin, effectors, _attention = _engine(SwitchedOffLobbyAdmin(), effectors, config=config)
+    assert isinstance(effectors, _CarolAdminInLobby)
+
+    await engine.reconcile_once()
+
+    assert effectors.state_store[(LOBBY, JOIN_RULES)] == {"join_rule": "invite"}
+    assert CAROL not in effectors.lobby_users
+    assert effectors.account_data[(LOBBY, GRANTS)]["users"] == {}
+    lobby_writes = [w for w in effectors.power_levels if w[0] == LOBBY]
+    await engine.reconcile_once()
+    assert [w for w in effectors.power_levels if w[0] == LOBBY] == lobby_writes  # nothing more to do
+
+
+async def test_withdrawing_the_grants_of_a_switched_off_lobby_goes_through_the_guard() -> None:
+    effectors = _CarolAdminInLobby()
+    effectors.state_store[(LOBBY, JOIN_RULES)] = RESTRICTED
+    _seed_converged(effectors, LOBBY, suggested=True)
+    config = OnbotConfig.model_validate(
+        {**_BASE, "destructive_action_guard": {"max_reversible_actions_per_pass": 0}}
+    )
+    engine, _admin, effectors, _attention = _engine(SwitchedOffLobbyAdmin(), effectors, config=config)
+    assert isinstance(effectors, _CarolAdminInLobby)
+
+    await engine.reconcile_once()
+
+    assert effectors.lobby_users == {CAROL: 100}
 
 
 async def test_a_lobby_the_bot_closed_opens_again_when_switched_back_on() -> None:
@@ -1223,6 +1333,105 @@ async def test_room_adopt_refuses_a_notice_board() -> None:
 
     assert "is a user's notice board" in reply and "Nothing was changed" in reply
     assert len(effectors.state_writes) == writes
+
+
+DIRECT_MARKER = "org.company.onbot.direct_room"
+
+
+def _adopt_engine(effectors: RecordingEffectors, boards: Any) -> ReconcilerEngine:
+    admin = SharedStateAdmin(effectors)
+    rooms = RoomIdentityResolver(admin, effectors, bot_id=BOT, server_name="company.org", direct_rooms=boards)
+    return ReconcilerEngine(
+        OnbotConfig.model_validate(_BASE),
+        FakeAuthentik(),  # type: ignore[arg-type]
+        admin,  # type: ignore[arg-type]
+        effectors,
+        EventBus(),
+        rooms=rooms,
+    )
+
+
+async def _unreadable_m_direct() -> list[str]:
+    raise ApiError("GET", "https://company.org/account_data/m.direct", 502, "bad gateway")
+
+
+@pytest.mark.parametrize("marker", [{"schema_version": 1, "room_type": "direct_room", "user_id": "@a:x"}, {}])
+async def test_room_adopt_refuses_a_room_with_a_notice_board_marker_even_without_m_direct(
+    marker: dict[str, Any],
+) -> None:
+    """W7R-02: m.direct may be unreadable, and the legacy welcome rooms were never in it."""
+    effectors = RecordingEffectors()
+    _seed_converged(effectors)
+    effectors.state_store[(ROOM1, DIRECT_MARKER)] = marker
+    effectors.state_store[(ROOM1, GROUP_MARKER)] = {}
+
+    async def no_boards() -> list[str]:
+        return []
+
+    engine = _adopt_engine(effectors, no_boards)
+    writes = len(effectors.state_writes)
+
+    reply = await engine.adopt_room("g1", ROOM1, by=HUMAN_ADMIN)
+
+    assert "notice board" in reply and "Nothing was changed" in reply, reply
+    assert len(effectors.state_writes) == writes
+
+
+async def test_room_adopt_fails_closed_when_m_direct_cannot_be_read() -> None:
+    """W7R-02: a lost group room marker qualifies, but the room could still be a notice board."""
+    effectors = RecordingEffectors()
+    _seed_converged(effectors)
+    effectors.state_store[(ROOM1, GROUP_MARKER)] = {}
+    engine = _adopt_engine(effectors, _unreadable_m_direct)
+    writes = len(effectors.state_writes)
+
+    reply = await engine.adopt_room("g1", ROOM1, by=HUMAN_ADMIN)
+
+    assert "cannot read its list of notice boards" in reply and "Nothing was changed" in reply, reply
+    assert len(effectors.state_writes) == writes
+
+
+async def test_a_room_scan_reads_every_bot_room_when_m_direct_cannot_be_read() -> None:
+    effectors = RecordingEffectors()
+    _seed_converged(effectors)
+    admin = SharedStateAdmin(effectors)
+    rooms = RoomIdentityResolver(
+        admin, effectors, bot_id=BOT, server_name="company.org", direct_rooms=_unreadable_m_direct
+    )
+
+    index = await rooms.scan()
+
+    assert index.complete and ROOM1 in index.identities
+
+
+@pytest.mark.parametrize(
+    "other",
+    [
+        "org.company.onbot.admin_room",  # a former control room
+        LOBBY_MARKER,  # a former lobby
+    ],
+)
+def test_a_removed_marker_of_another_kind_is_seen_beside_a_foreign_group_marker(other: str) -> None:
+    """W7R-03: a foreign marker of the wanted kind hid the removed marker of the room's real role."""
+    from onbot.reconciler.engine import _adoption_refusal
+    from onbot.rooms.identity import classify_room
+
+    state = [
+        {"type": "m.room.create", "state_key": "", "sender": BOT, "content": {"room_version": "10"}},
+        {"type": JOIN_RULES, "state_key": "", "sender": BOT, "content": {"join_rule": "invite"}},
+        {"type": other, "state_key": "", "sender": MODERATOR, "content": {}},
+        {
+            "type": GROUP_MARKER,
+            "state_key": "",
+            "sender": MODERATOR,
+            "content": dump_room_state(GroupRoomState(group_id="g1")),
+        },
+    ]
+    identity = classify_room("!ex:company.org", state, bot_id=BOT, server_name="company.org")
+
+    assert identity is not None and identity.removed_markers
+    refusal = _adoption_refusal(identity)
+    assert refusal is not None and "not a lost group room marker" in refusal
 
 
 async def test_room_adopt_refuses_an_ex_lobby_as_a_group_room() -> None:
