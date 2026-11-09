@@ -20,7 +20,7 @@ Local `main` is ahead of `origin/main` (the maintainer pushes; last push was the
 | between | S16, CI1 | history scrub (force-pushed by the maintainer), shorter CI (D17) | first GitHub CI run green |
 | 2 | S11, S3, S4, W2F, W2R | HTTP layer, guard layers 1 and 2 with `!confirm <id>`, offboarding completeness (D7), D19 fixups (MAS 1.28 and Synapse 1.164 in the test stack, admin room on by default), wave 2 review fixups | 1130 passed |
 | 3 | S5, S6, S9, W3R | guard layer 3, room identity by creator plus locked marker (D20), user identity across renames (D8, D21), wave 3 review fixups | 1277 passed (before W3R; W3R's own full run on its branch: 1295 passed) |
-| 4 | S8, S7, S12, W4R, S18 (merged) | onboarding correctness, room repair, broadcast and admin room, wave 4 review fixups | after S7 and S8: 1385 passed (a47c0f1); after S12 and W4R: 1454 passed (5deb135); S18 branch, code equal to main at b0aec61: 1502 passed |
+| 4 | S8, S7, S12, W4R, S18, W6R (merged) | onboarding correctness, room repair, broadcast and admin room, wave 4 review fixups | after S7 and S8: 1385 passed (a47c0f1); after S12 and W4R: 1454 passed (5deb135); S18 branch, code equal to main at b0aec61: 1502 passed |
 
 Status per session: the table in `SESSIONS.md`. Release notes: `CHANGELOG.md` (Unreleased) has a line
 for every merged session.
@@ -76,24 +76,28 @@ Cold review of S18: 8 findings (1 medium, 7 low), no critical or high, written u
 affected by W6R-01 (it uses hyphenated pks; the other filters are empty). S14 is split into part 1
 (parallel to W6R) and part 2 (after W6R).
 
-Running in parallel since f507e64:
+W6R merged (bf51958): its full run on the branch: 1533 passed (2 config docs drift tests failed there
+by design, regenerated on main). Unit and contract on main: 1444 passed. D26 records its
+confirmations.
 
-- W6R in its own worktree, branch `review/w6r-fixups`, stack instance 2.
-- S14 part 1 (docs, CHANGELOG history, dead code outside the W6R files, integration suite speed-up)
-  in its own worktree, branch `review/s14-part1-cleanup`, stack instance 1.
+Running: S14 part 1 (docs, CHANGELOG history, dead code outside the W6R files, integration suite
+speed-up) in its own worktree, branch `review/s14-part1-cleanup` from f507e64, stack instance 1. Its
+parallel test mode starts extra stacks (`onbot-itest-1-w1`, `-w2`). Expect small conflicts with W6R
+in `guard.py`, `models.py`, `welcome.py`, `listener.py`, `avatar.py`, `commands.py` and the docs.
 
-Then: merge both (W6R first), full integration run on main, cold review of W6R plus S14 part 1, then
-S14 part 2, last full run and cold review. S17 (bot-driven room upgrades, D20) is deferred: not before
-the next release.
+Then: merge S14 part 1, full integration run on main, cold review of W6R plus S14 part 1, then S14
+part 2 (engine, test fakes; W6R changed the effector avatar interface: `avatar_image`,
+`upload_avatar(image)`, `MediaUploader.upload`), last full run and cold review. S17 (bot-driven room
+upgrades, D20) is deferred: not before the next release.
 
 If this session stops before they finish: check `git branch` and `git worktree list` for
-`review/w6r-*` and `review/s14-*`, review each against its brief and merge per "How merging works".
+`review/s14-*`, review it against its brief and merge per "How merging works".
 
 ## Questions collected for the maintainer
 
 All answered on 2026-11-09: recorded in D13 (guard details), D21 (binding wins without MAS, done in
 W4R), D22 (S7 and S8 confirmations), D23 (rooms blocked by someone else are a hold, done in W4R) and
-D24 (S12 and W4R confirmations, new work in S18) and D25 (S18 confirmations).
+D24 (S12 and W4R confirmations, new work in S18) D25 (S18 confirmations) and D26 (W6R confirmations).
 
 ## Maintainer to-dos outside the code
 

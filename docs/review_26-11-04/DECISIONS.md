@@ -293,3 +293,12 @@ New work (session S18):
   allowlisted admins, bot-created rooms only per D20, refuse otherwise). Work for S14.
 - The S18 timings stay code constants: avatar re-check 24 h, duplicate window 60 s, confirm window
   10 minutes, adopt wait 60 s.
+
+## D26 W6R confirmations (decided 2026-11-09)
+
+- `!room adopt` as a group room refuses any room with a `restricted` join rule (it could be a former
+  lobby). A group room that `chatroom_params` deliberately sets to `restricted` uses the manual marker
+  restore instead.
+- Accepted as implemented: lobby adoption is refused when the group has no lobby in the
+  configuration; `holds()` remembers no mxc; control room repairs are reported once per process in
+  the log and the control room.
