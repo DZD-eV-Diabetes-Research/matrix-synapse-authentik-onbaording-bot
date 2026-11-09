@@ -4,12 +4,12 @@
 The single source of truth for configuration is the pydantic-settings model in ``onbot/config.py``.
 This script renders two artifacts from it with `psyplus <https://pypi.org/project/psyplus/>`_:
 
-* ``docs/CONFIG_REFERENCE.md`` — a human-readable reference (one section per field: type, default,
+* ``docs/CONFIG_REFERENCE.md``: a human-readable reference (one section per field: type, default,
   ``ONBOT_*`` env-var, description, allowed values).
-* ``config.example.yml`` — a fully commented, fillable YAML template.
+* ``config.example.yml``: a fully commented, fillable YAML template.
 
 Both are committed so they show up in code review and on GitHub. To avoid drift they are *generated*,
-never hand-edited — change the ``Field(...)`` metadata in ``onbot/config.py`` and re-render:
+never hand-edited: change the ``Field(...)`` metadata in ``onbot/config.py`` and re-render:
 
     ./gen_config_docs.sh          # regenerate both files (root wrapper around this script)
     ./gen_config_docs.sh --check  # verify they are current; exit 1 on drift
@@ -21,7 +21,7 @@ psyplus renders each field's ``title``, ``description`` and ``examples``; type, 
 required-ness and the ``ONBOT_*`` env-var name are derived from the model automatically.
 
 ``psyplus`` is a docs-only dependency (the ``docs`` group) and is deliberately **not** a runtime
-dependency — the production image does not carry it. The runtime ``onbot generate-config`` command
+dependency; the production image does not carry it. The runtime ``onbot generate-config`` command
 emits its own minimal template via ``onbot.config.generate_example_config`` instead.
 """
 
@@ -48,12 +48,12 @@ MARKDOWN_PATH = REPO_ROOT / "docs" / "CONFIG_REFERENCE.md"
 YAML_PATH = REPO_ROOT / "config.example.yml"
 
 _GENERATED_BANNER = (
-    "<!-- GENERATED FILE — do not edit by hand.\n"
-    "     Regenerate with `./gen_config_docs.sh` after changing onbot/config.py. -->\n\n"
+    "<!-- GENERATED FILE, do not edit by hand.\n"
+    "     Regenerate with `pdm run gen-config-docs` after changing onbot/config.py. -->\n\n"
 )
 _YAML_BANNER = (
-    "# Onbot configuration template — GENERATED from onbot/config.py.\n"
-    "# Regenerate with `./gen_config_docs.sh`; do not edit by hand.\n"
+    "# Onbot configuration template, GENERATED from onbot/config.py.\n"
+    "# Regenerate with `pdm run gen-config-docs`; do not edit by hand.\n"
     "# Copy this to config.yml and fill in the required (Required: True) values. Every setting can\n"
     "# also be supplied via its ONBOT_* environment variable (shown per field below).\n"
 )
@@ -130,7 +130,7 @@ def _check(path: Path, expected: str) -> bool:
     if actual == expected:
         print(f"OK    {path.relative_to(REPO_ROOT)}")
         return True
-    print(f"DRIFT {path.relative_to(REPO_ROOT)} — run `pdm run gen-config-docs`")
+    print(f"DRIFT {path.relative_to(REPO_ROOT)}: run `pdm run gen-config-docs`")
     return False
 
 

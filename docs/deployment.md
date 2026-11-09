@@ -186,6 +186,13 @@ need a look at your configuration. The ones that stop the bot or cost a first st
   names are no longer read: a config or `ONBOT_...` environment variable that still uses one stops the
   bot at startup with exit code 2 and a message naming the new key. Rename the keys in the same
   deployment as the image update.
+- **The first start after upgrading from 0.0.11 or older does some work once.** Every onbot marker
+  written by an older version is rewritten once (logged at INFO as "the onbot marker was
+  incomplete; the bot restored it"): older markers miss fields or still carry the Authentik URL
+  (SEC-11). And each notice board from before the avatar's image hash was recorded has its current
+  avatar downloaded once and compared with the bot avatar, so a board that already wears the picture
+  only gets the record and no new upload. Expect a longer first pass and a burst of media downloads
+  on a large server; later passes are back to reads only.
 
 ## Upgrading from the legacy bot
 
