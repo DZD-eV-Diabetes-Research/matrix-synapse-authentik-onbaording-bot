@@ -1,6 +1,6 @@
 # Tests
 
-Three tiers (BATTLE_PLAN.md Phase 7), grown alongside Phases 3 to 5:
+Three tiers ([BATTLE_PLAN.md](../docs/project/BATTLE_PLAN.md) Phase 7), grown alongside Phases 3 to 5:
 
 - **`unit/`**: pure logic (mapping rules, power-level calc, identity/MXID, config,
   room-state (de)serialization). No network.
@@ -41,6 +41,7 @@ earlier run of the same project), the harness runs `down` once and retries befor
 |---|---|
 | `ONBOT_ITEST_KEEP=1` | Leave the stack running after the run. The next run reuses it, which is much faster. |
 | `ONBOT_ITEST_INSTANCE=<n>` | Use isolated stack instance `n` (see below). Default `0`. |
+| `ONBOT_ITEST_WORKERS=<k>` | `run_integration_tests.sh` only: split the run over `k` pytest-xdist workers, each with a stack of its own (see [Faster runs](#faster-runs)). Default `1`. |
 | `ONBOT_ITEST_SKIP=1` | Skip the integration tests explicitly, for machines without Docker. `run_integration_tests.sh` refuses it. |
 | `ONBOT_ITEST_PROJECT`, `ONBOT_ITEST_SYNAPSE_PORT`, `ONBOT_ITEST_MAS_PORT`, `ONBOT_ITEST_AUTHENTIK_PORT` | Override single values that `ONBOT_ITEST_INSTANCE` derives. Rarely needed. |
 
@@ -85,6 +86,34 @@ port: Synapse only advertises it to clients, and the harness never follows it.
 
 Each instance boots six containers (Authentik server and worker, Postgres, Redis, MAS, Synapse), so
 plan for roughly 2 to 3 GB of RAM per running instance.
+
+### Faster runs
+
+Most of a run is waiting: for Authentik to boot, for passes over a server that fills up with every
+test's rooms, and for Synapse's two-minute token cache in the offboarding tests. Two ways to wait less:
+
+- **Parallel workers.** `ONBOT_ITEST_WORKERS=3 ./run_integration_tests.sh` splits the test files over
+  three pytest-xdist workers (`--dist loadfile`: a file's tests stay together and in order). The
+  tests share one bot account, its account data (guard state, offboarding ledger, `m.direct`) and the
+  server-wide room list, so they cannot share a stack; every worker boots one of its own instead.
+  Worker `gw0` uses the instance's stack, worker `gwK` the compose project `onbot-itest-<n>-wK` on
+  host ports `20000 + 100n + 10K` plus 3, 4 and 5, a range no instance uses. Plan for 2 to 3 GB of
+  RAM per worker. CI runs with two workers (`ONBOT_ITEST_WORKERS` in `.github/workflows/ci.yml`).
+- **A warm stack, for subsets.** `ONBOT_ITEST_KEEP=1` keeps the stack (or every worker's stack)
+  after the run; the next run with the same instance and worker count skips the boot (about 100 s,
+  130 s with two stacks booting at once). That pays off for repeated `-k` runs. For the full suite a
+  fresh stack is faster: a warm stack keeps every room earlier runs created, and every pass reads
+  them all (measured on a workstation, two workers: 12.3 minutes fresh, 15.7 minutes warm).
+
+Measured on a workstation (8 cores, 2026-11-09): one worker 21.7 minutes, two workers 12.3 minutes,
+three workers 11.5 minutes. With three, the machine was loaded enough that a first login raced MAS's
+user provisioning (now retried in `stack_api.mas_login`).
+
+Tear down every stack of the current instance, worker stacks included:
+
+```bash
+./run_integration_tests.sh --down
+```
 
 Two runs in the **same** checkout also share `.coverage` and `.pytest_cache`. Separate worktrees
 avoid that; in one checkout, give the second run its own `COVERAGE_FILE=.coverage.<n>`.

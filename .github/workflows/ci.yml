@@ -17,7 +17,8 @@ name: CI
 #   * The GitHub Actions cache is used on push and PR runs only, never when a release runs this
 #     workflow, so nothing a branch run wrote can feed a release.
 #
-# Duration (review decision D17): the integration job (about 20 minutes) is skipped when a push or PR
+# Duration (review decision D17): the integration job (two parallel workers, each with its own stack;
+# about 12 minutes on a workstation, 22 serially) is skipped when a push or PR
 # changes documentation only (scripts/ci_gate.py decides; any other or unknown path runs it). A
 # skipped job counts as passed for required checks. A release always runs it, or reuses a green run
 # of the tagged commit in which it ran (see release.yml).
@@ -125,8 +126,10 @@ jobs:
       - name: Config docs in sync with the model
         run: pdm run check-config-docs
 
-      - name: Pytest (unit + contract, fast, coverage reported but not gated)
-        run: pdm run pytest -m "not integration" --cov --cov-report=term-missing --cov-fail-under=0
+      # The fast suite has its own coverage floor (MNT-15); the full-suite gate (fail_under in
+      # pyproject.toml) runs in the integration job.
+      - name: Pytest (unit + contract, fast, coverage gate 90 %)
+        run: pdm run pytest -m "not integration" --cov --cov-report=term-missing --cov-fail-under=90
 
   secrets:
     name: secret scan (gitleaks)
@@ -210,5 +213,9 @@ jobs:
 
       # The full suite (incl. integration); the testcontainers fixture brings up the stack. This is
       # the authoritative coverage gate: app.py + __main__.py are exercised end-to-end here.
+      # Two pytest-xdist workers, each with a stack of its own (review decision D17): the runner has
+      # 4 CPUs and 16 GB, a stack needs 2 to 3 GB. A stack that cannot start still fails the job.
       - name: Pytest (full suite + coverage gate)
-        run: pdm run pytest --cov --cov-report=term-missing
+        env:
+          ONBOT_ITEST_WORKERS: "2"
+        run: ./run_integration_tests.sh

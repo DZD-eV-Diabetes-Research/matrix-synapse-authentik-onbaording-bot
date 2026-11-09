@@ -112,8 +112,9 @@ or `onbot/__init__.py`.
 Steps:
 
 1. Make sure CI on `main` is green and `pdm.lock` is current (see "Dependency updates"). CI skips the
-   integration suite (about 20 minutes) for pushes and PRs that change documentation only; any other
-   path runs it, and so does `CHANGELOG.md` (`scripts/ci_gate.py`, review decision D17).
+   integration suite (two parallel workers; about 12 minutes on a workstation, 22 serially) for
+   pushes and PRs that change documentation only; any other path runs it, and so does `CHANGELOG.md`
+   (`scripts/ci_gate.py`, review decision D17).
 2. Move the "Unreleased" entries in [CHANGELOG.md](../CHANGELOG.md) under `## [X.Y.Z] - DATE` and
    merge that to `main`.
 3. Create a GitHub Release with a new tag on `main`. Tick **"Set as a pre-release"** exactly when the
