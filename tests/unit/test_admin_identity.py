@@ -28,7 +28,8 @@ class FakeAuthentik:
         self.users = list(users)
 
     async def list_users(self, **_: Any) -> list[dict[str, Any]]:
-        return [dict(u) for u in self.users]
+        # Members of the admin group "g", as the server-side filter promises (SEC-09 re-checks it).
+        return [{"groups": ["g"], **u} for u in self.users]
 
 
 def _config(**overrides: Any) -> OnbotConfig:

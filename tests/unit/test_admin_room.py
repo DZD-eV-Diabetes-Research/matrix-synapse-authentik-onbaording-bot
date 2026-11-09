@@ -46,7 +46,7 @@ class _FakeAuthentik:
         self.usernames = usernames
 
     async def list_users(self, **kwargs: Any) -> list[dict[str, Any]]:
-        return [{"pk": name, "username": name} for name in self.usernames]
+        return [{"pk": name, "username": name, "groups": [GROUP]} for name in self.usernames]
 
 
 class _FakeClient:
