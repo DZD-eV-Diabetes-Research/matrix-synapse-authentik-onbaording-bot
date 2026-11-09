@@ -302,3 +302,13 @@ New work (session S18):
 - Accepted as implemented: lobby adoption is refused when the group has no lobby in the
   configuration; `holds()` remembers no mxc; control room repairs are reported once per process in
   the log and the control room.
+
+## D27 S14 confirmations (decided 2026-11-09)
+
+- Deployment docs pin the image by version (`dzdde/onbot:X.Y.Z`); a digest is an optional hint only.
+- `onbot generate-config` stays.
+- The offboarding delays are renamed, hard break: `deactivate_after_n_sec` becomes `lock_after_n_sec`
+  and `delete_after_n_sec` becomes `remove_after_n_sec`. A config that still uses an old name stops at
+  startup with exit code 2 and a message naming the new field (old names are never reused with another
+  meaning, so an old config can never be silently reinterpreted). Implementation: S14 part 2; the
+  production template (`infra-node-conf-com`) must be updated in the same deployment.

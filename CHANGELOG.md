@@ -54,6 +54,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   would make, offboarding included, without changing anything or saving state.
 
 ### Changed
+- **Group pks match in any UUID form everywhere (review S18 and W6R, W5R-02, W6R-01). Check before
+  upgrading.** `authentik_group_pks_granting_bot_admin`, `sync_only_users_of_groups_with_id`,
+  `authentik_group_id_ignore_list`, `only_for_children_of_groups_with_uid`,
+  `per_authentik_group_pk_matrix_room_settings` and `!lobby reopen` accept the 32-hex form, the
+  hyphenated form and upper case. Before, a pk written in the 32-hex or upper-case form silently
+  matched nothing in the ignore list, the parent filter and the room settings. After the upgrade such
+  entries take effect, which can be destructive: a group in the ignore list that has had a room until
+  now counts as gone, so with `disable_rooms_when_mapped_authentik_group_disappears` its room is
+  closed and its members kicked, and with `delete_disabled_rooms` the room is deleted (the guard asks
+  only above its limits); a parent filter now matches children; a room settings override starts to
+  apply (lobby, encryption, levels). If any of these settings uses a non-hyphenated form, run
+  `onbot reconcile-once --dry-run` after the upgrade and before the first real pass, and check the
+  planned actions.
 - **The integration suite runs in parallel workers (review S14, D17):**
   `ONBOT_ITEST_WORKERS=<k> ./run_integration_tests.sh` gives every pytest-xdist worker its own stack.
   CI uses two workers, about 12 minutes instead of 22 on a workstation.
@@ -72,10 +85,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   with an id; `!confirm <id>` from the same admin within 10 minutes sends it, `!reject <id>` drops it.
 - **A shutdown interrupts an announcement visibly (review S18, W5R-04):** an `!announce` arriving while
   the bot stops is not sent, and a broadcast cut off by the stop posts how many rooms it reached.
-- **Group pks match in any UUID form (review S18, W5R-02):** in `authentik_group_pks_granting_bot_admin`,
-  `sync_only_users_of_groups_with_id` and `per_authentik_group_pk_matrix_room_settings`, the 32 hex
-  digit form, the hyphenated form and upper case all work. Before, the hex form dropped every group
-  admin since S12.
 - **Rooms blocked by someone other than the bot are a hold (wave 4 review, W4R-02, D23):** server
   admin moderation, legal hold, or a block whose author is unknown. When their group disappears the bot
   neither kicks the members nor deletes the room while the block exists, even with
@@ -238,11 +247,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   isolated stack so several checkouts can run the integration suite at the same time.
 
 ### Fixed
-- **Group pks match in any UUID form everywhere (review W6R-01):** also in
-  `authentik_group_id_ignore_list`, `only_for_children_of_groups_with_uid` and `!lobby reopen`. Before,
-  the documented 32-hex example of the ignore list ignored nothing: the group got a room and its
-  members were invited. Hex-form keys of `per_authentik_group_pk_matrix_room_settings` now match where
-  they silently did not before, so a forgotten override there starts to apply.
 - **One download per picture (review W6R-02):** an avatar host whose bytes differ per request was
   downloaded once per room and pass and never set; the image just fetched is now the one uploaded.
 - **The "shutting down, not sent" reply to `!announce` is posted (review W6R-03);** before, the second

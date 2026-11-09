@@ -720,6 +720,32 @@ import cycle, orphan gathering into `lifecycle/`); the reconciler test fakes sti
 changing them). W6R changed the effector avatar interface (`avatar_image`, `upload_avatar(image)`,
 `MediaUploader.upload`) and made `SharedStateAdmin` a mixin.
 
+**From the cold review of W6R and S14 part 1 (2026-11-09, no critical or high finding; W7R-01, a
+changelog upgrade warning, was fixed by the orchestrator; experiments in the orchestrator scratchpad
+`review-w6r-s14/`):**
+
+- **W7R-02 (low):** `!room adopt` takes a notice board whenever `m.direct` does not list it:
+  `is_notice_board` relies on `_notice_boards` (`app.py`), which returns an empty set when `m.direct`
+  cannot be read, and legacy welcome rooms were never in `m.direct`. Refuse any room that carries an
+  onbot `direct_room` state event (with content or removed), and fail closed when `m.direct` cannot be
+  read.
+- **W7R-03 (low):** a foreign marker of the wanted kind hides a removed marker of another kind
+  (`rooms/identity.py` sets `removed_markers` only when no marker has content), so a former control
+  room or lobby can be adopted as a group room. Record removed markers regardless; in
+  `_adoption_refusal` require that no other managed marker type is present or removed.
+- **W7R-04 (low):** `_open_batch_ids` in `control_room.py` catches only `GuardStateUnreadable`; an
+  `ApiError` or transport error leaves a repeated `!announce` without an answer and drops the rest of
+  that sync batch's control room events. Catch, log, continue.
+- **W7R-05 (low, performance):** W6R-07 clears the welcomed cache on the first avatar digest even when
+  every board already got the picture, so every restart re-checks all boards once more. Clear only
+  users welcomed without a known digest.
+
+**D27 rename (hard break):** `deactivate_after_n_sec` becomes `lock_after_n_sec`, `delete_after_n_sec`
+becomes `remove_after_n_sec`; an old name stops startup with exit 2 and a message naming the new field.
+Update every use (code, docs, tests, generated config docs via the orchestrator, `config.example.yml`),
+a CHANGELOG line under Changed (breaking) proposed in the report, and a test that an old name is
+refused with the hint.
+
 ---
 
 ## S15 CI and release hardening
