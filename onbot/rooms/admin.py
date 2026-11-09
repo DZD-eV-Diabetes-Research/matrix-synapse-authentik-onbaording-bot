@@ -26,6 +26,7 @@ The control room then stays off, with an error naming the alias.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from typing import Any
 
@@ -105,6 +106,9 @@ class AdminRoomProvisioner:
         # Bound by ensure(); until then the invite pass has no room to invite anybody into.
         self.room_id: str | None = None
         self._state_event_type = event_type_name(self.server_name, OnbotRoomType.admin_room)
+        # The marker is read, changed and written whole by the invite pass and the pinned help, which
+        # may run at once (a reconcile finishing during startup).
+        self._state_lock = asyncio.Lock()
 
     async def ensure(self) -> str | None:
         """Return the control room's id, creating it if needed. ``None`` when the feature is off."""
@@ -153,20 +157,65 @@ class AdminRoomProvisioner:
 
         Cheap enough for the tick: one membership lookup per admin, and anyone already joined or
         invited is skipped, so nobody is re-invited or re-notified.
+
+        An admin who left the room or declined the invitation is remembered and not invited again
+        (ONB-12): the record (``invited_admins`` in the room's marker) names everybody the bot invited
+        or found in the room while they were admins. Dropping out of the admin set clears the entry,
+        so somebody made an admin again is invited again. A banned admin is never invited. When the
+        record cannot be read, only admins who were never in the room are invited.
         """
-        if self.room_id is None:
+        room_id = self.room_id
+        if room_id is None:
             return
-        for mxid in sorted(await self.admins.admins()):
+        admins = sorted(await self.admins.admins())
+        async with self._state_lock:
             try:
-                membership = await self.client.get_membership(self.room_id, mxid)
-                if membership in ("join", "invite"):
-                    continue
-                await self.client.invite_user(self.room_id, mxid)
-                log.info("invited %s to the admin control room", mxid)
-            except ApiError:
-                # An admin sourced from an Authentik group may not have logged in yet, so may have no
-                # Matrix account to invite. Warn and carry on: the next tick retries.
-                log.warning("could not invite %s to the admin control room", mxid, exc_info=True)
+                state: AdminRoomState | None = await self._load_state(room_id)
+            except Exception:
+                log.warning(
+                    "cannot read the admin control room's marker; inviting only admins who were never "
+                    "in the room",
+                    exc_info=True,
+                )
+                state = None
+            known = set(state.invited_admins) if state is not None else None
+            record = (known or set()) & set(admins)
+            for mxid in admins:
+                if await self._invite_if_due(room_id, mxid, known):
+                    record.add(mxid)
+            if state is not None and record != known:
+                state.invited_admins = sorted(record)
+                await self.client.put_room_state_event(
+                    room_id, self._state_event_type, dump_room_state(state)
+                )
+
+    async def _invite_if_due(self, room_id: str, mxid: str, known: set[str] | None) -> bool:
+        """Invite ``mxid`` unless they are in the room, banned, or left after an invitation.
+
+        Returns whether ``mxid`` is (now) in the room or invited, so it goes into the record.
+        """
+        try:
+            membership = await self.client.get_membership(room_id, mxid)
+        except ApiError:
+            log.warning("could not read the membership of %s in the admin control room", mxid, exc_info=True)
+            return False
+        if membership in ("join", "invite"):
+            return True
+        if membership == "ban":
+            log.debug("%s is banned from the admin control room; not inviting them", mxid)
+            return False
+        if membership == "leave" and (known is None or mxid in known):
+            log.debug("%s left the admin control room or declined; not inviting them again", mxid)
+            return False
+        try:
+            await self.client.invite_user(room_id, mxid)
+        except ApiError as exc:
+            # An admin sourced from an Authentik group may not have logged in yet, so may have no
+            # Matrix account to invite. Warn and carry on: the next tick retries.
+            log.warning("could not invite %s to the admin control room: %s", mxid, exc)
+            return False
+        log.info("invited %s to the admin control room", mxid)
+        return True
 
     async def on_reconcile(self, _event: Event) -> None:
         """Bus handler: re-run the invite pass once the reconciler has finished a tick."""
@@ -231,15 +280,16 @@ class AdminRoomProvisioner:
         """
         text = help_text()
         digest = help_text_hash(text)
-        state = await self._load_state(room_id)
-        if state.help_text_hash == digest:
-            return
+        async with self._state_lock:
+            state = await self._load_state(room_id)
+            if state.help_text_hash == digest:
+                return
 
-        event_id = await self.client.send_text_message(room_id, text, msgtype=NOTICE_MSGTYPE)
-        await self._pin(room_id, event_id, replacing=state.help_event_id)
-        state.help_text_hash = digest
-        state.help_event_id = event_id
-        await self.client.put_room_state_event(room_id, self._state_event_type, dump_room_state(state))
+            event_id = await self.client.send_text_message(room_id, text, msgtype=NOTICE_MSGTYPE)
+            await self._pin(room_id, event_id, replacing=state.help_event_id)
+            state.help_text_hash = digest
+            state.help_event_id = event_id
+            await self.client.put_room_state_event(room_id, self._state_event_type, dump_room_state(state))
         log.info("posted and pinned the admin help message in %s", room_id)
 
     async def _pin(self, room_id: str, event_id: str, *, replacing: str | None) -> None:

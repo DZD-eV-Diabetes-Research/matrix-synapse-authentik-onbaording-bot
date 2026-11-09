@@ -114,6 +114,11 @@ class AdminRoomState(_OnbotRoomState):
     configured_alias: str | None = None
     help_text_hash: str | None = None
     help_event_id: str | None = None
+    # The admins the bot invited (or found in the room) while they were admins (ONB-12). Somebody on
+    # this list who left or declined stays out: they are not invited again on every reconcile. An
+    # admin who drops out of the admin set is removed from it, so being made an admin again brings a
+    # fresh invitation.
+    invited_admins: list[str] = Field(default_factory=list)
 
 
 class GrantedPowerLevels(BaseModel):

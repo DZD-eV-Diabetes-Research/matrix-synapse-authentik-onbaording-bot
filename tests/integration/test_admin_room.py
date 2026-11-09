@@ -338,3 +338,44 @@ async def test_an_edited_announce_is_not_sent_again(
     assert "At 23:00" not in delivered
     replies = await _messages_in(matrix_client, control_room)
     assert any("Edits are not commands" in r for r in replies)
+
+
+async def test_an_admin_who_declines_or_leaves_is_not_invited_again(
+    make_config,
+    authentik_admin: S.AuthentikAdmin,
+    authentik_client: ApiClientAuthentik,
+    matrix_client: ApiClientMatrix,
+    room_identity: RoomIdentityResolver,
+) -> None:
+    """ONB-12: a declined invitation used to come back on every reconcile tick."""
+    _a, decliner = S.provision(authentik_admin, S.uniq("decliner"))
+    _b, leaver = S.provision(authentik_admin, S.uniq("leaver"))
+
+    config = make_config()
+    config.admin_room.enabled = True
+    config.admin_room.alias = S.uniq("onbot-admin")
+    config.admin_room.admin_user_ids = [decliner.mxid, leaver.mxid]
+
+    provisioner = AdminRoomProvisioner(
+        matrix_client, config, _resolver(authentik_client, config), room_identity
+    )
+    control_room = await provisioner.ensure()
+    assert control_room is not None
+    assert await matrix_client.get_membership(control_room, decliner.mxid) == "invite"
+
+    S.leave_room(decliner.access_token, control_room)  # rejecting an invitation is a leave
+    assert S.join_room_status(leaver.access_token, control_room) == 200
+    S.leave_room(leaver.access_token, control_room)
+
+    for _ in range(2):  # two reconcile ticks
+        await provisioner.ensure_admins_invited()
+
+    assert await matrix_client.get_membership(control_room, decliner.mxid) == "leave"
+    assert await matrix_client.get_membership(control_room, leaver.mxid) == "leave"
+
+    # A restarted bot reads the same record from the room.
+    restarted = AdminRoomProvisioner(
+        matrix_client, config, _resolver(authentik_client, config), room_identity
+    )
+    assert await restarted.ensure() == control_room
+    assert await matrix_client.get_membership(control_room, decliner.mxid) == "leave"
