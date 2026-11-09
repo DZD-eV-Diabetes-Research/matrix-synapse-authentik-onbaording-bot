@@ -31,18 +31,20 @@ as a non-root user and needs one thing from you: a config file.
 ```bash
 docker run --rm \
   -v "$PWD/config.yml:/config/config.yml:ro" \
-  dzdde/onbot:latest
+  dzdde/onbot:X.Y.Z
 ```
 
-The image defaults to reading `/config/config.yml` and running the long-lived `onbot run` service.
-It also ships a built-in `HEALTHCHECK`.
+Replace `X.Y.Z` with a released version (see [CHANGELOG.md](CHANGELOG.md) and the
+[tags](https://hub.docker.com/r/dzdde/onbot/tags)); do not run `latest` for a bot that can kick users
+and lock accounts. The image defaults to reading `/config/config.yml` and running the long-lived
+`onbot run` service. It also ships a built-in `HEALTHCHECK`.
 
 ### docker-compose
 
 ```yaml
 services:
   onbot:
-    image: dzdde/onbot:latest
+    image: dzdde/onbot:X.Y.Z
     restart: unless-stopped
     volumes:
       - ./config.yml:/config/config.yml:ro
@@ -116,14 +118,15 @@ renames it.
 
 - [docs/authentik-groups.md](docs/authentik-groups.md) is the group-to-room guide: how to opt a group
   in and every attribute you can set on it in Authentik.
-- [docs/features.md](docs/features.md) explains, in plain language, what each Onbot feature does —
+- [docs/features.md](docs/features.md) explains, in plain language, what each Onbot feature does,
   for both users and admins.
 - [docs/configuration.md](docs/configuration.md) walks through every config block, the bot
   credential choices, and how to generate the reference.
 - [docs/CONFIG_REFERENCE.md](docs/CONFIG_REFERENCE.md) lists every field, its type, default,
   description, and `ONBOT_*` env-var name (generated from the model).
 - [docs/deployment.md](docs/deployment.md) covers running with Docker and compose, env-only config,
-  the CLI commands, and the healthcheck.
+  the CLI commands, the healthcheck, and
+  [upgrading from the legacy bot](docs/deployment.md#upgrading-from-the-legacy-bot).
 - [docs/architecture.md](docs/architecture.md) explains the Matrix client to MAS to Authentik auth
   topology and links the architecture decision records.
 - [docs/development.md](docs/development.md) is the setup, build, and release guide for contributors.

@@ -416,7 +416,9 @@ hand.
   on converging rooms; a few welcomes are delivered at a time beside it. A user who joins a room is
   welcomed right away if the last pass mapped them, otherwise with the pass that maps them.
 - **The messages are yours to write.** `welcome_new_users_messages` is the list, sent in order;
-  `null` or an empty list disables the welcome room entirely. Each message is sent at most once per
+  `null` or an empty list disables the welcome room entirely. Without notice boards, `!announce` and
+  `onbot broadcast` have no room to post into, so a deployment that wants announcements but no
+  welcome text needs at least one short message. Each message is sent at most once per
   user. A plain entry is matched by its text, so editing it re-sends *that* message to everyone
   (whitespace at line ends and blank lines around the text do not count). To fix a typo without
   re-sending, give the message an id, see [message ids](#message-ids) below.
