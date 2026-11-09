@@ -110,7 +110,9 @@ D24 (S12 and W4R confirmations, new work in S18) D25 (S18 confirmations), D26 (W
 
 ## Maintainer to-dos outside the code
 
-- Push `main`.
+- ~~Push `main`.~~ Done 2026-11-09: `main` pushed (79fd7c7), CI green (integration suite 15:46 on a
+  GitHub runner with 2 workers), released as **0.1.0** (PyPI `onbot==0.1.0`, Docker Hub
+  `dzdde/onbot:0.1.0`, `0.1`, `0`, `latest`).
 - GitHub Support request to purge cached views of the old commits b16af39, 4a7488f, 6f7a00c and their
   descendants (old history).
 - Repository settings from the S15 checklist in `docs/development.md`: protect `main` and tags
