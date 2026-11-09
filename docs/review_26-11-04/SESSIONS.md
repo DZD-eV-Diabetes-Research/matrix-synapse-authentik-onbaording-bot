@@ -275,6 +275,20 @@ finding. Experiments (asserting the current behaviour): orchestrator scratchpad
 
 ---
 
+## After the release (open items of this review run)
+
+- **W9R-01 (low, from the last cold review, 2026-11-09):** the stale space link retry
+  (`_stale_space_links` in `engine.py`) lives in process memory; a restart between a failed cleanup and
+  its retry leaves the bot's links to the old space for good. Fix: seed the set with every managed
+  room on the first upkeep of a process (one state read per room per restart). The docs say so for now.
+- REC-16 (fewer upkeep GETs per room) and the REC-17 proposal (one `ManagedRoom` record per room,
+  written up in the S14 part 2 report): optional refactors.
+- The remaining reconciler unit fakes (`FakeAdmin` in `test_engine.py`) do not serve one shared room
+  state yet.
+- S17 (bot-driven room upgrades, D20), deferred.
+
+---
+
 ## CI1 CI duration (D17)
 
 **Goal:** shorter waits without weakening the gate. Runs after S16 (the scrub), before wave 2.

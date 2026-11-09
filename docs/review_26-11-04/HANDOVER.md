@@ -91,7 +91,8 @@ W8R merged (code identical to its branch at 8b68c8e): full run on the branch wit
 passed in 11:32 (2 config docs drift tests failing there by design, green on main after
 regeneration); unit and contract on main 1494 passed.
 
-The review run is complete apart from an optional last cold review of W8R. What remains: the
+The review run is complete. The last cold review (of W8R) found one low item (W9R-01, a retry lost
+on restart), documented and listed in `SESSIONS.md` under "After the release". What remains: the
 maintainer to-dos below (including the deployment template changes prepared uncommitted in the local
 clone of `infra-node-conf-com` on 2026-11-09: `oauth2` removed, D27 rename, topics, container
 hardening, `ONBOT_IMAGE` placeholder), S17 (deferred, not before the next release), REC-16 and the

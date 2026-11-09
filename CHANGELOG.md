@@ -273,8 +273,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   isolated stack so several checkouts can run the integration suite at the same time.
 
 ### Fixed
-- **A failed removal of a room's links to an earlier space is retried on later passes (review
-  W8R-03),** and only an `m.space.child` the bot wrote into the old space is removed (review W8R-04).
+- **A failed removal of a room's links to an earlier space is retried on later passes of the same
+  process (review W8R-03; a restart in between forgets the retry),** and only an `m.space.child` the bot wrote into the old space is removed (review W8R-04).
 - **The discovery poll asks Authentik for groups without the embedded member objects (review
   W8R-05).**
 - **A notice board welcomed while a concurrent welcome saw a new bot avatar gets the new picture on
