@@ -22,7 +22,7 @@ from onbot.clients.matrix import ApiClientMatrix
 from onbot.clients.synapse_admin import ApiClientSynapseAdmin
 from onbot.lifecycle.accounts import lifecycle_account_data_type
 from onbot.reconciler.rooms import compute_room_attributes
-from onbot.reconciler.state import granted_power_levels_type
+from onbot.state import granted_power_levels_type
 from tests.integration import stack_api as S
 
 pytestmark = pytest.mark.integration

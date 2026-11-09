@@ -6,7 +6,7 @@ into every room the bot shares with anyone, which clients render as "the bot cha
 picture". Restarting the bot must not do that.
 
 So the bot records what it set: an account-data blob (``<reversed server>.onbot.bot_avatar``, the
-same no-database bookkeeping as the room-state events in :mod:`onbot.reconciler.state`) holding the
+same no-database bookkeeping as the room-state events in :mod:`onbot.state`) holding the
 configured source URL, the SHA-256 of the image and the mxc it produced. On start the image is
 fetched once and the profile is touched only when the record does not match the configured URL, the
 image's content and the avatar the profile actually carries. Keying on the content as well as the URL
@@ -28,7 +28,7 @@ from typing import Any, Protocol
 
 from onbot.logging import get_logger
 from onbot.media import MediaUploader
-from onbot.reconciler.state import SCHEMA_VERSION, event_type_name
+from onbot.state import SCHEMA_VERSION, event_type_name
 
 log = get_logger(__name__)
 

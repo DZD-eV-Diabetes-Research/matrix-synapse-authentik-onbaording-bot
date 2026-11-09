@@ -12,7 +12,6 @@ import pytest
 
 from onbot.clients.base import ApiError
 from onbot.models import MatrixRoom
-from onbot.reconciler.state import DirectRoomState, GroupRoomState, OnbotRoomType
 from onbot.rooms.identity import RoomIdentityResolver, RoomKey, classify_room, stray_claims
 from onbot.rooms.provision import (
     PRIVILEGED_LOCK_LEVEL,
@@ -22,6 +21,7 @@ from onbot.rooms.provision import (
     markers_locked,
     with_markers_locked,
 )
+from onbot.state import DirectRoomState, GroupRoomState, OnbotRoomType
 from tests.unit.room_fakes import BOT, SERVER, room_state
 
 G1 = RoomKey(OnbotRoomType.group_room, "g1")
@@ -138,7 +138,7 @@ def test_the_marker_is_the_last_initial_state_event() -> None:
 
 
 def test_a_space_spec_marks_the_creation_content() -> None:
-    from onbot.reconciler.state import SpaceRoomState
+    from onbot.state import SpaceRoomState
 
     params = build_create_room_params(ManagedRoomSpec(marker=SpaceRoomState(), is_space=True), SERVER)
     assert params["creation_content"]["type"] == "m.space"
@@ -179,7 +179,7 @@ def test_an_unreadable_marker_is_a_problem() -> None:
 
 
 def test_a_notice_board_is_not_a_managed_role() -> None:
-    from onbot.reconciler.state import dump_room_state
+    from onbot.state import dump_room_state
 
     dm = {
         "type": "org.company.onbot.direct_room",

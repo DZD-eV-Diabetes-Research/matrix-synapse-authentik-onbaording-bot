@@ -63,7 +63,7 @@ not the reconciler. A user removed only from the Authentik group is kicked from 
 
 A lobby mistaken for a group room: discovery would project Authentik membership onto it and **kick
 every visitor** on the next tick. The guard is a distinct `OnbotRoomType.visitor_lobby` state event
-(`onbot/reconciler/state.py`) stamped on the lobby at creation and a separate `GroupRoomMap.lobby`
+(`onbot/state.py`) stamped on the lobby at creation and a separate `GroupRoomMap.lobby`
 slot — the lobby is never the `GroupRoomMap.room` the membership projection iterates. The unit test
 that asserts a lobby never enters the group-room membership diff was written before the code that
 could have caused it (todo §6).

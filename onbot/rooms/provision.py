@@ -40,7 +40,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from onbot.logging import get_logger
 from onbot.reconciler.power_levels import creators_are_privileged
-from onbot.reconciler.state import AnyRoomState, OnbotRoomType, dump_room_state, event_type_name
+from onbot.state import AnyRoomState, OnbotRoomType, dump_room_state, event_type_name
 
 if TYPE_CHECKING:
     from onbot.clients.matrix import ApiClientMatrix

@@ -59,7 +59,8 @@ from pydantic import ValidationError
 from onbot.clients.base import ApiError
 from onbot.logging import get_logger
 from onbot.models import MatrixRoom
-from onbot.reconciler.state import (
+from onbot.rooms.provision import lock_markers, markers_locked
+from onbot.state import (
     MANAGED_ROOM_TYPES,
     AdminRoomState,
     GroupRoomState,
@@ -69,7 +70,6 @@ from onbot.reconciler.state import (
     event_type_name,
     parse_room_state,
 )
-from onbot.rooms.provision import lock_markers, markers_locked
 
 log = get_logger(__name__)
 

@@ -9,7 +9,8 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
-from onbot.reconciler.state import (
+from onbot.rooms.provision import marker_event_types
+from onbot.state import (
     AdminRoomState,
     GroupRoomState,
     OnbotRoomType,
@@ -18,7 +19,6 @@ from onbot.reconciler.state import (
     dump_room_state,
     event_type_name,
 )
-from onbot.rooms.provision import marker_event_types
 
 BOT = "@bot:company.org"
 SERVER = "company.org"

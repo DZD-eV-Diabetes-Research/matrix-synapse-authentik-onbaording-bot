@@ -22,7 +22,7 @@ from onbot.lifecycle.accounts import (
     MatrixAccountDataLedgerStore,
 )
 from onbot.reconciler.engine import ReconcilerEngine
-from onbot.reconciler.state import OnbotRoomType
+from onbot.state import OnbotRoomType
 from tests.unit.room_fakes import IdentityScanMixin
 from tests.unit.test_engine import RecordingEffectors
 from tests.unit.test_lifecycle_scenarios import Clock, FakeMas, FakeMediaAdmin, Store

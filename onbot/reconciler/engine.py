@@ -84,18 +84,6 @@ from onbot.reconciler.repair import (
 )
 from onbot.reconciler.report import PassReport, describe_error
 from onbot.reconciler.rooms import build_group_room_maps, colliding_aliases, resolve_room_settings
-from onbot.reconciler.state import (
-    AnyRoomState,
-    GrantedPowerLevels,
-    GroupRoomState,
-    OnbotRoomType,
-    SpaceRoomState,
-    VisitorLobbyRoomState,
-    dump_room_state,
-    event_type_name,
-    granted_power_levels_type,
-    parse_room_state,
-)
 from onbot.rooms.identity import (
     MarkerWriteFailed,
     NoticeBoardsUnreadable,
@@ -108,6 +96,18 @@ from onbot.rooms.identity import (
     stray_claims,
 )
 from onbot.rooms.provision import ManagedRoomSpec, lock_markers, markers_locked
+from onbot.state import (
+    AnyRoomState,
+    GrantedPowerLevels,
+    GroupRoomState,
+    OnbotRoomType,
+    SpaceRoomState,
+    VisitorLobbyRoomState,
+    dump_room_state,
+    event_type_name,
+    granted_power_levels_type,
+    parse_room_state,
+)
 from onbot.utils import normalize_group_pk
 
 log = get_logger(__name__)

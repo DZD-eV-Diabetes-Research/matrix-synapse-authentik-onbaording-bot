@@ -53,7 +53,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from onbot.config import OnbotConfig
 from onbot.logging import get_logger
-from onbot.reconciler.state import SCHEMA_VERSION, event_type_name
+from onbot.state import SCHEMA_VERSION, event_type_name
 
 log = get_logger(__name__)
 # Dedicated audit channel so operators can route the irreversible-action trail separately.

@@ -92,7 +92,7 @@ from onbot.guard import (
 )
 from onbot.logging import get_logger
 from onbot.reconciler.engine import ReconcilerEngine
-from onbot.reconciler.state import OnbotRoomType, event_type_name
+from onbot.state import OnbotRoomType, event_type_name
 
 log = get_logger(__name__)
 

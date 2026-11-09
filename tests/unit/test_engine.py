@@ -13,8 +13,8 @@ from onbot.lifecycle.accounts import DirectorySnapshot, DirectoryUser
 from onbot.media import SourceImage, UploadedImage
 from onbot.reconciler.effectors import DryRunEffectors
 from onbot.reconciler.engine import ReconcilerEngine
-from onbot.reconciler.state import OnbotRoomType
 from onbot.rooms.provision import ManagedRoomSpec, marker_event_types
+from onbot.state import OnbotRoomType
 from tests.unit.room_fakes import IdentityScanMixin, room_state
 
 BOT = "@bot:company.org"

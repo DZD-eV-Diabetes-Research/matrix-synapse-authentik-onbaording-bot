@@ -26,10 +26,10 @@ from onbot.clients.authentik import ApiClientAuthentik
 from onbot.clients.matrix import ApiClientMatrix
 from onbot.clients.synapse_admin import ApiClientSynapseAdmin
 from onbot.config import OnbotConfig
-from onbot.reconciler.state import GroupRoomState, OnbotRoomType, dump_room_state, event_type_name
 from onbot.rooms.admin import AdminRoomProvisioner
 from onbot.rooms.identity import RoomIdentityResolver
 from onbot.rooms.provision import markers_locked
+from onbot.state import GroupRoomState, OnbotRoomType, dump_room_state, event_type_name
 from tests.integration import stack_api as S
 
 pytestmark = pytest.mark.integration

@@ -18,14 +18,14 @@ from onbot.clients.synapse_admin import RoomBlock
 from onbot.config import OnbotConfig
 from onbot.events import Event, EventBus, Signal
 from onbot.reconciler.engine import ReconcilerEngine
-from onbot.reconciler.state import (
+from onbot.rooms.identity import RoomIdentityResolver
+from onbot.state import (
     GroupRoomState,
     OnbotRoomType,
     SpaceRoomState,
     VisitorLobbyRoomState,
     dump_room_state,
 )
-from onbot.rooms.identity import RoomIdentityResolver
 from tests.unit.room_fakes import room_state
 from tests.unit.test_engine import (
     _BASE,

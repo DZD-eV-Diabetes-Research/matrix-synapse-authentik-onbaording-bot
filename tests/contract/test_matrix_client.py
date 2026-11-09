@@ -13,8 +13,8 @@ from onbot.clients.matrix import (
     SyncNotSupportedError,
     _parse_mxc,
 )
-from onbot.reconciler.state import GroupRoomState
 from onbot.rooms.provision import ManagedRoomSpec
+from onbot.state import GroupRoomState
 
 
 def _client() -> ApiClientMatrix:

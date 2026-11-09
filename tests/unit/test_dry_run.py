@@ -18,9 +18,9 @@ from onbot.config import AdminRoom, AuthentikServer, OnbotConfig, SynapseServer
 from onbot.events import Signal
 from onbot.guard import ReadOnlyGuardStore
 from onbot.reconciler.effectors import DryRunEffectors, DryRunSynapseAdmin, is_synthetic_room
-from onbot.reconciler.state import GroupRoomState
 from onbot.rooms.admin import AdminRoomProvisioner
 from onbot.rooms.provision import ManagedRoomSpec
+from onbot.state import GroupRoomState
 from tests.unit.test_engine import _BASE, FakeAdmin, FakeAuthentik, RecordingEffectors
 
 

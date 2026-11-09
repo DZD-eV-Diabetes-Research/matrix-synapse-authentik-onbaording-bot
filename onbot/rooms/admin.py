@@ -49,15 +49,15 @@ from onbot.events import Event
 from onbot.logging import get_logger
 from onbot.models import MatrixRoom
 from onbot.reconciler.repair import CANONICAL_ALIAS_EVENT_TYPE, marker_repair
-from onbot.reconciler.state import (
+from onbot.rooms.identity import RoomIdentityResolver, RoomKey
+from onbot.rooms.provision import ManagedRoomSpec, create_managed_room, lock_markers, markers_locked
+from onbot.state import (
     AdminRoomState,
     OnbotRoomType,
     dump_room_state,
     event_type_name,
     parse_room_state,
 )
-from onbot.rooms.identity import RoomIdentityResolver, RoomKey
-from onbot.rooms.provision import ManagedRoomSpec, create_managed_room, lock_markers, markers_locked
 
 log = get_logger(__name__)
 

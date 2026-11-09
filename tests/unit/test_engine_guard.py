@@ -17,7 +17,7 @@ from onbot.clients.base import ApiError
 from onbot.config import OnbotConfig
 from onbot.events import Event, EventBus, Signal
 from onbot.reconciler.engine import ReconcilerEngine
-from onbot.reconciler.state import OnbotRoomType, granted_power_levels_type
+from onbot.state import OnbotRoomType, granted_power_levels_type
 from tests.unit.test_engine import _BASE, FakeAdmin, RecordingEffectors
 
 ROOM1 = "!room1:company.org"

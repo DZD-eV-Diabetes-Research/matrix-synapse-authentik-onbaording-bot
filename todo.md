@@ -265,7 +265,7 @@ restart. Two guards, both:
 
 * ignore events whose `origin_server_ts` predates process start;
 * dedupe on `event_id` against a bounded ring buffer persisted in the bot's account data (namespace
-  the type with the existing `event_type_name()` helper from `onbot/reconciler/state.py`, e.g.
+  the type with the existing `event_type_name()` helper from `onbot/state.py`, e.g.
   `org.company.onbot.admin_cursor`).
 
 Write a unit test that feeds the same `SyncResult` twice and asserts one send.
@@ -632,7 +632,7 @@ the tick.
 **6. The model learns about a second room.**
 
 `GroupRoomMap` (`onbot/models.py`) is 1:1 group→room. Give it `lobby: MatrixRoom | None` and a second
-`RoomCreateAttributes`. Add `OnbotRoomType.visitor_lobby` to `onbot/reconciler/state.py` and stamp the
+`RoomCreateAttributes`. Add `OnbotRoomType.visitor_lobby` to `onbot/state.py` and stamp the
 lobby with it at creation, so discovery does not mistake a lobby for a group room, try to project
 Authentik membership onto it, and kick every visitor on the next tick. **This is the single most
 dangerous bug this session can produce.** Write the test that would catch it before writing the code

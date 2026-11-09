@@ -32,10 +32,10 @@ from onbot.config import OnbotConfig
 from onbot.events import EventBus
 from onbot.guard import DestructiveActionGuard, GuardLimits, MatrixAccountDataGuardStore
 from onbot.reconciler.rooms import compute_lobby_attributes, compute_room_attributes
-from onbot.reconciler.state import OnbotRoomType, event_type_name
 from onbot.rooms.identity import RoomIdentityResolver, RoomIndex
 from onbot.rooms.provision import markers_locked
 from onbot.runtime import StartupSupervisor
+from onbot.state import OnbotRoomType, event_type_name
 from onbot.utils import normalize_group_pk
 from tests.integration import stack_api as S
 from tests.integration.test_guard import _bot_messages, _confirm, _proposed_batches

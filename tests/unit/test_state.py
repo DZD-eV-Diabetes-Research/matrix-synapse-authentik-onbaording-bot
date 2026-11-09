@@ -1,6 +1,6 @@
 """Unit tests for the versioned onbot room-state schemas."""
 
-from onbot.reconciler.state import (
+from onbot.state import (
     SCHEMA_VERSION,
     DirectRoomState,
     GroupRoomState,

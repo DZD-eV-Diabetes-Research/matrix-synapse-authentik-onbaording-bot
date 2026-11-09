@@ -14,7 +14,7 @@ from onbot.admin.broadcast import BroadcastResult
 from onbot.admin.control_room import ControlRoomHandler
 from onbot.clients.matrix import RoomSync, SyncResult
 from onbot.config import AdminRoom, AuthentikServer, OnbotConfig, SynapseServer
-from onbot.reconciler.state import OnbotRoomType
+from onbot.state import OnbotRoomType
 
 BOT = "@bot:matrix.test"
 ADMIN = "@admin:matrix.test"
