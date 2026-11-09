@@ -310,7 +310,7 @@ class AdminRoom(_StrictModel):
             ),
             examples=["Bot control room. !help for commands."],
         ),
-    ] = "Onbot control room — say !help for the available commands."
+    ] = "Onbot control room. Say !help for the available commands."
     admin_user_ids: Annotated[
         list[str],
         Field(
@@ -1151,10 +1151,10 @@ class MatrixDynamicRoomSettings(_StrictModel):
                 wonders why the room is quiet or which room to post in."""
             ),
             examples=[
-                "Open lobby for {name} — anyone in the space may join. The group's working room is private."
+                "Open lobby for {name}: anyone in the space may join. The group's working room is private."
             ],
         ),
-    ] = "Open lobby for {name} — anyone in the space may join. The group's working room is private."
+    ] = "Open lobby for {name}: anyone in the space may join. The group's working room is private."
     visitor_lobby_end2end_encryption_enabled: Annotated[
         bool,
         Field(
@@ -1608,7 +1608,7 @@ class OnbotConfig(BaseSettings):
             ),
             examples=["Notices from the onboarding bot. You cannot write here."],
         ),
-    ] = "Notices from the onboarding bot. This room is read-only — you cannot write here."
+    ] = "Notices from the onboarding bot. This room is read-only, so you cannot write here."
     force_join_onboarding_room: Annotated[
         bool,
         Field(

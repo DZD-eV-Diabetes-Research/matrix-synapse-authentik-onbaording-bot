@@ -213,3 +213,26 @@ def test_welcome_message_ids_must_be_unique() -> None:
                 "welcome_new_users_messages": [{"id": "intro", "text": "a"}, {"id": "intro", "text": "b"}],
             }
         )
+
+
+def _strings(value: object, path: str = "") -> list[tuple[str, str]]:
+    if isinstance(value, str):
+        return [(path, value)]
+    if isinstance(value, dict):
+        return [s for key, item in value.items() for s in _strings(item, f"{path}.{key}")]
+    if isinstance(value, list):
+        return [s for i, item in enumerate(value) for s in _strings(item, f"{path}[{i}]")]
+    return []
+
+
+def test_no_default_text_carries_an_em_or_en_dash() -> None:
+    """D28: the default topics (control room, visitor lobby, notice board) carried em dashes."""
+    defaults = _strings(OnbotConfig.model_validate(_MINIMAL).model_dump(mode="json"))
+    dashes = {chr(0x2013), chr(0x2014)}  # en dash, em dash
+    assert [(path, text) for path, text in defaults if dashes & set(text)] == []
+    topics = {path for path, _text in defaults if "topic" in path}
+    assert {
+        ".admin_room.topic",
+        ".onboarding_room_topic",
+        ".matrix_room_default_settings.visitor_lobby_topic_template",
+    } <= topics, topics

@@ -195,6 +195,13 @@ need a look at your configuration. The ones that stop the bot or cost a first st
   names are no longer read: a config or `ONBOT_...` environment variable that still uses one stops the
   bot at startup with exit code 2 and a message naming the new key. Rename the keys in the same
   deployment as the image update.
+- **New default topics (after 0.0.11).** The default topics of the admin control room
+  (`admin_room.topic`) and of the visitor lobbies (`visitor_lobby_topic_template`) no longer contain
+  a dash. Onbot keeps both topics in step with the configuration, so on the first pass after the
+  upgrade it rewrites them once in every existing control room and lobby that uses the default. To
+  keep the old wording, set the old text in the configuration. The notice board topic
+  (`onboarding_room_topic`) changed too, but it is only used for new boards; existing boards keep
+  theirs.
 - **The first start after upgrading from 0.0.11 or older does some work once.** Every onbot marker
   written by an older version is rewritten once (logged at INFO as "the onbot marker was
   incomplete; the bot restored it"): older markers miss fields or still carry the Authentik URL
