@@ -191,6 +191,46 @@ async def test_an_attribute_guess_does_not_take_a_mas_linked_account(
     assert S.mas_user(alice_name)["locked_at"] is not None
 
 
+async def test_without_mas_the_bound_owner_keeps_her_account_against_a_guess(
+    make_config: Any,
+    authentik_admin: S.AuthentikAdmin,
+    matrix_client: ApiClientMatrix,
+    admin_client: ApiClientSynapseAdmin,
+) -> None:
+    """D21 (2026-11-09): without `mas_admin`, onbot's recorded binding wins over an attribute guess
+    like a MAS link. Before, both users were frozen: alice's account no longer followed her groups."""
+    prefix = S.uniq("bnd")
+    team = authentik_admin.create_group(f"{prefix}-team", attributes={"is_chatroom": True})
+    other = authentik_admin.create_group(f"{prefix}-other", attributes={"is_chatroom": True})
+    later = authentik_admin.create_group(f"{prefix}-later", attributes={"is_chatroom": True})
+    alice_name = S.uniq("bndalice")
+    alice, alice_login = S.provision(
+        authentik_admin, alice_name, groups=[team["pk"]], attributes={"matrix_name": alice_name}
+    )
+    config = _config(make_config, prefix, [str(g["pk"]) for g in (team, other, later)], mas=False)
+    config.sync_authentik_users_with_matrix_rooms.authentik_username_mapping_attribute = (
+        "attributes.matrix_name"
+    )
+    await run_reconcile_once(config)  # binds alice
+    authentik_admin.create_user(
+        S.uniq("bndcarl"),
+        password=S.DEFAULT_PASSWORD,
+        groups=[other["pk"]],
+        attributes={"matrix_name": alice_name},
+    )
+    authentik_admin.add_user_to_group(str(later["pk"]), alice["pk"])
+
+    await run_reconcile_once(config)
+
+    later_room = await _room_of(later, config, matrix_client)
+    other_room = await _room_of(other, config, matrix_client)
+    assert alice_login.mxid in await admin_client.list_room_members(later_room)  # still managed
+    assert alice_login.mxid not in await admin_client.list_room_members(other_room)  # carl's group
+    assert alice_login.mxid in await admin_client.list_room_members(
+        await _room_of(team, config, matrix_client)
+    )
+
+
 async def test_a_guess_does_not_take_the_account_of_an_owner_onbot_never_saw(
     make_config: Any,
     authentik_admin: S.AuthentikAdmin,

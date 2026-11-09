@@ -156,15 +156,30 @@ async def test_two_users_resolving_to_one_account_are_both_held_and_reported() -
     assert len(reports) == 1  # once per process
 
 
-async def test_a_newcomer_naming_a_bound_account_holds_both() -> None:
-    """SEC-07: renaming oneself to somebody else's name is no way into their account."""
+async def test_a_newcomer_naming_a_bound_account_gets_nothing() -> None:
+    """SEC-07: renaming oneself to somebody else's name is no way into their account. D21
+    (2026-11-09): without MAS the recorded binding wins, so the newcomer alone is skipped."""
     store = MemoryBindings({"1": mx("alice")})
-    resolver, _ = _resolver(_config(), store)
+    resolver, reports = _resolver(_config(), store)
     # pk 1 (alice) is not in this call (out of scope, say); her binding still claims the account.
     result = await resolver.resolve([_user(2, "alice")], bind=["2"], matrix_mxids={mx("alice")})
     assert result.mxids == {}
-    assert result.held == {mx("alice"): ("1", "2")}
+    assert result.held == {}
+    assert result.rejected == {"2": mx("alice")}
     assert store.mxids() == {"1": mx("alice")}
+    (report,) = reports
+    assert "'alice' (pk 2)" in report and "the one of pk 1 (a recorded binding)" in report
+
+
+async def test_a_present_bound_owner_wins_over_a_guess_without_mas() -> None:
+    store = MemoryBindings({"1": mx("alice")})
+    resolver, _ = _resolver(_config(attribute="attributes.mx"), store)
+    users = [_user(1, "alice", attributes={"mx": "alice"}), _user(2, "carl", attributes={"mx": "alice"})]
+    result = await resolver.resolve(users, bind=["1", "2"], matrix_mxids={mx("alice")})
+    assert result.mxids == {"1": mx("alice")}
+    assert result.held == {}
+    assert result.rejected == {"2": mx("alice")}
+    assert result.held_mxids == frozenset()
 
 
 async def test_no_binding_for_the_bot_ignored_accounts_or_users_not_offered() -> None:
@@ -310,13 +325,36 @@ async def test_an_absent_owner_whose_account_mas_links_still_beats_a_guess() -> 
     assert result.rejected == {"2": mx("alice")}
 
 
-async def test_a_binding_against_a_guess_fails_closed_when_mas_does_not_link_the_account() -> None:
+async def test_a_binding_wins_over_a_guess_when_mas_does_not_link_the_account() -> None:
+    """D21 (2026-11-09): before, the binding against a guess failed closed for both."""
     store = MemoryBindings({"1": mx("alice")})
     mas = FakeMasLinks({})
     resolver, _ = _resolver(_config(mas=True), store, mas)
     result = await resolver.resolve([_user(2, "alice")])
+    assert result.held == {}
+    assert result.rejected == {"2": mx("alice")}
+
+
+async def test_a_binding_against_a_guess_fails_closed_while_mas_cannot_be_read() -> None:
+    """MAS might link the account to the guesser's subject; without its answer nobody wins."""
+    store = MemoryBindings({"1": mx("alice")})
+    mas = FakeMasLinks({"hash-2": "alice"})
+    mas.fail = True
+    resolver, _ = _resolver(_config(mas=True), store, mas)
+    result = await resolver.resolve([_user(2, "alice")])
     assert result.held == {mx("alice"): ("1", "2")}
     assert result.rejected == {}
+
+
+async def test_a_binding_against_a_guess_fails_closed_when_mas_links_the_account_elsewhere() -> None:
+    """MAS links @alice to a third subject: neither the bound alice (her own subject has no link)
+    nor the guess is its owner."""
+    store = MemoryBindings({"1": mx("alice")})
+    mas = FakeMasLinks({"hash-9": "alice"})
+    resolver, _ = _resolver(_config(mas=True), store, mas)
+    result = await resolver.resolve([_user(1, "alice"), _user(2, "alice")])
+    assert result.mxids == {}
+    assert result.held == {mx("alice"): ("1", "2")}
 
 
 async def test_a_mas_link_against_another_users_binding_fails_closed() -> None:

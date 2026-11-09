@@ -170,9 +170,14 @@ What this means in practice:
   - if MAS links the account to exactly one of them and the others only name it by the mapping
     attribute (never seen, no MAS link), the MAS-linked owner is managed as usual and the others are
     skipped;
+  - the same holds for the one user Onbot recorded a binding for, when MAS cannot say otherwise:
+    `mas_admin` is not configured, or MAS links that account to nobody. The bound owner (also when
+    disabled or outside the sync scope) keeps the account, and the users who only name it by the
+    mapping attribute are skipped;
   - otherwise (two MAS links, two recorded bindings, a MAS link against another user's binding, or
-    a binding against an attribute guess) Onbot skips all of them: no join, no kick, no power-level
-    change, no lock and no erase of that account.
+    a binding against an attribute guess while MAS cannot be read or links the account to somebody
+    else) Onbot skips all of them: no join, no kick, no power-level change, no lock and no erase of
+    that account.
 
   Either way the conflict is reported in the admin room. There is no bot command for it; resolve it
   by hand (see below).
