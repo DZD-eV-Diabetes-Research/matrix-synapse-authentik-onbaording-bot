@@ -49,7 +49,7 @@ from __future__ import annotations
 import asyncio
 import secrets
 import time
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Collection, Iterable, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
@@ -974,9 +974,21 @@ class DestructiveActionGuard:
         self.events = events
         self.clock = clock
         self.id_factory = id_factory
+        # Ids taken by something else `!confirm <id>` reaches (held announcements, W6R-04).
+        self._reserved_ids: list[Callable[[], Collection[str]]] = []
         self._lock = asyncio.Lock()
         # The unreadable-state problem last reported, so the admin room hears it once, not every pass.
         self._reported_unreadable: str | None = None
+
+    def reserve_ids(self, ids: Callable[[], Collection[str]]) -> None:
+        """Have new batch ids avoid the ids ``ids()`` names at the time (W6R-04)."""
+        self._reserved_ids.append(ids)
+
+    def _new_batch_id(self) -> str:
+        batch_id = self.id_factory()
+        while any(batch_id in ids() for ids in self._reserved_ids):
+            batch_id = self.id_factory()
+        return batch_id
 
     async def decide(self, counts: InputCounts, planned: Sequence[DestructiveAction]) -> GuardDecision:
         async with self._lock:
@@ -1006,7 +1018,7 @@ class DestructiveActionGuard:
                     self.limits,
                     now=self.clock(),
                     complete=complete,
-                    id_factory=self.id_factory,
+                    id_factory=self._new_batch_id,
                 )
                 if state.model_dump(mode="json") != before:
                     await self.store.save(state)

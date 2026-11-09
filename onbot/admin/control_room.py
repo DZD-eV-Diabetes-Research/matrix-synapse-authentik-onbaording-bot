@@ -37,7 +37,9 @@ in size (ONB-04); if posting it fails anyway, a short note takes its place.
 held: the bot answers with an id, and only ``!confirm <id>`` from that admin within
 :data:`DUPLICATE_CONFIRM_SEC` sends it (``!reject <id>`` drops it). A message pasted twice, or sent
 again because the first answer was slow, does not page everybody twice. Held announcements live in
-this process only; a restart drops them, which is the at-most-once direction.
+this process only; a restart drops them, which is the at-most-once direction. Their ids share the
+``!confirm`` namespace with the guard's batches: they are matched in any case like those (W6R-04),
+a new id never repeats an open one of either kind, and ``!pending`` lists both.
 
 **Authorisation is the allowlist, never the power level.** The room's power levels let any member
 speak — that is the point of a discussion room. If someone gets themselves into it, their power
@@ -79,7 +81,14 @@ from onbot.admin.commands import (
 )
 from onbot.clients.matrix import ApiClientMatrix, SyncResult
 from onbot.config import OnbotConfig
-from onbot.guard import RESET_HINT, DestructiveActionGuard, GuardStateUnreadable, describe_batch, new_batch_id
+from onbot.guard import (
+    RESET_HINT,
+    DestructiveActionGuard,
+    GuardStateUnreadable,
+    describe_batch,
+    new_batch_id,
+    normalize_batch_id,
+)
 from onbot.logging import get_logger
 from onbot.reconciler.engine import ReconcilerEngine
 from onbot.reconciler.state import event_type_name
@@ -121,6 +130,8 @@ SHUTTING_DOWN = (
 # held until they confirm it, and a held one can be confirmed for this long.
 DUPLICATE_WINDOW_SEC = 60.0
 DUPLICATE_CONFIRM_SEC = 600.0
+# How much of a held announcement `!pending` shows.
+HELD_PREVIEW_CHARS = 80
 DUPLICATE_HELD = (
     "You sent the same announcement {ago} seconds ago, so this one was not sent. To send it again "
     "anyway, answer !confirm {id} within {minutes} minutes; !reject {id} drops it."
@@ -195,6 +206,9 @@ class ControlRoomHandler:
         self._clock = clock
         self._last_announcement: dict[str, tuple[str, float]] = {}
         self._held_announcements: dict[str, HeldAnnouncement] = {}
+        if guard is not None:
+            # `!confirm <id>` reaches both, so the guard's new batch ids avoid the held ones (W6R-04).
+            guard.reserve_ids(self._held_announcements.keys)
 
     async def start(self, room_id: str) -> None:
         """Bind to the provisioned control room and restore the handled-event cursor."""
@@ -304,16 +318,19 @@ class ControlRoomHandler:
         if previous is not None and previous[0] == text and now - previous[1] < DUPLICATE_WINDOW_SEC:
             await self._hold_duplicate(message, sender, ago=now - previous[1])
             return
-        self._start_broadcast(message)
+        await self._start_broadcast(message)
 
-    def _start_broadcast(self, message: str) -> None:
+    async def _start_broadcast(self, message: str) -> None:
         if self._stopping:
             # The pump finishes the slice in hand after a stop; a broadcast started now would run
-            # into closing HTTP clients and nobody would cancel it (W5R-04).
+            # into closing HTTP clients and nobody would cancel it (W5R-04). The refusal is posted
+            # here, inside the slice the shutdown waits for, not as a task: the second stop() after
+            # the drain would cancel such a task before it posted (W6R-03). Bounded, so a server that
+            # does not answer cannot hold the shutdown.
             log.warning("the bot is shutting down; an announcement was not sent")
-            self._broadcast_task = asyncio.create_task(
-                self._reply_safely(SHUTTING_DOWN), name="onbot-broadcast-refused"
-            )
+            with contextlib.suppress(Exception):
+                async with asyncio.timeout(INTERRUPTED_NOTE_TIMEOUT_SEC):
+                    await self._reply_safely(SHUTTING_DOWN)
             return
         self._broadcast_rooms = 0
         self._broadcast_task = asyncio.create_task(self._run_broadcast(message), name="onbot-broadcast")
@@ -321,8 +338,9 @@ class ControlRoomHandler:
     async def _hold_duplicate(self, message: str, sender: str, *, ago: float) -> None:
         """Keep a repeated announcement back until its sender confirms it (ONB-11)."""
         self._forget_expired_announcements()
+        taken = set(self._held_announcements) | await self._open_batch_ids()
         held_id = new_batch_id()
-        while held_id in self._held_announcements:
+        while held_id in taken:
             held_id = new_batch_id()
         self._held_announcements[held_id] = HeldAnnouncement(sender, message, self._clock())
         log.warning("held a repeated announcement by %s as %s until they confirm it", sender, held_id)
@@ -331,6 +349,15 @@ class ControlRoomHandler:
                 ago=max(1, round(ago)), id=held_id, minutes=round(DUPLICATE_CONFIRM_SEC / 60)
             )
         )
+
+    async def _open_batch_ids(self) -> set[str]:
+        """The ids of the guard's open batches, which a held announcement's id must not repeat."""
+        if self.guard is None:
+            return set()
+        try:
+            return {b.id for b in await self.guard.open_batches()}
+        except GuardStateUnreadable:
+            return set()  # nothing can be confirmed until it is reset; the new id is still random
 
     def _forget_expired_announcements(self) -> None:
         now = self._clock()
@@ -357,7 +384,7 @@ class ControlRoomHandler:
         del self._held_announcements[held_id]
         self._last_announcement[sender] = (normalize_announcement(held.message), self._clock())
         log.info("admin %s confirmed the repeated announcement %s", sender, held_id)
-        self._start_broadcast(held.message)
+        await self._start_broadcast(held.message)
 
     @property
     def broadcast_running(self) -> bool:
@@ -417,6 +444,13 @@ class ControlRoomHandler:
             log.warning("could not post the short note either", exc_info=True)
 
     async def _pending(self) -> str:
+        """The guard's open batches and the held announcements: everything `!confirm` can release."""
+        parts = [await self._pending_batches()]
+        self._forget_expired_announcements()
+        parts += [self._describe_held(i, h) for i, h in self._held_announcements.items()]
+        return "\n\n".join(parts)
+
+    async def _pending_batches(self) -> str:
         if self.guard is None:
             return "The destructive-action guard is not available in this process."
         try:
@@ -426,6 +460,17 @@ class ControlRoomHandler:
         if not batches:
             return "No destructive actions are waiting for a confirmation."
         return "\n\n".join(describe_batch(b) for b in batches)
+
+    def _describe_held(self, held_id: str, held: HeldAnnouncement) -> str:
+        """One held announcement for `!pending` (W6R-04)."""
+        left = max(1, round((held.held_at + DUPLICATE_CONFIRM_SEC - self._clock()) / 60))
+        text = normalize_announcement(held.message)
+        preview = text if len(text) <= HELD_PREVIEW_CHARS else text[: HELD_PREVIEW_CHARS - 3] + "..."
+        return (
+            f"Announcement {held_id} (held, repeats the previous one of {held.sender}): {preview!r}. "
+            f"Only {held.sender} sends it with !confirm {held_id} or drops it with !reject {held_id}; it "
+            f"lapses in {left} minute(s)."
+        )
 
     async def _guard_command(self, command: Command, sender: str) -> None:
         """``!guard reset``: replace an unreadable guard state; the old blob is kept verbatim."""
@@ -477,7 +522,7 @@ class ControlRoomHandler:
 
     async def _decide_batch(self, command: Command, sender: str) -> None:
         """``!confirm <id>`` / ``!reject <id>``: exactly one batch, never all of them (D13)."""
-        batch_id = command.argument.split()[0] if command.argument.split() else ""
+        batch_id = normalize_batch_id(command.argument.split()[0]) if command.argument.split() else ""
         if not batch_id:
             await self._reply(
                 f"Usage: !{command.name} <batch id>. There is no {command.name} without an id; "
