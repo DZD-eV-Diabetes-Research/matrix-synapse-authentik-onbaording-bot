@@ -100,6 +100,7 @@ def _handler(
     engine: object | None = None,
     remembered_events: int = 200,
     resolver: AdminResolver | None = None,
+    clock: Callable[[], float] | None = None,
 ) -> ControlRoomHandler:
     config = _config(admins, group_pks=group_pks)
     handler = ControlRoomHandler(
@@ -110,6 +111,7 @@ def _handler(
         engine=engine,  # type: ignore[arg-type]
         started_at_ms=NOW_MS,
         remembered_events=remembered_events,
+        clock=clock or (lambda: 0.0),
     )
     handler.room_id = ROOM
     return handler
@@ -607,3 +609,81 @@ async def test_status_says_whether_the_send_rate_limit_is_lifted() -> None:
 
     assert "send rate limit: NOT lifted" in client.sends[0][1]
     assert "send rate limit: lifted for the bot" in client.sends[1][1]
+
+
+# --- ONB-11 (S18): the same announcement twice within a minute asks first --------------------------
+
+
+class _Clock:
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+OTHER_ADMIN = "@other:matrix.test"
+
+
+def _held_id(reply: str) -> str:
+    assert "was not sent" in reply, reply
+    return reply.split("!confirm ", 1)[1].split()[0]
+
+
+async def test_the_same_announcement_within_a_minute_is_held_until_confirmed() -> None:
+    client, broadcast, clock = _FakeClient(), _FakeBroadcast(), _Clock()
+    handler = _handler(client, broadcast, clock=clock)
+
+    await _run(handler, _message("!announce Maintenance  at 22:00", event_id="$a"))
+    clock.now += 30
+    await _run(handler, _message("!announce Maintenance at\n22:00 ", event_id="$b"))
+
+    assert broadcast.calls == ["Maintenance  at 22:00"]
+    held = _held_id(client.sends[-1][1])
+    assert "30 seconds ago" in client.sends[-1][1]
+
+    await _run(handler, _message(f"!confirm {held}", event_id="$c"))
+    assert broadcast.calls == ["Maintenance  at 22:00", "Maintenance at\n22:00"]
+    # Confirmed once: the id is used up.
+    await _run(handler, _message(f"!confirm {held}", event_id="$d"))
+    assert len(broadcast.calls) == 2
+
+
+async def test_a_held_announcement_is_only_confirmed_by_its_sender_and_can_be_dropped() -> None:
+    client, broadcast, clock = _FakeClient(), _FakeBroadcast(), _Clock()
+    handler = _handler(client, broadcast, admins=[ADMIN, OTHER_ADMIN], clock=clock)
+    await _run(
+        handler, _message("!announce hello", event_id="$a"), _message("!announce hello", event_id="$b")
+    )
+    held = _held_id(client.sends[-1][1])
+
+    await _run(handler, _message(f"!confirm {held}", sender=OTHER_ADMIN, event_id="$c"))
+    assert "only they can confirm" in client.sends[-1][1]
+    await _run(handler, _message(f"!reject {held}", event_id="$d"))
+    assert "Dropped the repeated announcement" in client.sends[-1][1]
+    await _run(handler, _message(f"!confirm {held}", event_id="$e"))
+    assert broadcast.calls == ["hello"]
+
+
+async def test_a_repeat_after_a_minute_another_text_or_another_admin_is_sent_at_once() -> None:
+    client, broadcast, clock = _FakeClient(), _FakeBroadcast(), _Clock()
+    handler = _handler(client, broadcast, admins=[ADMIN, OTHER_ADMIN], clock=clock)
+    await _run(handler, _message("!announce hello", event_id="$a"))
+    await _run(handler, _message("!announce hello", sender=OTHER_ADMIN, event_id="$b"))
+    await _run(handler, _message("!announce hello again", event_id="$c"))
+    clock.now += control_room.DUPLICATE_WINDOW_SEC
+    await _run(handler, _message("!announce hello again", event_id="$d"))
+    assert broadcast.calls == ["hello", "hello", "hello again", "hello again"]
+    assert not any("was not sent" in body for _, body in client.sends)
+
+
+async def test_a_held_announcement_expires() -> None:
+    client, broadcast, clock = _FakeClient(), _FakeBroadcast(), _Clock()
+    handler = _handler(client, broadcast, clock=clock)
+    await _run(
+        handler, _message("!announce hello", event_id="$a"), _message("!announce hello", event_id="$b")
+    )
+    held = _held_id(client.sends[-1][1])
+    clock.now += control_room.DUPLICATE_CONFIRM_SEC
+    await _run(handler, _message(f"!confirm {held}", event_id="$c"))
+    assert broadcast.calls == ["hello"]

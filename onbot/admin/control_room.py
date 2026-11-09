@@ -32,6 +32,13 @@ result is posted when it ends; meanwhile the other commands keep working. One br
 time: a second ``!announce`` while one is going is refused, not queued. The result reply is bounded
 in size (ONB-04); if posting it fails anyway, a short note takes its place.
 
+**The same announcement twice in a row asks first** (ONB-11). An ``!announce`` with the same text
+(whitespace aside) from the same admin within :data:`DUPLICATE_WINDOW_SEC` of their previous one is
+held: the bot answers with an id, and only ``!confirm <id>`` from that admin within
+:data:`DUPLICATE_CONFIRM_SEC` sends it (``!reject <id>`` drops it). A message pasted twice, or sent
+again because the first answer was slow, does not page everybody twice. Held announcements live in
+this process only; a restart drops them, which is the at-most-once direction.
+
 **Authorisation is the allowlist, never the power level.** The room's power levels let any member
 speak — that is the point of a discussion room. If someone gets themselves into it, their power
 level must not be the only thing standing between them and a message to every employee.
@@ -47,6 +54,8 @@ import asyncio
 import contextlib
 import time
 from collections import deque
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 from onbot import __version__
@@ -68,7 +77,7 @@ from onbot.admin.commands import (
 )
 from onbot.clients.matrix import ApiClientMatrix, SyncResult
 from onbot.config import OnbotConfig
-from onbot.guard import RESET_HINT, DestructiveActionGuard, GuardStateUnreadable, describe_batch
+from onbot.guard import RESET_HINT, DestructiveActionGuard, GuardStateUnreadable, describe_batch, new_batch_id
 from onbot.logging import get_logger
 from onbot.reconciler.engine import ReconcilerEngine
 from onbot.reconciler.state import event_type_name
@@ -95,6 +104,29 @@ BROADCAST_RUNNING = (
     "another; this one was not sent."
 )
 REPLY_FAILED = "The result of the last command could not be posted here ({error}); it is in the bot's log."
+
+# ONB-11: the same text from the same admin within this many seconds of their previous `!announce` is
+# held until they confirm it, and a held one can be confirmed for this long.
+DUPLICATE_WINDOW_SEC = 60.0
+DUPLICATE_CONFIRM_SEC = 600.0
+DUPLICATE_HELD = (
+    "You sent the same announcement {ago} seconds ago, so this one was not sent. To send it again "
+    "anyway, answer !confirm {id} within {minutes} minutes; !reject {id} drops it."
+)
+
+
+def normalize_announcement(text: str) -> str:
+    """``text`` with every run of whitespace as one space, for the duplicate check (ONB-11)."""
+    return " ".join(text.split())
+
+
+@dataclass(frozen=True, slots=True)
+class HeldAnnouncement:
+    """An ``!announce`` held as a duplicate until its sender confirms it (ONB-11)."""
+
+    sender: str
+    message: str
+    held_at: float
 
 
 def is_edit(content: dict[str, Any]) -> bool:
@@ -126,6 +158,7 @@ class ControlRoomHandler:
         guard: DestructiveActionGuard | None = None,
         started_at_ms: int | None = None,
         remembered_events: int = MAX_REMEMBERED_EVENTS,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.client = client
         self.config = config
@@ -144,6 +177,10 @@ class ControlRoomHandler:
         # The broadcast in flight, if any (one at a time), and how many rooms it goes to.
         self._broadcast_task: asyncio.Task[None] | None = None
         self._broadcast_rooms = 0
+        # ONB-11: each admin's last announcement (normalised text, when), and the held duplicates.
+        self._clock = clock
+        self._last_announcement: dict[str, tuple[str, float]] = {}
+        self._held_announcements: dict[str, HeldAnnouncement] = {}
 
     async def start(self, room_id: str) -> None:
         """Bind to the provisioned control room and restore the handled-event cursor."""
@@ -220,7 +257,7 @@ class ControlRoomHandler:
     async def _dispatch(self, command: Command, sender: str) -> None:
         log.info("admin %s ran %r", sender, command.name)
         if command.name == ANNOUNCE:
-            await self._announce(command.argument)
+            await self._announce(command.argument, sender)
         elif command.name == STATUS:
             await self._reply(await self._status())
         elif command.name == PENDING:
@@ -236,15 +273,67 @@ class ControlRoomHandler:
             # as the bot being down.
             await self._reply(help_text())
 
-    async def _announce(self, message: str) -> None:
+    async def _announce(self, message: str, sender: str) -> None:
         if not message:
             await self._reply("Nothing to announce. Usage: !announce <message>")
             return
         if self.broadcast_running:
             await self._reply(BROADCAST_RUNNING.format(rooms=self._broadcast_rooms))
             return
+        now = self._clock()
+        text = normalize_announcement(message)
+        previous = self._last_announcement.get(sender)
+        # Every announcement counts, a held one too: pasting it a third time is held again.
+        self._last_announcement[sender] = (text, now)
+        if previous is not None and previous[0] == text and now - previous[1] < DUPLICATE_WINDOW_SEC:
+            await self._hold_duplicate(message, sender, ago=now - previous[1])
+            return
+        self._start_broadcast(message)
+
+    def _start_broadcast(self, message: str) -> None:
         self._broadcast_rooms = 0
         self._broadcast_task = asyncio.create_task(self._run_broadcast(message), name="onbot-broadcast")
+
+    async def _hold_duplicate(self, message: str, sender: str, *, ago: float) -> None:
+        """Keep a repeated announcement back until its sender confirms it (ONB-11)."""
+        self._forget_expired_announcements()
+        held_id = new_batch_id()
+        while held_id in self._held_announcements:
+            held_id = new_batch_id()
+        self._held_announcements[held_id] = HeldAnnouncement(sender, message, self._clock())
+        log.warning("held a repeated announcement by %s as %s until they confirm it", sender, held_id)
+        await self._reply(
+            DUPLICATE_HELD.format(
+                ago=max(1, round(ago)), id=held_id, minutes=round(DUPLICATE_CONFIRM_SEC / 60)
+            )
+        )
+
+    def _forget_expired_announcements(self) -> None:
+        now = self._clock()
+        for held_id, held in list(self._held_announcements.items()):
+            if now - held.held_at >= DUPLICATE_CONFIRM_SEC:
+                del self._held_announcements[held_id]
+
+    async def _decide_announcement(self, command: Command, held_id: str, sender: str) -> None:
+        """``!confirm <id>`` / ``!reject <id>`` of a held announcement: only by the admin who sent it."""
+        held = self._held_announcements[held_id]
+        if held.sender != sender:
+            await self._reply(
+                f"{held_id} is an announcement {held.sender} sent twice; only they can confirm or drop it."
+            )
+            return
+        if command.name == REJECT:
+            del self._held_announcements[held_id]
+            log.info("admin %s dropped the held announcement %s", sender, held_id)
+            await self._reply(f"Dropped the repeated announcement {held_id}; it was not sent.")
+            return
+        if self.broadcast_running:
+            await self._reply(BROADCAST_RUNNING.format(rooms=self._broadcast_rooms))
+            return
+        del self._held_announcements[held_id]
+        self._last_announcement[sender] = (normalize_announcement(held.message), self._clock())
+        log.info("admin %s confirmed the repeated announcement %s", sender, held_id)
+        self._start_broadcast(held.message)
 
     @property
     def broadcast_running(self) -> bool:
@@ -344,6 +433,10 @@ class ControlRoomHandler:
                 f"Usage: !{command.name} <batch id>. There is no {command.name} without an id; "
                 "!pending lists the open batches."
             )
+            return
+        self._forget_expired_announcements()
+        if batch_id in self._held_announcements:
+            await self._decide_announcement(command, batch_id, sender)
             return
         if self.guard is None:
             await self._reply("The destructive-action guard is not available in this process.")
