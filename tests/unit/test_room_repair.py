@@ -308,11 +308,41 @@ async def test_a_converged_room_gets_no_writes() -> None:
 # --- REC-09: marker and lock -----------------------------------------------------------------------
 
 
-async def test_a_removed_marker_is_restored_and_reported_once() -> None:
-    effectors = RecordingEffectors()
+class SharedStateAdmin(FakeAdmin):
+    """The admin Room State API serves the markers the effectors hold, so the identity scan and the
+    repair see one room (W4R-06: the repair tests used to pass only because the scan kept seeing the
+    intact marker while the effectors showed it removed)."""
+
+    def __init__(self, effectors: RecordingEffectors) -> None:
+        super().__init__()
+        self.effectors = effectors
+
+    async def get_room_state_events(self, room_id: str) -> list[dict[str, Any]]:
+        events = [e for e in await super().get_room_state_events(room_id) if not _is_marker(e["type"])]
+        for key, content in self.effectors.state_store.items():
+            if len(key) == 2 and key[0] == room_id and _is_marker(key[1]):
+                sender = self.effectors.senders.get(key, BOT)
+                events.append({"type": key[1], "state_key": "", "sender": sender, "content": content})
+        return events
+
+
+def _is_marker(event_type: str) -> bool:
+    return event_type.startswith("org.company.onbot.")
+
+
+def _running(
+    effectors: RecordingEffectors | None = None, **kwargs: Any
+) -> tuple[ReconcilerEngine, Any, RecordingEffectors, list[Event]]:
+    """An engine whose scan and repair share one room state, over converged rooms."""
+    effectors = effectors or RecordingEffectors()
     _seed_converged(effectors)
+    return _engine(SharedStateAdmin(effectors), effectors, **kwargs)
+
+
+async def test_a_removed_marker_is_restored_and_reported_once() -> None:
+    engine, _admin, effectors, attention = _running()
+    await engine.reconcile_once()
     effectors.state_store[(ROOM1, GROUP_MARKER)] = {}  # somebody at the bot's level removed it
-    engine, _admin, effectors, attention = _engine(effectors=effectors)
 
     await engine.reconcile_once()
     await engine.reconcile_once()
@@ -324,11 +354,10 @@ async def test_a_removed_marker_is_restored_and_reported_once() -> None:
 
 
 async def test_a_marker_rewritten_to_another_group_is_restored_from_what_the_bot_knows() -> None:
-    effectors = RecordingEffectors()
-    _seed_converged(effectors)
+    engine, _admin, effectors, attention = _running()
+    await engine.reconcile_once()
     effectors.state_store[(ROOM1, GROUP_MARKER)] = dump_room_state(GroupRoomState(group_id="g-other"))
     effectors.senders[(ROOM1, GROUP_MARKER)] = MODERATOR
-    engine, _admin, effectors, attention = _engine(effectors=effectors)
 
     await engine.reconcile_once()
 
@@ -339,16 +368,119 @@ async def test_a_marker_rewritten_to_another_group_is_restored_from_what_the_bot
 
 async def test_a_marker_somebody_else_wrote_is_rewritten_by_the_bot() -> None:
     """Same content, wrong sender: after a restart the scan would no longer trust it (W3R)."""
-    effectors = RecordingEffectors()
-    _seed_converged(effectors)
+    engine, _admin, effectors, attention = _running()
+    await engine.reconcile_once()
     effectors.senders[(ROOM1, GROUP_MARKER)] = MODERATOR
-    engine, _admin, effectors, attention = _engine(effectors=effectors)
 
     await engine.reconcile_once()
 
     assert effectors.senders[(ROOM1, GROUP_MARKER)] == BOT
     assert effectors.state_store[(ROOM1, GROUP_MARKER)] == dump_room_state(GroupRoomState(group_id="g1"))
     assert any(f"rewritten by {MODERATOR}" in e.payload["text"] for e in attention)
+
+
+# --- W4R-08: what a restored marker contains ------------------------------------------------------
+
+
+def _marker_writes(effectors: RecordingEffectors, since: int) -> list[dict[str, Any]]:
+    return [c for room, t, c in effectors.state_writes[since:] if (room, t) == (ROOM1, GROUP_MARKER)]
+
+
+def _with_global_admin() -> OnbotConfig:
+    config = OnbotConfig.model_validate(_BASE)
+    config.global_room_admins = ["carol"]
+    return config
+
+
+async def test_a_removed_marker_is_restored_with_what_the_bot_wrote_into_it() -> None:
+    """A fresh marker dropped `global_admins` (still a withdrawal source, D10) and
+    `avatar_source_url` (the avatar was fetched and uploaded again)."""
+    engine, _admin, effectors, _attention = _running(config=_with_global_admin(), authentik=AvatarAuthentik())
+    await engine.reconcile_once()
+    before = effectors.state_store[(ROOM1, GROUP_MARKER)]
+    assert before["global_admins"] == ["@carol:company.org"]
+    assert before["avatar_source_url"] == "https://cdn/t.png"
+    effectors.state_store[(ROOM1, GROUP_MARKER)] = {}
+    writes = len(effectors.state_writes)
+
+    await engine.reconcile_once()
+
+    (restored,) = _marker_writes(effectors, writes)  # one write: the restore, nothing to fix after it
+    assert restored == before
+    assert effectors.uploads == ["https://cdn/t.png"]  # not uploaded again
+
+
+async def test_a_same_role_marker_somebody_else_wrote_is_not_signed_by_the_bot() -> None:
+    """The foreign content (a human-chosen `global_admins`) used to be re-signed verbatim."""
+    engine, _admin, effectors, _attention = _running(config=_with_global_admin())
+    await engine.reconcile_once()
+    before = effectors.state_store[(ROOM1, GROUP_MARKER)]
+    effectors.state_store[(ROOM1, GROUP_MARKER)] = {**before, "global_admins": [MODERATOR]}
+    effectors.senders[(ROOM1, GROUP_MARKER)] = MODERATOR
+    writes = len(effectors.state_writes)
+
+    await engine.reconcile_once()
+
+    (restored,) = _marker_writes(effectors, writes)
+    assert restored == before and MODERATOR not in restored["global_admins"]
+
+
+# --- W4R-06: a marker lost while the bot did not run ------------------------------------------------
+
+
+def _restarted(
+    effectors: RecordingEffectors,
+) -> tuple[ReconcilerEngine, Any, RecordingEffectors, list[Event]]:
+    """A fresh process over ROOM1 as it is now; the group's alias still points at it."""
+    effectors.aliases["#g1:company.org"] = ROOM1
+    return _engine(SharedStateAdmin(effectors), effectors)
+
+
+async def test_a_marker_removed_while_the_bot_was_stopped_is_reported_with_what_to_do() -> None:
+    """A fresh process cannot tell the room from one that never was the group's room, so it does not
+    take it back (D20). Before, the group was skipped with a bare "carries no onbot marker"."""
+    effectors = RecordingEffectors()
+    _seed_converged(effectors)
+    effectors.state_store[(ROOM1, GROUP_MARKER)] = {}
+    engine, admin, effectors, _attention = _restarted(effectors)
+
+    await engine.reconcile_once()
+
+    assert effectors.state_store[(ROOM1, GROUP_MARKER)] == {}  # not taken back on a guess
+    assert effectors.created == []  # and no second room
+    assert all(room != ROOM1 for room, _ in effectors.kicks + admin.added)
+    problems = {r.room_id: "; ".join(r.problems) for r in engine.last_pass_report.rooms}
+    assert "which the bot created, but its onbot group_room marker was removed" in problems[None]
+    assert "restores the marker as the bot account or moves the alias away" in problems[None]
+    assert "docs/troubleshooting.md" in problems[ROOM1]  # the room itself, as a stray
+
+
+async def test_a_marker_a_human_restores_as_the_bot_counts_from_the_next_pass() -> None:
+    effectors = RecordingEffectors()
+    _seed_converged(effectors)
+    marker = effectors.state_store[(ROOM1, GROUP_MARKER)]
+    effectors.state_store[(ROOM1, GROUP_MARKER)] = {}
+    engine, admin, effectors, _attention = _restarted(effectors)
+    await engine.reconcile_once()
+
+    effectors.state_store[(ROOM1, GROUP_MARKER)] = marker  # a PUT with the bot's access token
+    await engine.reconcile_once()
+
+    assert (ROOM1, "@bob:company.org") in admin.added
+    assert engine.last_pass_report.rooms == []
+
+
+async def test_a_marker_rewritten_while_the_bot_was_stopped_is_reported_with_what_to_do() -> None:
+    effectors = RecordingEffectors()
+    _seed_converged(effectors)
+    effectors.senders[(ROOM1, GROUP_MARKER)] = MODERATOR
+    engine, _admin, effectors, _attention = _restarted(effectors)
+
+    await engine.reconcile_once()
+
+    assert effectors.senders[(ROOM1, GROUP_MARKER)] == MODERATOR
+    (group,) = ["; ".join(r.problems) for r in engine.last_pass_report.rooms if r.room_id is None]
+    assert f"the bot created, but it carries an onbot group_room marker written by {MODERATOR}" in group
 
 
 async def test_an_incomplete_marker_from_an_older_version_is_completed_quietly() -> None:

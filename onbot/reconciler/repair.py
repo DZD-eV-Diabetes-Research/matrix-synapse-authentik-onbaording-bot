@@ -10,9 +10,10 @@ asks, and writes only on a difference, so a converged room costs reads and no wr
 * **Space link.** ``m.space.child`` in the space (with the room's ``suggested`` flag) and
   ``m.space.parent`` in the room.
 * **Marker.** The onbot marker must be present, name the room's role, be complete, and have been
-  written by the bot. The bot restores it from what it already knows about the room (a room it
-  resolved by its locked, bot-written marker earlier); it never reads a role out of a marker somebody
-  else wrote. Its lock is :func:`onbot.rooms.provision.markers_locked`.
+  written by the bot. The bot restores it from what it already knows about the room: the marker it
+  last wrote or read there itself (a room it resolved by its locked, bot-written marker earlier), so
+  its ``global_admins`` and ``avatar_source_url`` survive (W4R-08). It never takes content, let alone
+  a role, from a marker somebody else wrote. Its lock is :func:`onbot.rooms.provision.markers_locked`.
 * **Join rule of a visitor lobby (D16).** A lobby somebody closed by hand stays closed: a closed
   join rule written by anybody but the bot is left alone. A lobby whose feature was switched off is
   closed by the bot (REC-10).
@@ -97,32 +98,50 @@ def _same_role(current: AnyRoomState, expected: AnyRoomState) -> bool:
     return type(current) is type(expected)
 
 
+def restored_marker(expected: AnyRoomState, known: Mapping[str, Any] | None) -> dict[str, Any]:
+    """The marker to restore: ``known`` (what the bot last wrote) when it names the role, else fresh."""
+    if known:
+        try:
+            parsed = parse_room_state(OnbotRoomType(expected.room_type), dict(known))
+        except ValidationError:
+            parsed = None
+        if parsed is not None and _same_role(parsed, expected):
+            return dump_room_state(parsed)
+    return dump_room_state(expected)
+
+
 def marker_repair(
-    event: Mapping[str, Any] | None, *, bot_id: str, expected: AnyRoomState
+    event: Mapping[str, Any] | None,
+    *,
+    bot_id: str,
+    expected: AnyRoomState,
+    known: Mapping[str, Any] | None = None,
 ) -> MarkerRepair | None:
     """What to write to restore the marker of a room whose role is ``expected``; ``None``: intact.
 
     ``event`` is the current marker state event, with its sender. The bot decides the room's role
-    from its own knowledge (``expected``), never from the marker it reads here: a marker that names
-    another role or cannot be read is replaced by a fresh one. One that names the right role but was
-    written by somebody else is rewritten by the bot with the same content, so a later scan (which
-    trusts only markers the bot wrote, see :mod:`onbot.rooms.identity`) still recognises the room.
+    from its own knowledge (``expected``), never from the marker it reads here. ``known`` is the
+    marker content the bot last wrote or read itself in this room. A marker that was removed, cannot
+    be read, names another role, or was written by somebody else (even naming the right role) is
+    replaced by ``known`` (or a fresh marker when the bot knows none), written by the bot, so a later
+    scan (which trusts only markers the bot wrote, see :mod:`onbot.rooms.identity`) still recognises
+    the room and no human-chosen field is signed by the bot (W4R-08).
     """
-    fresh = dump_room_state(expected)
+    restored = restored_marker(expected, known)
     content = dict((event or {}).get("content") or {})
     if not content:
-        return MarkerRepair(fresh, "the onbot marker was removed", tampered=True)
+        return MarkerRepair(restored, "the onbot marker was removed", tampered=True)
     room_type = OnbotRoomType(expected.room_type)
     try:
         current = parse_room_state(room_type, content)
     except ValidationError:
-        return MarkerRepair(fresh, "the onbot marker could not be read", tampered=True)
+        return MarkerRepair(restored, "the onbot marker could not be read", tampered=True)
     if not _same_role(current, expected):
-        return MarkerRepair(fresh, "the onbot marker was rewritten to name another role", tampered=True)
+        return MarkerRepair(restored, "the onbot marker was rewritten to name another role", tampered=True)
     normalized = dump_room_state(current)
     sender = (event or {}).get("sender")
     if sender != bot_id:
-        return MarkerRepair(normalized, f"the onbot marker was rewritten by {sender}", tampered=True)
+        return MarkerRepair(restored, f"the onbot marker was rewritten by {sender}", tampered=True)
     if normalized != content:
         # A marker from an older version: fields missing, or keys that are no longer written (the
         # Authentik URL, SEC-11).

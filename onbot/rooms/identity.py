@@ -35,7 +35,14 @@ From then on the old room, which keeps its locked marker, no longer claims the r
 
 Reads use the Synapse admin API (the room list and the full state of one room), which work whether or
 not the bot is a member. One state read per bot room and process: what a room is never changes once
-it is locked, so the result is cached; only unlocked or unreadable rooms are read again. A room the
+it is locked, so the result is cached; only unlocked or unreadable rooms, and rooms whose marker was
+removed or written by somebody else, are read again.
+
+The cache is also the bot's memory of what it wrote: a trusted room's marker content as the bot last
+wrote or read it, from which the reconciler restores a marker somebody removed or rewrote (W4R-08).
+That memory lives only as long as the process. After a restart, a room whose marker was removed or
+rewritten meanwhile cannot be told apart from a room that never played a role, so it is reported with
+what a human has to do and never taken back on a guess (W4R-06, D20). A room the
 bot just created is read once on the next scan, so its real lock state counts; a lock that failed at
 creation is retried then.
 """
@@ -114,10 +121,26 @@ class RoomIdentity:
     """The room this one replaces, from its create event."""
     marker_type: str | None = None
     marker_content: dict[str, Any] | None = None
+    """The marker as the bot last wrote or read it (see :meth:`RoomIdentityResolver.remember_marker`)."""
+    removed_markers: tuple[OnbotRoomType, ...] = ()
+    """Managed marker types whose state event is there but empty: somebody removed the marker."""
 
     @property
     def trusted(self) -> bool:
         return self.key is not None and self.locked and self.problem is None
+
+    def lost_marker(self, kind: OnbotRoomType) -> str | None:
+        """What happened to the marker of a ``kind`` room the bot created, if it lost it; else ``None``.
+
+        A marker removed or written by somebody else cannot be told apart from a room that never was
+        a role after the process that knew the room restarted (W4R-06), so such a room is never taken
+        back on its own (D20); this says what a human finds and has to fix.
+        """
+        if kind in self.removed_markers:
+            return f"its onbot {kind.value} marker was removed"
+        if self.problem is not None and self.problem.endswith("not by the bot"):
+            return f"it {self.problem}"  # "it carries an onbot ... marker written by @x, not by the bot"
+        return None
 
 
 def classify_room(
@@ -148,16 +171,20 @@ def classify_room(
 
     markers: list[tuple[OnbotRoomType, str, dict[str, Any]]] = []
     foreign: list[str] = []
+    removed: list[OnbotRoomType] = []
     for room_type in MANAGED_ROOM_TYPES:
         event_type = event_type_name(server_name, room_type)
         event = by_type.get(event_type) or {}
         content = event.get("content")
         if not content:  # an empty content is a removed state event
+            if event_type in by_type:
+                removed.append(room_type)
             continue
         markers.append((room_type, event_type, dict(content)))
         if event.get("sender") != bot_id:
             foreign.append(f"{room_type.value} marker written by {event.get('sender')}")
     if not markers:
+        identity.removed_markers = tuple(removed)
         return identity
     if foreign:
         # The bot writes every marker itself (in createRoom's initial_state, whose events Synapse
@@ -353,10 +380,29 @@ class RoomIdentityResolver:
     async def _read(self, room_id: str) -> RoomIdentity | None:
         state = await self.admin.get_room_state_events(room_id)
         identity = classify_room(room_id, state, bot_id=self.bot_id, server_name=self.server_name)
-        if identity is None or identity.key is None or identity.trusted:
-            # Not the bot's, not a managed role, or a locked claim: none of these changes again.
+        if (
+            identity is None
+            or identity.trusted
+            or (identity.key is None and identity.problem is None and not identity.removed_markers)
+        ):
+            # Not the bot's, a room that never was a managed role, or a locked claim: none of these
+            # changes again. A removed or foreign marker is read again on every scan, so a marker a
+            # human restores as the bot account counts from the next pass on (W4R-06).
             self._cache[room_id] = identity
         return identity
+
+    def known_marker(self, room_id: str) -> dict[str, Any] | None:
+        """The marker content of a trusted room as the bot last wrote or read it (W4R-08)."""
+        identity = self._cache.get(room_id)
+        if identity is None or not identity.trusted or identity.marker_content is None:
+            return None
+        return dict(identity.marker_content)
+
+    def remember_marker(self, room_id: str, content: dict[str, Any]) -> None:
+        """Record ``content`` as what the bot wrote (or found written by itself) into a trusted room."""
+        identity = self._cache.get(room_id)
+        if identity is not None and identity.trusted and content:
+            identity.marker_content = dict(content)
 
     def register(self, room: MatrixRoom, key: RoomKey) -> None:
         """Record a room the bot just created for ``key`` (its marker came with ``createRoom``).
@@ -424,6 +470,14 @@ class RoomIdentityResolver:
                 problem=f"its alias {alias} belongs to room {target}, which the bot did not create"
                 + (f" (creator {creator})" if creator else "")
                 + "; not adopted, and no second room is created (SEC-02)"
+            )
+        lost = identity.lost_marker(key.kind)
+        if lost is not None:
+            return Resolution(
+                problem=f"its alias {alias} points at room {target}, which the bot created, but {lost}. "
+                "The bot does not take such a room back on its own (D20); until a human restores the "
+                "marker as the bot account or moves the alias away, no room is adopted or created "
+                "(see 'A room lost its onbot marker' in docs/troubleshooting.md)"
             )
         if not _claims_role(identity, key) or identity.problem is not None:
             what = identity.problem or (
@@ -529,12 +583,23 @@ def stray_claims(index: RoomIndex) -> list[RoomIdentity]:
 
     Called after the roles were resolved, so a legacy room adopted in this pass is no longer among them.
     """
-    return [i for i in index.identities.values() if not i.trusted and (i.key is not None or i.problem)]
+    return [
+        i
+        for i in index.identities.values()
+        if not i.trusted and (i.key is not None or i.problem or i.removed_markers)
+    ]
 
 
 def describe_stray(identity: RoomIdentity) -> str:
     if identity.problem is not None:
         return f"{identity.problem}; it is not treated as a managed room"
+    if identity.key is None and identity.removed_markers:
+        kinds = ", ".join(k.value for k in identity.removed_markers)
+        return (
+            f"was created by the bot, but its onbot {kinds} marker was removed. The bot no longer knows "
+            "which role it played and leaves it alone (see 'A room lost its onbot marker' in "
+            "docs/troubleshooting.md)"
+        )
     assert identity.key is not None
     return (
         f"carries an onbot marker from an older version for the {identity.key.describe()}, but that "

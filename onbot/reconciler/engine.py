@@ -679,7 +679,7 @@ class ReconcilerEngine:
                 return
             log.info("set avatar of %s from %s", room_id, desired)
         state.avatar_source_url = desired
-        await self.effectors.put_room_state(room_id, event_type, dump_room_state(state))
+        await self._put_marker(room_id, event_type, dump_room_state(state))
 
     async def _converge_rooms(
         self,
@@ -952,14 +952,21 @@ class ReconcilerEngine:
         return RoomKey(OnbotRoomType(marker.room_type), group_id).describe()
 
     async def _repair_marker(self, room: MatrixRoom, expected: AnyRoomState) -> dict[str, Any]:
-        """Restore the room's marker where needed; returns its content as it is now."""
+        """Restore the room's marker where needed; returns its content as it is now.
+
+        The content restored is the marker as the bot last wrote or read it in this room (W4R-08).
+        """
         event_type = event_type_name(self.server_name, OnbotRoomType(expected.room_type))
         event = await self.effectors.get_room_state_event(room.room_id, event_type)
         bot_id = self.config.synapse_server.bot_user_id
-        repair = marker_repair(event, bot_id=bot_id, expected=expected)
+        repair = marker_repair(
+            event, bot_id=bot_id, expected=expected, known=self.rooms.known_marker(room.room_id)
+        )
         if repair is None:
-            return dict((event or {}).get("content") or {})
-        await self.effectors.put_room_state(room.room_id, event_type, repair.content)
+            content = dict((event or {}).get("content") or {})
+            self.rooms.remember_marker(room.room_id, content)  # intact and the bot's own
+            return content
+        await self._put_marker(room.room_id, event_type, repair.content)
         message = f"room {room.room_id}, the {self._describe(expected)}: {repair.reason}; the bot restored it"
         if repair.tampered:
             event_id = (event or {}).get("event_id") or "missing"
@@ -967,6 +974,11 @@ class ReconcilerEngine:
         else:
             log.info("%s", message)
         return repair.content
+
+    async def _put_marker(self, room_id: str, event_type: str, content: dict[str, Any]) -> None:
+        """Write a managed room's marker, and remember it as what the bot knows about the room."""
+        await self.effectors.put_room_state(room_id, event_type, content)
+        self.rooms.remember_marker(room_id, content)
 
     async def _repair_lock(self, room: MatrixRoom, marker: AnyRoomState) -> None:
         """Raise the marker types' required power level again where somebody lowered it."""
@@ -1795,7 +1807,7 @@ class ReconcilerEngine:
 
         if legacy_admins != global_admins:
             state.global_admins = sorted(global_admins)
-            await self.effectors.put_room_state(room_id, event_type, dump_room_state(state))
+            await self._put_marker(room_id, event_type, dump_room_state(state))
 
         if plan.blocked:
             raise _RoomStepProblems(
