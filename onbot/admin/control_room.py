@@ -116,6 +116,7 @@ BROADCAST_RUNNING = (
     "another; this one was not sent."
 )
 REPLY_FAILED = "The result of the last command could not be posted here ({error}); it is in the bot's log."
+COMMAND_FAILED = "The last command failed ({error}); details are in the bot's log."
 
 # W5R-04: what an announcement cut off by a shutdown, or one sent during it, says.
 INTERRUPTED = (
@@ -225,8 +226,16 @@ class ControlRoomHandler:
             if room.room_id != self.room_id:
                 continue
             for event in room.timeline:
-                if event.get("type") == MESSAGE_TYPE:
+                if event.get("type") != MESSAGE_TYPE:
+                    continue
+                try:
                     await self._handle_message(event)
+                except Exception as exc:
+                    # One command that fails must not drop the rest of the slice (W7R-04); the
+                    # replay guard already recorded it, so it is not run again.
+                    log.exception("control room: handling %s failed", event.get("event_id"))
+                    with contextlib.suppress(Exception):
+                        await self._reply(COMMAND_FAILED.format(error=describe_error(exc)))
 
     async def _handle_message(self, event: dict[str, Any]) -> None:
         sender = event.get("sender")
@@ -359,6 +368,11 @@ class ControlRoomHandler:
             return {b.id for b in await self.guard.open_batches()}
         except GuardStateUnreadable:
             return set()  # nothing can be confirmed until it is reset; the new id is still random
+        except Exception:
+            # A transport or API error must not cost the admin their answer, nor the rest of the
+            # slice its commands (W7R-04). The new id is random; a clash is very unlikely.
+            log.warning("could not read the guard's open batches to pick a new id", exc_info=True)
+            return set()
 
     def _forget_expired_announcements(self) -> None:
         now = self._clock()
@@ -458,6 +472,9 @@ class ControlRoomHandler:
             batches = await self.guard.open_batches()
         except GuardStateUnreadable as exc:
             return f"The guard cannot read its state: {exc}. {RESET_HINT}."
+        except Exception as exc:
+            log.warning("could not read the guard's open batches for !pending", exc_info=True)
+            return f"The guard state cannot be fetched right now ({describe_error(exc)}); try again later."
         if not batches:
             return "No destructive actions are waiting for a confirmation."
         return "\n\n".join(describe_batch(b) for b in batches)
@@ -563,6 +580,9 @@ class ControlRoomHandler:
                     status
                     + "; the guard cannot read its state and pauses every destructive action, see !pending"
                 )
+            except Exception as exc:
+                log.warning("could not read the guard's open batches for !status", exc_info=True)
+                return status + f"; the guard state cannot be fetched right now ({describe_error(exc)})"
             status += f"; destructive actions paused in {waiting} batch(es)" + (
                 ", see !pending" if waiting else ""
             )
