@@ -498,6 +498,47 @@ async def test_a_switched_off_lobby_is_closed_and_detached_and_reopens_when_swit
     assert (await matrix_client.get_room_power_levels(lobby_id))["users"].get(keeper.mxid) == 100
 
 
+async def test_a_switched_off_lobby_a_server_admin_blocked_is_held_until_the_block_is_lifted(
+    make_config,
+    compose_stack: DockerCompose,
+    authentik_admin: S.AuthentikAdmin,
+    matrix_client: ApiClientMatrix,
+    admin_client: ApiClientSynapseAdmin,
+) -> None:
+    """W8R-01 (D23): a switched-off lobby was closed and lost the levels the bot granted there
+    although a server admin had blocked it."""
+    prefix = S.uniq("lbh")
+    group = _lobby_group(authentik_admin, prefix, lobby=True)
+    keeper_name = S.uniq("lbhkeeper")
+    _k, keeper = S.provision(authentik_admin, keeper_name)
+    config = _with_space(_config(make_config, prefix))
+    config.global_room_admins = [keeper_name]  # seated at power level 100 in the lobby
+    await run_reconcile_once(config)
+    space_id = await _space_of(matrix_client, config)
+    lobby_id = await _lobby_of(matrix_client, config, group)
+    token = _server_admin_token(compose_stack)
+    _set_block(token, lobby_id, blocked=True)
+    blocker = (await admin_client.get_room_block(lobby_id)).by
+    assert blocker is not None and blocker != S.BOT_USER_ID
+
+    authentik_admin.set_group_attributes(group["pk"], {"is_chatroom": True, "chatroom_visitor_lobby": False})
+    await run_reconcile_once(config)
+
+    rule = await matrix_client.get_room_state_event(lobby_id, JOIN_RULES) or {}
+    assert rule.get("join_rule") == "restricted"
+    child = await matrix_client.get_room_state_event(space_id, "m.space.child", lobby_id) or {}
+    assert child.get("via")
+    assert (await matrix_client.get_room_power_levels(lobby_id))["users"].get(keeper.mxid) == 100
+    block = await admin_client.get_room_block(lobby_id)
+    assert block.blocked and block.by == blocker
+
+    _set_block(token, lobby_id, blocked=False)  # the hold ends
+    await run_reconcile_once(config)
+
+    assert await matrix_client.get_room_state_event(lobby_id, JOIN_RULES) == {"join_rule": "invite"}
+    assert keeper.mxid not in (await matrix_client.get_room_power_levels(lobby_id))["users"]
+
+
 async def test_a_lobby_a_human_closed_stays_closed_until_an_admin_reopens_it(
     make_config,
     authentik_admin: S.AuthentikAdmin,

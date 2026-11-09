@@ -734,6 +734,88 @@ async def test_withdrawing_the_grants_of_a_switched_off_lobby_goes_through_the_g
     assert effectors.lobby_users == {CAROL: 100}
 
 
+def _carol_switched_off(
+    admin: SwitchedOffLobbyAdmin | None = None, config: OnbotConfig | None = None
+) -> tuple[ReconcilerEngine, Any, _CarolAdminInLobby, list[Event]]:
+    effectors = _CarolAdminInLobby()
+    effectors.state_store[(LOBBY, JOIN_RULES)] = RESTRICTED
+    _seed_converged(effectors, LOBBY, suggested=True)
+    engine, admin, _effectors, attention = _engine(
+        admin or SwitchedOffLobbyAdmin(), effectors, config=config or OnbotConfig.model_validate(_BASE)
+    )
+    return engine, admin, effectors, attention
+
+
+async def test_a_switched_off_lobby_a_server_admin_blocked_is_a_hold() -> None:
+    """W8R-01 (D23): the block check only ran for wanted lobbies, so a switched-off lobby under a
+    legal hold was closed and lost the levels the bot granted there."""
+    admin = SwitchedOffLobbyAdmin()
+    admin.blocks[LOBBY] = HUMAN_ADMIN
+    engine, admin, effectors, attention = _carol_switched_off(admin)
+
+    await engine.reconcile_once()
+    await engine.reconcile_once()
+
+    assert effectors.state_store[(LOBBY, JOIN_RULES)] == RESTRICTED
+    assert effectors.state_store[(SPACE, CHILD, LOBBY)]["via"] == ["company.org"]
+    assert effectors.lobby_users == {CAROL: 100}
+    assert admin.blocked_changes == []
+    (report,) = [e.payload["text"] for e in attention if LOBBY in e.payload["text"]]  # once
+    assert "blocked it, not the bot" in report and HUMAN_ADMIN in report and "D23" in report
+    assert all(r.room_id != LOBBY for r in engine.last_pass_report.rooms)  # a hold, not a failure
+
+    del admin.blocks[LOBBY]  # the hold ends
+    await engine.reconcile_once()
+
+    assert effectors.state_store[(LOBBY, JOIN_RULES)] == {"join_rule": "invite"}
+    assert CAROL not in effectors.lobby_users
+
+
+async def test_a_switched_off_lobby_blocked_by_the_bot_is_still_closed() -> None:
+    admin = SwitchedOffLobbyAdmin()
+    admin.blocks[LOBBY] = BOT
+    engine, admin, effectors, _attention = _carol_switched_off(admin)
+
+    await engine.reconcile_once()
+
+    assert effectors.state_store[(LOBBY, JOIN_RULES)] == {"join_rule": "invite"}
+    assert CAROL not in effectors.lobby_users
+
+
+class _FlakyLobbyBlockAdmin(SwitchedOffLobbyAdmin):
+    async def get_room_block(self, room_id: str) -> RoomBlock:
+        if room_id == LOBBY:
+            raise ApiError("GET", f"/rooms/{room_id}/block", 500)
+        return await super().get_room_block(room_id)
+
+
+async def test_a_switched_off_lobby_whose_block_cannot_be_read_is_left_alone_this_pass() -> None:
+    """W8R-01 with W4R-04 semantics: an unreadable block may be a server admin's."""
+    engine, _admin, effectors, _attention = _carol_switched_off(_FlakyLobbyBlockAdmin())
+
+    await engine.reconcile_once()
+
+    assert effectors.state_store[(LOBBY, JOIN_RULES)] == RESTRICTED
+    assert effectors.state_store[(SPACE, CHILD, LOBBY)]["via"] == ["company.org"]
+    assert effectors.lobby_users == {CAROL: 100}
+    (problem,) = [r for r in engine.last_pass_report.rooms if r.room_id == LOBBY]
+    assert problem.problems == ["block check failed: HTTP 500"]
+
+
+async def test_a_switched_off_lobby_keeps_its_levels_while_user_sync_is_off() -> None:
+    """W8R-02 (D28): with user sync off the bot leaves every room's power levels alone; the
+    switched-off lobby's withdrawal ignored that. The lobby is still closed."""
+    sync = {**(_BASE.get("sync_authentik_users_with_matrix_rooms") or {}), "enabled": False}
+    config = OnbotConfig.model_validate({**_BASE, "sync_authentik_users_with_matrix_rooms": sync})
+    engine, _admin, effectors, _attention = _carol_switched_off(config=config)
+
+    await engine.reconcile_once()
+
+    assert effectors.state_store[(LOBBY, JOIN_RULES)] == {"join_rule": "invite"}
+    assert effectors.lobby_users == {CAROL: 100}
+    assert effectors.account_data[(LOBBY, GRANTS)]["users"] == {CAROL: 100}
+
+
 async def test_a_lobby_the_bot_closed_opens_again_when_switched_back_on() -> None:
     engine, _admin, effectors, _attention = _switched_off()
     await engine.reconcile_once()

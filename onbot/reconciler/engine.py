@@ -1286,45 +1286,85 @@ class ReconcilerEngine:
         Now its join rule becomes ``invite`` and it leaves the space. Members stay (nobody is
         kicked); closing counts as a reversible destructive action and goes through the guard (D19).
         The power levels the bot granted there are withdrawn, each through the guard like any
-        withdrawal (D10). A lobby that is closed and detached already, without a grant of the bot's,
-        costs four reads. A lobby of a group that is gone
-        is torn down instead (:meth:`_converge_obsolete_rooms`).
+        withdrawal (D10), and only where the bot manages levels at all: user sync on and the identity
+        records readable (W8R-02, D28), as for every other room.
+
+        A lobby somebody other than the bot blocked (server admin moderation, a legal hold) is a hold
+        (D23): it is neither closed nor are its levels touched, and the admins hear of it once. A block
+        status that cannot be read leaves the lobby alone for this pass as well (W4R-04); the failed
+        read is reported with the lobby (W8R-01). A lobby that is closed and detached already, without
+        a grant of the bot's, costs five reads. A lobby of a group that is gone is torn down instead
+        (:meth:`_converge_obsolete_rooms`).
         """
         switched_off = {gm.group_pk for gm in group_maps if gm.lobby_desired is None}
         if not switched_off:
             return
+        manage_levels = (
+            self.config.sync_authentik_users_with_matrix_rooms.enabled and self.identity.unavailable is None
+        )
         for identity in index.trusted((OnbotRoomType.visitor_lobby,)):
             assert identity.key is not None and identity.key.group_id is not None
             if identity.key.group_id not in switched_off or index.superseded(identity):
                 continue
+            room_id, group_pk = identity.room_id, identity.key.group_id
+            # One block read per lobby (W8R-01): a failed read fails this step and ends the lobby's
+            # steps for the pass; a block somebody else set ends them after one report.
+            on_hold: list[bool] = []
+            checked = await self._guarded(
+                report,
+                room_kind=OnbotRoomType.visitor_lobby,
+                room_id=room_id,
+                group_pk=group_pk,
+                step="block check",
+                work=self._switched_off_lobby_on_hold(room_id, group_pk, on_hold),
+            )
+            if not checked or on_hold[0]:
+                continue
             await self._guarded(
                 report,
                 room_kind=OnbotRoomType.visitor_lobby,
-                room_id=identity.room_id,
-                group_pk=identity.key.group_id,
+                room_id=room_id,
+                group_pk=group_pk,
                 step="close",
-                work=self._plan_lobby_close(identity.room_id, identity.key.group_id, space, report, plan),
+                work=self._plan_lobby_close(room_id, group_pk, space, report, plan),
             )
-            lobby = index.rooms.get(identity.room_id) or MatrixRoom(room_id=identity.room_id)
+            if not manage_levels:
+                continue  # levels are left alone, like in every other room (W8R-02)
+            lobby = index.rooms.get(room_id) or MatrixRoom(room_id=room_id)
             # The levels the bot granted there (the global admins) go too, through the guard like any
             # withdrawal (D10): a closed lobby is no longer managed, so nothing would take them back.
             await self._guarded(
                 report,
                 room_kind=OnbotRoomType.visitor_lobby,
-                room_id=identity.room_id,
-                group_pk=identity.key.group_id,
+                room_id=room_id,
+                group_pk=group_pk,
                 step="power levels",
                 work=self._converge_levels(
                     lobby,
                     OnbotRoomType.visitor_lobby,
-                    VisitorLobbyRoomState(group_id=identity.key.group_id),
-                    identity.key.group_id,
+                    VisitorLobbyRoomState(group_id=group_pk),
+                    group_pk,
                     {},
                     report,
                     plan,
                     seat_global_admins=False,
                 ),
             )
+
+    async def _switched_off_lobby_on_hold(self, room_id: str, group_pk: str, on_hold: list[bool]) -> None:
+        """Append to ``on_hold`` whether somebody other than the bot blocked the lobby (D23, W8R-01)."""
+        block = await self.admin.get_room_block(room_id)
+        held = self._blocked_by_someone_else(block)
+        if held:
+            key = RoomKey(OnbotRoomType.visitor_lobby, group_pk)
+            await self._report_once(
+                f"blocked|{room_id}|{block.by}",
+                f"room {room_id}, the {key.describe()}, is switched off, but "
+                f"{block.by or 'an unknown account'} blocked it, not the bot. The bot neither closes it "
+                "nor withdraws the power levels it granted there while that block exists (D23); once a "
+                "server admin lifts the block, it is closed as usual.",
+            )
+        on_hold.append(held)
 
     async def _plan_lobby_close(
         self, room_id: str, group_pk: str, space: MatrixRoom | None, report: PassReport, plan: PassPlan
