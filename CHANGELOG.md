@@ -11,6 +11,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **`!room adopt <group pk> <room id or alias>` (review S18, W4R-06):** an allowlisted admin hands a
+  group room that lost its marker, or carries one somebody else wrote, back to the bot. Only rooms the
+  bot created (D20), only for a group it keeps a room for that has no other room; otherwise it refuses
+  and changes nothing.
+- **Avatars are re-checked about once a day (review S18, ONB-15):** with a conditional request (ETag,
+  Last-Modified, else a content compare), so a new picture behind an unchanged URL reaches the bot
+  profile, rooms, lobbies, the space and notice boards without a restart. A failed re-check keeps the
+  current picture.
 - **Announcements render markdown (review S12, ONB-10),** like the welcome messages; plain text stays
   a plain message.
 - **`!lobby reopen <group pk | room id | alias>`** hands a manually closed lobby back to the bot (review
@@ -68,6 +76,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   This `CHANGELOG.md`.
 
 ### Changed
+- **The same `!announce` twice within 60 seconds asks first (review S18, ONB-11):** the bot answers
+  with an id; `!confirm <id>` from the same admin within 10 minutes sends it, `!reject <id>` drops it.
+- **A shutdown interrupts an announcement visibly (review S18, W5R-04):** an `!announce` arriving while
+  the bot stops is not sent, and a broadcast cut off by the stop posts how many rooms it reached.
+- **Group pks match in any UUID form (review S18, W5R-02):** in `authentik_group_pks_granting_bot_admin`,
+  `sync_only_users_of_groups_with_id` and `per_authentik_group_pk_matrix_room_settings`, the 32 hex
+  digit form, the hyphenated form and upper case all work. Before, the hex form dropped every group
+  admin since S12.
 - **Rooms blocked by someone other than the bot are a hold (wave 4 review, W4R-02, D23):** server
   admin moderation, legal hold, or a block whose author is unknown. When their group disappears the bot
   neither kicks the members nor deletes the room while the block exists, even with
@@ -240,6 +256,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   troubleshooting.
 
 ### Fixed
+- **A lost room DELETE no longer fails while Synapse still has the deletion scheduled (review S18):**
+  the delete status is asked again on 404.
+- **A room that wore a picture from before image hashes were recorded gets the current picture when it
+  changed meanwhile (review S18, W5R-03).**
+- **The image cache keeps no image bytes (review S18, W5R-05),** and a failed fetch no longer re-raises
+  one ever-growing exception.
 - **A room whose block status cannot be read is left alone for that pass (wave 4 review, W4R-04)**
   instead of being fully managed (REC-11 failed open).
 - **A refused repair no longer blocks other work (wave 4 review, W4R-07):** space upkeep is its own
@@ -338,6 +360,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   model forbids unknown keys, so remove these two settings if present.
 
 ### Security
+- **The sync scope's group filter is re-checked on each user object (review S18, SEC-09):** users
+  whose own groups name none of `sync_only_users_of_groups_with_id` are left out and logged as an
+  error. If Authentik stops naming groups, the empty scope is held by guard layer 1 and nobody is
+  offboarded.
+- **The bot never re-signs a marker it read in the room (review S18, W5R-01):** before, after a failed
+  marker repair, the avatar and power-level steps wrote back a marker somebody above the lock had
+  rewritten to another group, and after a restart the bot could tear the room down as that group's
+  room. The avatar step is also skipped after a failed marker repair.
 - **Edits are never commands (review S12, ONB-11, SEC-12):** an `m.replace` event is not executed; an
   admin who edits a command is told to send a new message.
 - **Only allowlisted admins' commands enter the replay buffer (review S12, SEC-12):** a non-admin

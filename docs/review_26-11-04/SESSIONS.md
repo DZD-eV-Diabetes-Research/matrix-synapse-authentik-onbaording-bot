@@ -37,7 +37,7 @@ Start a session by pointing Claude at this file and the session ID, for example:
 | 7b | W2R | Wave 2 review fixups: guard fails closed, rejected batches end, ledger report, guard gaps | S | S3, S4 | done (merged in wave 2) |
 | 11a | W3R | Wave 3 review fixups: identity guess vs MAS owner, marker sender, upgrade claims, lock retry, batch expiry | S | S5, S6, S9 | done (merged in wave 3) |
 | 11b | W4R | Wave 4 review fixups: closed rooms, human-blocked rooms as hold (D23), lost notice boards, upkeep isolation, binding wins (D21) | S | S7, S8 | done (merged in wave 4) |
-| 14a | S18 | Wave 4 follow-ups (D24) plus W5R review fixups: avatar re-check, sync scope re-check, duplicate announce guard, `!room adopt`, flaky deletion test, marker signing, UUID forms | M | S12, W4R | running |
+| 14a | S18 | Wave 4 follow-ups (D24) plus W5R review fixups: avatar re-check, sync scope re-check, duplicate announce guard, `!room adopt`, flaky deletion test, marker signing, UUID forms | M | S12, W4R | done (merged in wave 4) |
 | 4 | S3 | Guard layers 1 and 2, reconciler dry-run | M | S2 | done (merged in wave 2) |
 | 5 | S16 | Git history scrub | S | S0, no open branches | done (force-pushed 2026-11-06, new main 89afecf) |
 | 6 | S4 | Offboarding completeness | M | S1 | done (merged in wave 2) |
@@ -632,6 +632,13 @@ without a restart (ETag or periodic check), the SEC-09 local re-check for
 
 **From W4R:** the reconciler unit fakes still do not serve one shared room state everywhere; only
 the marker tests in `test_room_repair.py` use `SharedStateAdmin`.
+
+**From S18:** mention in the config descriptions of the group pk fields that every UUID form works
+(then `pdm run gen-config-docs`); `!pending` does not list held announcements;
+`WelcomeService._wears` and `ensure_bot_avatar._holds_same_bytes` could reuse `MediaUploader.holds`;
+the discovery poller's group re-check has no dedicated test. Constants that could become config if
+anyone asks: avatar re-check 24 h, duplicate window 60 s, confirm window 10 min, adopt wait 60 s.
+`!room adopt` covers group rooms only (lobbies need the manual marker restore).
 
 **From D17:** speed up the integration suite (about 20 minutes in CI): cache or reuse the stack start
 (Authentik dominates), run independent test files in parallel where the stack allows it.
