@@ -4,13 +4,13 @@ Ported and refined from the legacy ``onbot/config.py`` (ADR-0001, reuse-the-conf
 Changes from legacy:
 
 * pydantic v2 / ``pydantic-settings`` v2 (``SettingsConfigDict``) and modern ``X | None`` typing.
-* Removed the duplicated top-level ``DeactivateDisabledAuthentikUsersInMatrix`` block — the
+* Removed the duplicated top-level ``DeactivateDisabledAuthentikUsersInMatrix`` block: the
   lifecycle settings live solely under :class:`SyncAuthentikUsersWithMatrix` where they are read.
 * Fixed legacy type/default bugs (``sync_only_users_of_groups_with_id`` defaulted to ``None`` on a
   non-optional ``list``; ``only_groups_with_attributes`` / ``only_for_groupnames_starting_with``
   carried list defaults on non-list fields).
 * No ``matrix-nio`` references: the bot drives the CS API over httpx (ADR-0008).
-* Phase 8: dropped the vestigial ``storage_dir`` / ``storage_encryption_key`` fields — they backed
+* Phase 8: dropped the vestigial ``storage_dir`` / ``storage_encryption_key`` fields; they backed
   the libolm key store, which ADR-0009 removed (the bot operates outside encrypted rooms and keeps
   no on-disk crypto state). They were unused everywhere in the codebase; the lifecycle ledger lives
   in Matrix account data (ADR-0001, no DB).
@@ -255,7 +255,7 @@ class AdminRoom(_StrictModel):
     command here feeds the reconciler's desired state, which is why reading messages does not
     contradict ADR-0002.
 
-    Authorisation is an allowlist, checked against the event sender — never the sender's room power
+    Authorisation is an allowlist, checked against the event sender, never the sender's room power
     level. The power levels are the fence; the allowlist is the gate. The allowlist is the union of
     ``admin_user_ids`` and the members of the Authentik groups in
     ``authentik_group_pks_granting_bot_admin``. An enabled room needs at least one of the two lists
@@ -318,7 +318,7 @@ class AdminRoom(_StrictModel):
             description=inspect.cleandoc(
                 """Full Matrix IDs permitted to run commands in the control room, listed by hand.
                 These are added to whatever `authentik_group_pks_granting_bot_admin` resolves to, and
-                this list is the right home for accounts Authentik has never heard of — a break-glass
+                this list is the right home for accounts Authentik has never heard of: a break-glass
                 admin, another bot. It is also the floor the bot falls back on: it needs no Authentik
                 call, so these administrators keep their commands when Authentik is unreachable.
                 Everyone not in the union of the two lists is refused, even if they are somehow in the
@@ -380,7 +380,7 @@ class SynapseServer(_StrictModel):
         Field(
             title="Matrix server name",
             description=inspect.cleandoc(
-                """Synapse's public facing domain — the part after the colon in a Matrix ID such as
+                """Synapse's public facing domain: the part after the colon in a Matrix ID such as
                 `@alice:company.org`. This is not necessarily the domain under which the Synapse
                 server is reachable; that is `server_url`. See
                 https://element-hq.github.io/synapse/latest/usage/configuration/config_documentation.html#server_name"""
@@ -405,7 +405,7 @@ class SynapseServer(_StrictModel):
             title="Bot Matrix ID",
             description=inspect.cleandoc(
                 """Full Matrix user ID of an existing account; the bot acts as this user. The account
-                must already exist — the bot does not register itself — and its localpart must be on
+                must already exist (the bot does not register itself), and its localpart must be on
                 `server_name`."""
             ),
             examples=["@welcome-bot:company.org"],
@@ -458,7 +458,7 @@ class SynapseServer(_StrictModel):
             title="Room version for rooms the bot creates",
             description=inspect.cleandoc(
                 """Room version passed to `POST /createRoom` for every room and space the bot
-                creates. Leave unset (`null`) — the default — so new rooms inherit the homeserver's
+                creates. Leave unset (`null`, the default) so new rooms inherit the homeserver's
                 own default room version, which the Matrix spec says SHOULD now be `12`. Room
                 version 12 changes two things the bot depends on: the room creator (the bot) holds an
                 infinite power level and is deliberately absent from `m.room.power_levels`, and room
@@ -467,7 +467,7 @@ class SynapseServer(_StrictModel):
                 default to a version this bot needs (it requires at least version 8 for the features
                 it uses; `restricted` join rules need 8 and `knock_restricted` needs 10), or a test
                 that must force a specific version. Do not pin a number to freeze the bot behind the
-                ecosystem — prefer upgrading Synapse."""
+                ecosystem; prefer upgrading Synapse."""
             ),
             examples=["12", "11"],
         ),
@@ -701,7 +701,7 @@ class SyncAuthentikUsersWithMatrix(_StrictModel):
             description=inspect.cleandoc(
                 """When a user leaves an Authentik group, kick them from the corresponding Matrix
                 room so membership stays a faithful mirror. Disable to let the bot only ever *add*
-                members and never remove them — users then keep access to rooms after losing the
+                members and never remove them; users then keep access to rooms after losing the
                 group that granted it."""
             ),
         ),
@@ -712,7 +712,7 @@ class SyncAuthentikUsersWithMatrix(_StrictModel):
             title="Filter: Authentik directory paths",
             description=inspect.cleandoc(
                 """Only sync users that live under one of these Authentik directory paths. Paths are
-                matched exactly, so a parent path does not imply its children — list both if you want
+                matched exactly, so a parent path does not imply its children: list both if you want
                 both. `null` syncs users regardless of path."""
             ),
             examples=[["users", "users/staff"]],
@@ -793,7 +793,7 @@ class CreateMatrixSpaceIfNotExists(_StrictModel):
             description=inspect.cleandoc(
                 """HTTP(S) URL to a picture used as the space avatar (icon). The image is downloaded
                 and re-uploaded to the homeserver's media repository on every reconcile, but only
-                when the URL changed — so this also updates an already existing space. `null` leaves
+                when the URL changed, so this also updates an already existing space. `null` leaves
                 the space without an avatar."""
             ),
             examples=["https://sillyimages.com/space.png"],
@@ -910,7 +910,7 @@ class SyncMatrixRoomsBasedOnAuthentikGroups(_StrictModel):
         Field(
             title="Filter: group name prefix",
             description=inspect.cleandoc(
-                """Only mirror Authentik groups whose name starts with this prefix — a lightweight way
+                """Only mirror Authentik groups whose name starts with this prefix, a lightweight way
                 to opt specific groups into chat without custom attributes. The prefix stays part of
                 the group name and therefore of the room name unless you override the name template.
                 `null` disables the filter."""
@@ -923,8 +923,8 @@ class SyncMatrixRoomsBasedOnAuthentikGroups(_StrictModel):
         Field(
             title="Disable orphaned rooms",
             description=inspect.cleandoc(
-                """If a mapped Authentik group disappears — deleted, or it no longer passes the
-                filters above — kick all members from the corresponding room and block it. Note that
+                """If a mapped Authentik group disappears (deleted, or it no longer passes the
+                filters above), kick all members from the corresponding room and block it. Note that
                 loosening a filter therefore re-enables nothing: the room stays blocked."""
             ),
         ),
@@ -990,7 +990,7 @@ class MatrixDynamicRoomSettings(_StrictModel):
             title="Group attribute used as the room alias",
             description=inspect.cleandoc(
                 """Authentik group attribute (dotted path) used as the room's alias localpart. The
-                default `pk` is the most stable choice, because it survives a group being renamed —
+                default `pk` is the most stable choice, because it survives a group being renamed:
                 an alias derived from the group name would not, and a Matrix alias cannot be changed
                 once the room is created."""
             ),
@@ -1023,7 +1023,7 @@ class MatrixDynamicRoomSettings(_StrictModel):
         Field(
             title="Room topic prefix",
             description="Prefix prepended to the room's topic. `null` for no prefix.",
-            examples=["Group chat — "],
+            examples=["Group chat: "],
         ),
     ] = None
     matrix_topic_from_authentik_attribute: Annotated[
@@ -1055,7 +1055,7 @@ class MatrixDynamicRoomSettings(_StrictModel):
         Field(
             title="Room creation parameters",
             description=inspect.cleandoc(
-                """Parameters merged into the Matrix `POST /createRoom` call for group rooms — preset,
+                """Parameters merged into the Matrix `POST /createRoom` call for group rooms: preset,
                 visibility, federation, and so on. Only read when a room is actually created; changing
                 them later does not rewrite existing rooms. See the Client-Server API
                 `POST /createRoom`."""
@@ -1099,11 +1099,11 @@ class MatrixDynamicRoomSettings(_StrictModel):
         Field(
             title="Open a visitor lobby beside the group room",
             description=inspect.cleandoc(
-                """Maintain a second, open room — a lobby — beside each private group room. Every
+                """Maintain a second, open room (a lobby) beside each private group room. Every
                 member of the parent space can find the lobby in the space listing and join it of
                 their own accord, and nobody is ever kicked from it, so it is a front door in front of
                 the closed group room. The group room itself is untouched: same members, same history,
-                same privacy. Off by default — a lobby is a deliberate decision, not a migration.
+                same privacy. Off by default: a lobby is a deliberate decision, not a migration.
 
                 Requires the parent space (`create_matrix_rooms_in_a_matrix_space`), because a lobby is
                 joinable precisely by space members and to nobody else; enabling a lobby without a
@@ -1117,7 +1117,7 @@ class MatrixDynamicRoomSettings(_StrictModel):
         Field(
             title="Lobby name suffix",
             description=inspect.cleandoc(
-                """Appended to the group room's name to name its lobby — `Düsseldorf` becomes
+                """Appended to the group room's name to name its lobby: `Düsseldorf` becomes
                 `Düsseldorf (Lobby)`. The suffix is the whole user-facing explanation of what the
                 second room is, so it should say *this is a door*, not *these are more people*.
                 Alternatives worth a deliberate choice: ` (Foyer)` (reads naturally to a
@@ -1133,7 +1133,7 @@ class MatrixDynamicRoomSettings(_StrictModel):
         Field(
             title="Lobby alias suffix",
             description=inspect.cleandoc(
-                """Appended to the group room's alias localpart to form the lobby's alias —
+                """Appended to the group room's alias localpart to form the lobby's alias:
                 `#duesseldorf` gets a `#duesseldorf-lobby` beside it. Unlike the group alias, dashes
                 here are kept. A Matrix alias cannot be changed after the room is created, so changing
                 this later makes the bot build a second, empty lobby rather than rename the first."""
@@ -1175,12 +1175,12 @@ class MatrixDynamicRoomSettings(_StrictModel):
             title="Seed the lobby with the group's members",
             description=inspect.cleandoc(
                 """Join the group's members into the lobby as well, so a visitor who walks in finds
-                somebody there. On by default: an empty lobby is a dead lobby. This is a social bet —
+                somebody there. On by default: an empty lobby is a dead lobby. This is a social bet:
                 it works when the group room is where the group *works* and the lobby is where the
                 group is *reachable*, and it fails, producing two half-dead rooms and doubled
                 notifications, when both are general-purpose. Turn it off for a large group that would
-                rather staff an empty lobby deliberately. Visitors are never injected anywhere — they
-                joined on purpose — and members are only ever added, never kicked."""
+                rather staff an empty lobby deliberately. Visitors are never injected anywhere (they
+                joined on purpose), and members are only ever added, never kicked."""
             ),
         ),
     ] = True
@@ -1418,7 +1418,7 @@ class OnbotConfig(BaseSettings):
         Field(
             title="Logging verbosity",
             description=inspect.cleandoc(
-                """How much the bot logs. `DEBUG` is noisy — it includes every API call it makes — but
+                """How much the bot logs. `DEBUG` is noisy (it includes every API call it makes), but
                 it is the fastest way to see why a user or group is not being picked up while wiring
                 the bot up. `WARNING` keeps a quiet production log. The `--log-level` command-line
                 flag overrides this."""
@@ -1453,8 +1453,8 @@ class OnbotConfig(BaseSettings):
             title="Reconcile interval (seconds)",
             description=inspect.cleandoc(
                 """How often, in seconds, the bot re-converges Authentik state onto Matrix. A
-                reconcile reads the whole Matrix side — every managed room's members, power levels
-                and state — so it is the expensive operation, and this is the interval that costs
+                reconcile reads the whole Matrix side (every managed room's members, power levels
+                and state), so it is the expensive operation, and this is the interval that costs
                 Synapse traffic.
 
                 It does not set how quickly new users are onboarded. A reconcile also runs on demand
@@ -1471,7 +1471,7 @@ class OnbotConfig(BaseSettings):
         Field(
             title="Authentik poll interval (seconds)",
             description=inspect.cleandoc(
-                """How often, in seconds, the bot asks Authentik whether anything changed — a new
+                """How often, in seconds, the bot asks Authentik whether anything changed: a new
                 user, a group membership, a renamed room group. When something did, it runs a
                 reconcile immediately; when nothing did, it does nothing at all.
 
@@ -1544,11 +1544,11 @@ class OnbotConfig(BaseSettings):
 
                 A message may also use these placeholders, filled in as it is sent:
 
-                - `{space_link}` — a `matrix.to` link to the parent space, ready to put in
+                - `{space_link}`: a `matrix.to` link to the parent space, ready to put in
                   `[our space]({space_link})`
-                - `{space_alias}` — the space's alias, e.g. `#myspace:matrix.company.org`
-                - `{space_name}` — the space's display name
-                - `{user_id}` — the recipient's Matrix ID
+                - `{space_alias}`: the space's alias, e.g. `#myspace:matrix.company.org`
+                - `{space_name}`: the space's display name
+                - `{user_id}`: the recipient's Matrix ID
 
                 The three space placeholders need `create_matrix_rooms_in_a_matrix_space` to be
                 enabled; a message using one while it is disabled is held back (and logged) rather
@@ -1557,7 +1557,7 @@ class OnbotConfig(BaseSettings):
             examples=[
                 [
                     "Welcome aboard! I will invite you to the rooms for your groups.",
-                    "Everything else lives in **[{space_name}]({space_link})** — have a look around.",
+                    "Everything else lives in **[{space_name}]({space_link})**: have a look around.",
                 ],
                 [
                     {
@@ -1590,7 +1590,7 @@ class OnbotConfig(BaseSettings):
                 """Display name of the 1:1 welcome room the bot opens with each user. The room needs a
                 name because the bot joins the user directly instead of waiting for them to accept an
                 invitation, and a Matrix client only tags a room as a direct message when its user
-                accepted such an invitation — without a name the room would appear in their room list
+                accepted such an invitation; without a name the room would appear in their room list
                 as an untitled room. Only read when a room is created; renaming later does not rewrite
                 existing rooms."""
             ),
@@ -1603,7 +1603,7 @@ class OnbotConfig(BaseSettings):
             title="Welcome room topic",
             description=inspect.cleandoc(
                 """Matrix topic (tagline) of the 1:1 welcome room. A good place to say where a user
-                should turn with questions, since they cannot ask them in this room — it is read-only.
+                should turn with questions, since they cannot ask them in this room: it is read-only.
                 Only read when a room is created."""
             ),
             examples=["Notices from the onboarding bot. You cannot write here."],
@@ -1617,7 +1617,7 @@ class OnbotConfig(BaseSettings):
                 """Join users into their welcome room directly, through the Synapse admin API, instead
                 of leaving them an invitation they have to accept. On by default: the room is a notice
                 board the bot posts to, so an unaccepted invitation means a user who never receives
-                the welcome messages. The join happens exactly once, when the room is created — a user
+                the welcome messages. The join happens exactly once, when the room is created; a user
                 who then leaves the room is not dragged back in. Turn this off to send a plain
                 invitation instead; the bot also falls back to the invitation when the join fails."""
             ),
@@ -1642,7 +1642,7 @@ class OnbotConfig(BaseSettings):
             title="Put welcome rooms in the space",
             description=inspect.cleandoc(
                 """Gather the 1:1 onboarding/welcome rooms under the managed parent space as well. Off
-                by default — whether direct rooms belong in a space is a matter of taste. Only applies
+                by default: whether direct rooms belong in a space is a matter of taste. Only applies
                 when `create_matrix_rooms_in_a_matrix_space` is enabled."""
             ),
         ),
@@ -1752,7 +1752,7 @@ class OnbotConfig(BaseSettings):
             description=inspect.cleandoc(
                 """Full Matrix IDs the bot never touches: it will not onboard them, invite them,
                 change their power level, kick them from a room, or deactivate them. Use it to protect
-                accounts that exist only in Matrix — server admins, other bots, bridge users — from a
+                accounts that exist only in Matrix (server admins, other bots, bridge users) from a
                 sync that would otherwise see them as unknown to Authentik. The bot's own
                 `synapse_server.bot_user_id` is always ignored and need not be listed."""
             ),
@@ -1847,7 +1847,7 @@ class OnbotConfig(BaseSettings):
     def _visitor_lobby_requires_a_space(self) -> OnbotConfig:
         """A lobby's ``restricted`` join rule needs a space to be restricted *to*.
 
-        Reject a lobby enabled — in the defaults or in any per-group override — while the parent space
+        Reject a lobby enabled (in the defaults or in any per-group override) while the parent space
         is switched off, rather than silently create a lobby that stays invite-only and joinable by
         nobody. The per-group Authentik attribute can still enable a lobby at runtime; the engine
         skips lobby creation when no space is resolved, so that case degrades safely rather than at

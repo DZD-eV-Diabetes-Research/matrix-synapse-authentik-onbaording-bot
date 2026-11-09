@@ -602,7 +602,7 @@ async def test_a_lowered_marker_lock_is_raised_again() -> None:
 
 
 class NoAliasAdmin(FakeAdmin):
-    async def list_non_space_rooms(self) -> list[dict[str, Any]]:
+    async def fake_rooms(self) -> list[dict[str, Any]]:
         return [{"room_id": ROOM1, "canonical_alias": None, "name": "Team"}]
 
 

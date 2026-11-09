@@ -1,4 +1,4 @@
-"""Highest-rigor tests for the quarantined account lifecycle (AD-5, G9.*).
+"""Highest-rigor tests for the quarantined account lifecycle (ADR-0005, G9.*).
 
 Covers the pure state machine and account classification exhaustively, the known-users record, the
 manager's dry-run/live behaviour and full multi-tick progression, the account-data ledger store, and

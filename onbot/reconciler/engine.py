@@ -1,4 +1,4 @@
-"""Reconciler engine (AD-2): level-triggered, idempotent convergence.
+"""Reconciler engine (ADR-0002): level-triggered, idempotent convergence.
 
 Computes *desired* state (from Authentik) vs *actual* state (Synapse) and applies the diff. Runs on
 a schedule **and** on demand (replacing the legacy ``while True: sleep`` tick loop) until
@@ -639,7 +639,7 @@ class ReconcilerEngine:
                 continue
             authentik_user = by_mxid.get(mxid)
             if authentik_user is not None:
-                mapped.append(MappedUser(authentik_obj=authentik_user, mxid=mxid, matrix_obj=matrix_user))
+                mapped.append(MappedUser(authentik_obj=authentik_user, mxid=mxid))
         return mapped, len(by_mxid), resolution.held_mxids
 
     async def _list_scoped_users(self, *, filter_is_active: bool | None) -> list[dict[str, Any]]:
@@ -1765,7 +1765,7 @@ class ReconcilerEngine:
     ) -> None:
         """Converge a lobby's membership, add-only (ADR-0012).
 
-        A lobby is **add-only**: ``kick_enabled=False``, so nobody is ever removed — a user kicked
+        A lobby is **add-only**: ``kick_enabled=False``, so nobody is ever removed: a user kicked
         from the group room keeps their seat here, and visitors who joined on purpose stay. When
         ``visitor_lobby_inject_group_members`` is set (the default) the group's members are seeded in;
         visitors are never injected anywhere. Global room admins are seeded regardless of that switch:
@@ -2276,7 +2276,7 @@ class ReconcilerEngine:
         The name comes free with the room listing, but the **topic does not**: the admin List Room API
         returns ``name`` and ``canonical_alias`` and no topic at all (only the per-room Room Details
         API carries one). So the topic is read from room state before writing, the same way the admin
-        control room repairs its own — otherwise it is compared against a field that is always
+        control room repairs its own; otherwise it is compared against a field that is always
         ``None``, and every tick rewrites every topic.
 
         The switch is read per group, through :func:`resolve_room_settings` like every other field of
@@ -2294,7 +2294,7 @@ class ReconcilerEngine:
             await self.effectors.set_room_topic(room.room_id, desired.topic)
             log.info("set topic of %s from Authentik", room.room_id)
 
-    # --- lifecycle (AD-5, G9.*): quarantined, invoked only from the reconcile result ---
+    # --- lifecycle (ADR-0005, G9.*): quarantined, invoked only from the reconcile result ---
 
     async def _plan_lifecycle(
         self,

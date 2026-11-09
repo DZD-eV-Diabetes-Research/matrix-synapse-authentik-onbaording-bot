@@ -19,6 +19,6 @@ def test_real_mas_login_provisions_matching_localpart(authentik_admin: S.Authent
 
     # MAS derives the localpart from preferred_username (= Authentik username).
     assert result.mxid == f"@{username}:{S.SERVER_NAME}"
-    # AD-6 / §7 Q2: onbot's identity mapping MUST match MAS's localpart template exactly.
+    # ADR-0006 / §7 Q2: onbot's identity mapping MUST match MAS's localpart template exactly.
     expected = compute_mxid({"username": username}, username_attribute="username", server_name=S.SERVER_NAME)
     assert result.mxid == expected

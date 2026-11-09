@@ -22,11 +22,11 @@ async def test_q1_upstream_disable_propagation(make_config, authentik_admin: S.A
 
     authentik_admin.set_active(user["pk"], False)
 
-    # FINDING 1: MAS/Synapse do NOT propagate the upstream disable — the existing Matrix session
+    # FINDING 1: MAS/Synapse do NOT propagate the upstream disable: the existing Matrix session
     # keeps working indefinitely (no automatic session revocation / account lock).
     assert S.whoami_status(login.access_token) == 200
 
-    # FINDING 2: a *fresh* login is blocked at the upstream — Authentik denies the disabled user,
+    # FINDING 2: a *fresh* login is blocked at the upstream: Authentik denies the disabled user,
     # so MAS can never mint a new session for them.
     with pytest.raises(S.LoginError):
         S.mas_login(user["username"], S.DEFAULT_PASSWORD)
@@ -41,5 +41,5 @@ async def test_q1_upstream_disable_propagation(make_config, authentik_admin: S.A
     life.remove_after_n_sec = None
 
     await run_reconcile_once(config)  # mark
-    await run_reconcile_once(config)  # logout — onbot enforces what MAS does not
+    await run_reconcile_once(config)  # logout: onbot enforces what MAS does not
     assert S.wait_revoked(login.access_token)

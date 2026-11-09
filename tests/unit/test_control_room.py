@@ -212,7 +212,7 @@ def _dynamic_handler(
 
 async def test_a_group_member_gains_and_then_loses_command_access_without_a_restart() -> None:
     # The whole point of sourcing admins from Authentik: revocation that does not need a deploy. The
-    # handler is never reconstructed here — the same object must refuse what it just allowed.
+    # handler is never reconstructed here; the same object must refuse what it just allowed.
     client, broadcast, clock = _FakeClient(), _FakeBroadcast(), [1000.0]
     authentik = _FakeAuthentik("alice")
     handler = _dynamic_handler(client, broadcast, authentik, clock)
@@ -363,7 +363,8 @@ async def test_status_reports_version_reconcile_time_and_room_count() -> None:
     body = client.sends[0][1]
     assert "onbot " in body
     assert "2023-11-14" in body  # the reconcile timestamp, rendered in UTC
-    assert "managed rooms: 2" in body
+    assert "; managed rooms: 2" in body
+    assert chr(0x2014) not in body and chr(0x2013) not in body  # no em or en dash (S14)
 
 
 async def test_status_without_mapped_users_says_the_room_count_is_unknown() -> None:

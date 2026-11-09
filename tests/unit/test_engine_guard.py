@@ -87,7 +87,7 @@ class Rooms(FakeAdmin):
     async def list_users(self) -> list[dict[str, Any]]:
         return [{"name": mx(n)} for n in self.directory.users] + [{"name": BOT}]
 
-    async def list_non_space_rooms(self) -> list[dict[str, Any]]:
+    async def fake_rooms(self) -> list[dict[str, Any]]:
         return [
             {"room_id": ROOM1, "canonical_alias": "#g1:company.org", "name": "Team"},
             {"room_id": ROOM2, "canonical_alias": "#g2:company.org", "name": "Other"},
@@ -319,8 +319,8 @@ class ObsoleteRooms(Rooms):
         for n, room in enumerate(self.obsolete):
             self.members[room] = {BOT, mx(f"member{n}")}
 
-    async def list_non_space_rooms(self) -> list[dict[str, Any]]:
-        return await super().list_non_space_rooms() + [
+    async def fake_rooms(self) -> list[dict[str, Any]]:
+        return await super().fake_rooms() + [
             {"room_id": room, "canonical_alias": None, "name": room} for room in self.obsolete
         ]
 

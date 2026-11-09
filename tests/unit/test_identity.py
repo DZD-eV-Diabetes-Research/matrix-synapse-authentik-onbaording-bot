@@ -1,4 +1,4 @@
-"""Unit tests for MXID / localpart mapping (AD-6)."""
+"""Unit tests for MXID / localpart mapping (ADR-0006)."""
 
 import pytest
 
@@ -17,7 +17,7 @@ def test_build_canonical_sigils() -> None:
 
 def test_a_v12_domainless_room_id_is_stored_verbatim() -> None:
     # Room IDs are opaque server-minted tokens; a v12 one has no domain to recover. Nothing must try
-    # to split it or attach a server name — it round-trips through the model unchanged.
+    # to split it or attach a server name; it round-trips through the model unchanged.
     room = MatrixRoom.from_admin_api({"room_id": V12_ROOM_ID})
     assert room.room_id == V12_ROOM_ID
     assert ":" not in room.room_id  # the whole point: no ":domain" to be tempted into parsing

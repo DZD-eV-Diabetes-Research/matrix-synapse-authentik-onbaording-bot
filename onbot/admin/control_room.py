@@ -1,4 +1,4 @@
-"""Route commands sent in the control room (ADR-0010) — a :class:`~onbot.sync.SyncPump` handler.
+"""Route commands sent in the control room (ADR-0010), a :class:`~onbot.sync.SyncPump` handler.
 
 This is the one place the bot *reacts to what someone said*. Everything guarding that is here.
 
@@ -42,7 +42,7 @@ this process only; a restart drops them, which is the at-most-once direction. Th
 a new id never repeats an open one of either kind, and ``!pending`` lists both.
 
 **Authorisation is the allowlist, never the power level.** The room's power levels let any member
-speak — that is the point of a discussion room. If someone gets themselves into it, their power
+speak; that is the point of a discussion room. If someone gets themselves into it, their power
 level must not be the only thing standing between them and a message to every employee.
 
 The allowlist is resolved per command through :class:`~onbot.admin.admins.AdminResolver` and is
@@ -597,7 +597,7 @@ class ControlRoomHandler:
             last = "not yet"
         else:
             last = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(self.engine.last_reconcile_at))
-        return f"onbot {__version__} — last reconcile: {last} — managed rooms: {managed}"
+        return f"onbot {__version__}; last reconcile: {last}; managed rooms: {managed}"
 
     def _rate_limit_status(self) -> str:
         """Whether the bot's send rate limit is lifted, which decides how fast a broadcast is (ONB-03)."""

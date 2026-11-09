@@ -4,7 +4,7 @@ Ported from legacy ``power_level_manager.py`` and made side-effect-free. Two imp
 legacy:
 
 * **Withdrawal (G8.4):** legacy left elevated power levels sticky forever. Here the full *desired*
-  level is computed for every room member, and :func:`plan_power_levels` converges up and down (AD-2).
+  level is computed for every room member, and :func:`plan_power_levels` converges up and down (ADR-0002).
 * **Highest wins (G8.3):** when a user is in several power-level groups we take the max; superuser
   room-admin (G8.2) overrides group levels.
 
@@ -114,19 +114,23 @@ def legacy_user_matches_or_outranks_creator(
     so ``creator_id`` is the bot.
 
     Under **room version 12** the creator holds an infinite, immutable power level and is
-    deliberately **absent** from ``m.room.power_levels`` — the auth rules reject naming a creator in
+    deliberately **absent** from ``m.room.power_levels``: the auth rules reject naming a creator in
     the ``users`` map. So an absent creator is not a powerless one: it is infinite, and *nobody* can
     match it. When ``creator_id`` is not in ``users`` we return ``False`` unconditionally. This is
     what makes a v12 DM immune to the un-demotable-user trap the migration exists to repair.
 
     On **older room versions** the creator is an ordinary ``users`` entry (``trusted_private_chat``
     seated both the bot and the invitee at 100). There the creator *can* be matched, and a user at or
-    above it is the legacy room the migration must recreate — so we compare levels, reading an
+    above it is the legacy room the migration must recreate, so we compare levels, reading an
     unlisted user at ``users_default``.
 
-    Reading ``creator_id`` as absent-means-powerless (level ``users_default``) — the pre-v12
-    assumption baked into naive power-level code — would wrongly flag every healthy v12 room as
+    Reading ``creator_id`` as absent-means-powerless (level ``users_default``), the pre-v12
+    assumption baked into naive power-level code, would wrongly flag every healthy v12 room as
     needing migration. Do not reintroduce it.
+
+    No production code calls it yet: it is kept, with its tests, as the selection predicate of the
+    deferred ``onbot recreate-dm-rooms`` migration (``todo.md``, "Deferred"). Remove it if that
+    migration is dropped for good.
     """
     users = power_levels.get("users") or {}
     if creator_id not in users:

@@ -5,7 +5,7 @@ created it** and it carries the **onbot marker** of that type, naming that group
 bot**. The marker is trusted only once it is **locked**: its event types need a power level no human
 has (:func:`onbot.rooms.provision.markers_locked`). The bot locks the marker when it creates a room, so a
 room moderator can never rewrite ``group_id`` and move the room to another group. There is no stored
-mapping (the bot keeps no database, AD-1); the rooms themselves are the record.
+mapping (the bot keeps no database, ADR-0001); the rooms themselves are the record.
 
 The sender check covers what the lock cannot: a legacy room from before the lock, where a moderator
 could rewrite the marker, and a room older than version 12, where a human at the bot's own level can

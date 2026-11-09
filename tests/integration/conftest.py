@@ -1,6 +1,6 @@
 """Fixtures for the Phase 7b live integration harness.
 
-The expensive bit — the Synapse + MAS + Postgres + Authentik stack — is brought up once per session
+The expensive bit (the Synapse + MAS + Postgres + Authentik stack) is brought up once per session
 via ``testcontainers`` (compose). On top of it sit the bot's MAS-issued credentials, a loaded
 :class:`OnbotConfig` pointing at the containers, and ready API clients. Per-test state (Authentik
 groups/users) is created with unique names so tests share the stack without colliding.
@@ -119,7 +119,7 @@ def compose_stack(tmp_path_factory: pytest.TempPathFactory) -> Iterator[DockerCo
 
 @pytest.fixture(scope="session")
 def bot_token(compose_stack: DockerCompose) -> str:
-    """Provision the bot user in MAS and issue an admin-scoped compatibility token (AD-6)."""
+    """Provision the bot user in MAS and issue an admin-scoped compatibility token (ADR-0006)."""
     common = ["--config", "/config/config.yaml"]
     with contextlib.suppress(Exception):  # idempotent: ignore "already exists" on a re-used stack
         compose_stack.exec_in_container(

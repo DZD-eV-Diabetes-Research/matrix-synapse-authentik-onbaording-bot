@@ -80,7 +80,9 @@ def room_state(
 class IdentityScanMixin:
     """``list_rooms`` and ``get_room_state_events`` for an admin fake.
 
-    Every listed room counts as created by the bot. ``room_markers`` names the marker of each managed
+    ``list_rooms`` (the client's one room listing) is built from the fake's ``fake_rooms`` and, if it
+    has one, ``fake_spaces``; these are test hooks, not client methods. Every listed room counts as
+    created by the bot. ``room_markers`` names the marker of each managed
     room (``room id -> (type, group id)``); other rooms carry none. ``room_state_events`` overrides
     the whole state of a room.
     """
@@ -89,10 +91,10 @@ class IdentityScanMixin:
     room_state_events: ClassVar[dict[str, list[dict[str, Any]]]] = {}
 
     async def list_rooms(self) -> list[dict[str, Any]]:
-        rooms = [{"creator": BOT, **r} for r in await self.list_non_space_rooms()]  # type: ignore[attr-defined]
-        list_spaces = getattr(self, "list_spaces", None)
-        if list_spaces is not None:
-            rooms += [{"creator": BOT, "room_type": "m.space", **r} for r in await list_spaces()]
+        rooms = [{"creator": BOT, **r} for r in await self.fake_rooms()]  # type: ignore[attr-defined]
+        fake_spaces = getattr(self, "fake_spaces", None)
+        if fake_spaces is not None:
+            rooms += [{"creator": BOT, "room_type": "m.space", **r} for r in await fake_spaces()]
         return rooms
 
     async def get_room_state_events(self, room_id: str) -> list[dict[str, Any]]:

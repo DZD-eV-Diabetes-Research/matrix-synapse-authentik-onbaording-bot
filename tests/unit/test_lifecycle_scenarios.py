@@ -141,10 +141,7 @@ class Synapse:
     async def list_users(self) -> list[dict[str, Any]]:
         return [{"name": m} for m in self.mxids]
 
-    async def list_non_space_rooms(self) -> list[dict[str, Any]]:
-        return []
-
-    async def list_spaces(self) -> list[dict[str, Any]]:
+    async def list_rooms(self) -> list[dict[str, Any]]:
         return []
 
 

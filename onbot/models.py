@@ -65,7 +65,6 @@ class MappedUser:
 
     authentik_obj: dict[str, Any]
     mxid: str
-    matrix_obj: dict[str, Any] | None = None
 
     @property
     def is_superuser(self) -> bool:
@@ -81,7 +80,7 @@ class MappedUser:
 class GroupRoomMap:
     """A desired group→room projection, paired with the actual room if one exists.
 
-    A group may also have a *lobby* — an open room beside the private group room (ADR-0012). When the
+    A group may also have a *lobby*: an open room beside the private group room (ADR-0012). When the
     lobby is enabled for this group, ``lobby_desired`` holds its computed attributes and ``lobby``
     holds the actual lobby room if one exists yet. Both are ``None`` when the group has no lobby.
     """

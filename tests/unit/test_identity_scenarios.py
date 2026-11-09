@@ -98,13 +98,13 @@ class Synapse(IdentityScanMixin):
     async def list_users(self) -> list[dict[str, Any]]:
         return [{"name": m} for m in self.mxids]
 
-    async def list_non_space_rooms(self) -> list[dict[str, Any]]:
+    async def fake_rooms(self) -> list[dict[str, Any]]:
         return [
             {"room_id": ROOM1, "canonical_alias": f"#g1:{SERVER}", "name": "Team"},
             {"room_id": ROOM2, "canonical_alias": f"#g2:{SERVER}", "name": "Other"},
         ]
 
-    async def list_spaces(self) -> list[dict[str, Any]]:
+    async def fake_spaces(self) -> list[dict[str, Any]]:
         return []
 
     async def list_room_members(self, room_id: str) -> list[str]:

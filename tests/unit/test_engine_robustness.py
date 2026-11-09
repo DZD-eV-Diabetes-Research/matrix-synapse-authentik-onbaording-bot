@@ -65,7 +65,7 @@ class TwoRoomAdmin(FakeAdmin):
     async def list_users(self) -> list[dict[str, Any]]:
         return [{"name": f"@{u}:company.org"} for u in ("alice", "bob", "carol", "dave")]
 
-    async def list_non_space_rooms(self) -> list[dict[str, Any]]:
+    async def fake_rooms(self) -> list[dict[str, Any]]:
         return [
             {"room_id": _ROOM1, "canonical_alias": "#g1:company.org", "name": "Team"},
             {"room_id": _ROOM2, "canonical_alias": "#g2:company.org", "name": "Other"},
@@ -188,8 +188,8 @@ async def test_a_failing_room_creation_does_not_stop_the_other_groups() -> None:
     """A bad ``chatroom_params`` (or a taken alias) makes createRoom fail on every pass."""
 
     class NoRoom2(TwoRoomAdmin):
-        async def list_non_space_rooms(self) -> list[dict[str, Any]]:
-            return [r for r in await super().list_non_space_rooms() if r["room_id"] != _ROOM2]
+        async def fake_rooms(self) -> list[dict[str, Any]]:
+            return [r for r in await super().fake_rooms() if r["room_id"] != _ROOM2]
 
     class RefusingCreate(RecordingEffectors):
         async def create_managed_room(self, spec: ManagedRoomSpec) -> str:
@@ -252,7 +252,7 @@ async def test_lifecycle_runs_although_the_whole_room_stage_fails() -> None:
     """A missing space (ConfigurationError) or a Synapse 500 on the room list fails the room stage."""
 
     class NoRoomList(TwoRoomAdmin):
-        async def list_non_space_rooms(self) -> list[dict[str, Any]]:
+        async def fake_rooms(self) -> list[dict[str, Any]]:
             raise ApiError("GET", "http://synapse/rooms", 500, {"errcode": "M_UNKNOWN"})
 
     lifecycle = FakeLifecycle()
@@ -278,9 +278,9 @@ _GROUP_EVENT = "org.company.onbot.group_room"
 
 
 class OrphansAdmin(TwoRoomAdmin):
-    async def list_non_space_rooms(self) -> list[dict[str, Any]]:
+    async def fake_rooms(self) -> list[dict[str, Any]]:
         return [
-            *await super().list_non_space_rooms(),
+            *await super().fake_rooms(),
             {"room_id": _ORPHAN_A, "canonical_alias": "#gonea:company.org", "name": "Gone A"},
             {"room_id": _ORPHAN_B, "canonical_alias": "#goneb:company.org", "name": "Gone B"},
         ]
@@ -516,8 +516,8 @@ class LegacyRoomAdmin(TwoRoomAdmin):
     async def list_users(self) -> list[dict[str, Any]]:
         return [*await super().list_users(), {"name": _GOUT}]
 
-    async def list_non_space_rooms(self) -> list[dict[str, Any]]:
-        rooms = await super().list_non_space_rooms()
+    async def fake_rooms(self) -> list[dict[str, Any]]:
+        rooms = await super().fake_rooms()
         return [{**r, "version": "10", "creator": _BOT} if r["room_id"] == _ROOM1 else r for r in rooms]
 
     async def list_room_members(self, room_id: str) -> list[str]:

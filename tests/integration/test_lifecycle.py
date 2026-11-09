@@ -83,7 +83,7 @@ async def test_dry_run_does_not_revoke(make_config, authentik_admin: S.Authentik
     life.lock_after_n_sec = 0
 
     await run_reconcile_once(config)  # mark
-    await run_reconcile_once(config)  # would log out — but dry-run only audits
+    await run_reconcile_once(config)  # would log out, but dry-run only audits
     assert S.whoami_status(login.access_token) == 200
 
 
