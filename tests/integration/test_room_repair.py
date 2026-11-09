@@ -313,6 +313,53 @@ async def test_a_room_a_server_admin_blocked_is_never_unblocked(
     assert newcomer.mxid not in await admin_client.list_room_members(room_id)
 
 
+def _set_block(token: str, room_id: str, *, blocked: bool) -> None:
+    r = httpx.put(
+        f"{S.SYNAPSE_URL}/_synapse/admin/v1/rooms/{quote(room_id, safe='')}/block",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"block": blocked},
+        timeout=30.0,
+    )
+    assert r.status_code == 200, r.text
+
+
+async def test_an_obsolete_room_a_server_admin_blocked_is_held_until_the_block_is_lifted(
+    make_config,
+    compose_stack: DockerCompose,
+    authentik_admin: S.AuthentikAdmin,
+    matrix_client: ApiClientMatrix,
+    admin_client: ApiClientSynapseAdmin,
+) -> None:
+    """W4R-02 (D23): the room of a group that disappeared was cleared and, with
+    `delete_disabled_rooms`, purged, although a server admin had blocked it (a legal hold)."""
+    prefix = S.uniq("hold")
+    authentik_admin.create_group(f"{prefix}-anchor", attributes={"is_chatroom": True})
+    group = authentik_admin.create_group(f"{prefix}-room", attributes={"is_chatroom": True})
+    _u, member = S.provision(authentik_admin, S.uniq("holdmember"), groups=[group["pk"]])
+    config = _config(make_config, prefix, teardown=True)
+    config.sync_matrix_rooms_based_on_authentik_groups.delete_disabled_rooms = True
+    await _sweep(config)
+    await run_reconcile_once(config)
+    room_id = await _room_of(matrix_client, config, group)
+    token = _server_admin_token(compose_stack)
+    _set_block(token, room_id, blocked=True)
+    blocker = (await admin_client.get_room_block(room_id)).by
+
+    authentik_admin.delete_group(group["pk"])
+    await run_reconcile_once(config)
+    await run_reconcile_once(config)
+
+    assert not await _gone(admin_client, room_id)
+    assert member.mxid in await admin_client.list_room_members(room_id)
+    block = await admin_client.get_room_block(room_id)
+    assert block.blocked and block.by == blocker
+
+    _set_block(token, room_id, blocked=False)  # the hold ends
+    await run_reconcile_once(config)
+
+    assert await _gone(admin_client, room_id)
+
+
 # --- REC-09: space link, alias, marker -------------------------------------------------------------
 
 

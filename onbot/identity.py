@@ -21,10 +21,12 @@ Resolution order for one Authentik user:
 
 Several Authentik users that resolve to one MXID (D21): when exactly one of them is linked to it
 through MAS and the others only guess by the mapping attribute (never seen, no MAS link), the
-MAS-linked owner is managed normally and the guessers are skipped and reported. Otherwise (two MAS
-links, two bindings, a MAS link against another user's binding, a binding against a guess) the
-conflict fails closed: all of them are skipped (no join, no kick, no power-level change, no lock or
-erase) and the conflict is reported.
+MAS-linked owner is managed normally and the guessers are skipped and reported. A recorded binding
+wins over guesses in the same way where MAS cannot contradict it: MAS is not configured, or MAS links
+that account to nobody (added 2026-11-09). Otherwise (two MAS links, two bindings, a MAS link against
+another user's binding, a binding against a guess while MAS is configured but unreadable or links the
+account elsewhere) the conflict fails closed: all of them are skipped (no join, no kick, no
+power-level change, no lock or erase) and the conflict is reported.
 
 A guess never takes an account MAS links to somebody else, even when that owner is not part of the
 call and was never bound (disabled or outside the sync scope): the guesser is skipped and reported
@@ -134,12 +136,13 @@ class Resolution:
     """The outcome of resolving a set of Authentik users."""
 
     #: ``pk -> MXID`` of every user that resolved to exactly one account nobody else claims, and of
-    #: a MAS-linked owner whose only rivals were attribute guesses (D21).
+    #: an owner (MAS-linked, or bound where MAS cannot contradict it) whose only rivals were
+    #: attribute guesses (D21).
     mxids: Mapping[str, str] = field(default_factory=dict)
     #: ``MXID -> the pks that claim it``: conflicts, every claimant skipped (fail closed).
     held: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
-    #: ``pk -> MXID`` of attribute guesses that lost an account to its MAS-linked owner (D21):
-    #: those users are skipped, the account is managed for its owner.
+    #: ``pk -> MXID`` of attribute guesses that lost an account to its owner (D21): those users are
+    #: skipped, the account is managed for its owner.
     rejected: Mapping[str, str] = field(default_factory=dict)
     #: ``pk -> the MXID its mapping attribute names`` of users never seen, while MAS is configured but
     #: cannot be read: skipped this pass, and the account is left alone (part of :attr:`held_mxids`).
@@ -363,7 +366,8 @@ class IdentityResolver:
                 claims[mxid].add(pk)
         held: dict[str, tuple[str, ...]] = {}
         rejected: dict[str, str] = {}
-        owner_of: dict[str, str] = {}  # contested MXID -> the MAS-linked owner (D21)
+        # contested MXID -> (its owner, "mas" or "binding"): who kept it against guesses (D21)
+        owner_of: dict[str, tuple[str, str]] = {}
         linked_mxids = self._mas_view.linked if self._mas_view is not None else set()
         for mxid, pks in claims.items():
             if len(pks) < 2:
@@ -374,12 +378,19 @@ class IdentityResolver:
             linked = mxid in linked_mxids
             owners = [pk for pk in pks if evidence.get(pk, "binding") != "guess"]
             owner_evidence = evidence.get(owners[0], "mas" if linked else "binding") if owners else None
-            if len(owners) == 1 and owner_evidence == "mas" and owners[0] not in mas_multi:
-                # D21: MAS positively links the account to one claimant; the others only guessed
-                # by the mapping attribute. The owner keeps it, the guessers are skipped.
+            # A recorded binding wins like a MAS link where MAS cannot contradict it: MAS is not
+            # configured, or it reads and links the account to nobody (D21, 2026-11-09). While MAS is
+            # configured but unreadable it might, so that conflict still fails closed.
+            binding_wins = owner_evidence == "binding" and (
+                self.mas is None or (self._mas_view is not None and not linked)
+            )
+            if len(owners) == 1 and (owner_evidence == "mas" or binding_wins) and owners[0] not in mas_multi:
+                # D21: one claimant's account is positively theirs (a MAS link or a recorded
+                # binding); the others only guessed by the mapping attribute. The owner keeps it,
+                # the guessers are skipped.
                 for pk in pks - {owners[0]}:
                     rejected[pk] = mxid
-                owner_of[mxid] = owners[0]
+                owner_of[mxid] = (owners[0], "mas" if owner_evidence == "mas" else "binding")
                 continue
             held[mxid] = tuple(sorted(pks))
         for mxids in mas_multi.values():
@@ -434,17 +445,23 @@ class IdentityResolver:
             if self._first(("rejected", pk, mxid)):
                 guesser = names.get(pk, f"pk {pk}")
                 if mxid in owner_of:
-                    owner = names.get(owner_of[mxid], f"pk {owner_of[mxid]}")
+                    owner_pk, how = owner_of[mxid]
+                    owner = names.get(owner_pk, f"pk {owner_pk}")
+                    whose = (
+                        f"MAS links that account to {owner}"
+                        if how == "mas"
+                        else f"onbot recorded that account as the one of {owner} (a recorded binding)"
+                    )
                     tail = f"onbot manages {mxid} for its owner and skips {guesser}."
                 else:
                     assert self._mas_view is not None
                     subjects = ", ".join(self._mas_view.subjects_of(mxid))
-                    owner = f"another Authentik user (upstream subject {subjects})"
+                    whose = f"MAS links that account to another Authentik user (upstream subject {subjects})"
                     tail = f"onbot skips {guesser}."
                 await self._report(
                     None,
                     f"Authentik user {guesser} names the Matrix account {mxid} by the mapping "
-                    f"attribute, but MAS links that account to {owner}. {tail}",
+                    f"attribute, but {whose}. {tail}",
                 )
         if deferred:
             # Every pass while MAS cannot be read (the outage itself is reported once); the users are

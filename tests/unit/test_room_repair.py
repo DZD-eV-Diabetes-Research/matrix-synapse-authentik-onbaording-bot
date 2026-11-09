@@ -11,6 +11,8 @@ from __future__ import annotations
 from typing import Any, ClassVar
 
 from onbot.admin.notifier import AdminRoomNotifier
+from onbot.clients.base import ApiError
+from onbot.clients.synapse_admin import RoomBlock
 from onbot.config import OnbotConfig
 from onbot.events import Event, EventBus, Signal
 from onbot.reconciler.engine import ReconcilerEngine
@@ -26,6 +28,7 @@ from tests.unit.test_engine import (
     _BASE,
     BOT,
     LOCKED_EVENTS,
+    AvatarAuthentik,
     FakeAdmin,
     FakeAuthentik,
     LobbyAdmin,
@@ -145,24 +148,119 @@ async def test_a_lobby_the_bot_blocked_is_unblocked_with_its_group() -> None:
     assert sorted(admin.blocked_changes) == [(LOBBY, False), (ROOM1, False)]
 
 
-async def test_teardown_keeps_a_block_a_server_admin_set() -> None:
-    """Blocking again would record the bot as the blocker, and the room would be unblocked later."""
-    config = OnbotConfig.model_validate(_BASE)
-    rooms = config.sync_matrix_rooms_based_on_authentik_groups
-    rooms.disable_rooms_when_mapped_authentik_group_disappears = True
-    admin = OrphanAdmin()
-    admin.room_state_events = {ORPHAN: room_state(OnbotRoomType.group_room, "g-gone")}
-    admin.blocks[ORPHAN] = HUMAN_ADMIN
-    engine, admin, effectors, _attention = _engine(admin, config=config)
+class FlakyBlockAdmin(FakeAdmin):
+    """Synapse answers the block status of ROOM1 with a 500."""
+
+    async def get_room_block(self, room_id: str) -> RoomBlock:
+        if room_id == ROOM1:
+            raise ApiError("GET", f"/rooms/{room_id}/block", 500)
+        return await super().get_room_block(room_id)
+
+
+async def test_a_room_whose_block_cannot_be_read_is_left_alone_this_pass() -> None:
+    """W4R-04: the room was resolved before its block was checked, so a failed read left a room a
+    server admin may have blocked fully managed (REC-11 failed open): kicks, joins, power levels."""
+    effectors = RecordingEffectors()
+    _seed_converged(effectors)
+    effectors.state_store[(ROOM1, "m.room.topic")] = {"topic": "old"}
+    admin = FlakyBlockAdmin()
+    admin.blocks[ROOM1] = HUMAN_ADMIN  # a server admin's block the bot cannot read this pass
+    engine, admin, effectors, _attention = _engine(admin, effectors)
 
     await engine.reconcile_once()
 
+    assert all(room != ROOM1 for room, _ in effectors.kicks)
+    assert all(room != ROOM1 for room, _ in admin.added)
+    assert all(room != ROOM1 for room, _ in effectors.power_levels)
+    assert _writes(effectors, ROOM1) == []
     assert admin.blocked_changes == []
-    assert admin.blocks[ORPHAN] == HUMAN_ADMIN
+    (problem,) = engine.last_pass_report.rooms
+    assert problem.group_pk == "g1" and "room setup failed" in problem.problems[0]
+    assert ("!space:company.org", "@bob:company.org") in admin.added  # the rest of the pass ran
+
+
+# --- D23: an obsolete room somebody else blocked is a hold --------------------------------------------
+
+
+def _held_orphan(
+    *, delete: bool = False, limit: int = 10
+) -> tuple[ReconcilerEngine, Any, RecordingEffectors, list[Event]]:
+    config = OnbotConfig.model_validate(
+        {**_BASE, "destructive_action_guard": {"max_reversible_actions_per_pass": limit}}
+    )
+    rooms = config.sync_matrix_rooms_based_on_authentik_groups
+    rooms.disable_rooms_when_mapped_authentik_group_disappears = True
+    rooms.delete_disabled_rooms = delete
+    admin = OrphanAdmin()
+    admin.room_state_events = {ORPHAN: room_state(OnbotRoomType.group_room, "g-gone")}
+    admin.blocks[ORPHAN] = HUMAN_ADMIN  # moderation or a legal hold, then the group went away
+    return _engine(admin, config=config)
+
+
+async def test_an_obsolete_room_a_server_admin_blocked_is_neither_cleared_nor_deleted() -> None:
+    """W4R-02, D23: the teardown kicked every member and `delete_disabled_rooms` purged the room."""
+    engine, admin, effectors, attention = _held_orphan(delete=True)
+
+    await engine.reconcile_once()
+    await engine.reconcile_once()
+
+    assert all(room != ORPHAN for room, _ in effectors.kicks)
+    assert admin.deleted == []
+    assert admin.blocked_changes == [] and admin.blocks[ORPHAN] == HUMAN_ADMIN
+    (report,) = [e.payload["text"] for e in attention if ORPHAN in e.payload["text"]]  # once
+    assert f"{HUMAN_ADMIN} blocked it" in report and "D23" in report
+
+
+async def test_a_held_room_does_not_count_against_the_limit() -> None:
+    """Planned again on every pass, the held room's teardown kept the one kick in ROOM1 paused."""
+    engine, _admin, effectors, _attention = _held_orphan(limit=1)
+
+    await engine.reconcile_once()
+
+    assert effectors.kicks == [(ROOM1, "@stale:company.org")]
+
+
+async def test_a_held_room_is_torn_down_once_the_block_is_lifted() -> None:
+    engine, admin, effectors, _attention = _held_orphan(delete=True)
+    await engine.reconcile_once()
+
+    del admin.blocks[ORPHAN]  # the server admin lifts the block
+    await engine.reconcile_once()
+
+    assert (ORPHAN, True) in admin.blocked_changes
     assert {mxid for room, mxid in effectors.kicks if room == ORPHAN} == {
         "@alice:company.org",
         "@stale:company.org",
     }
+    assert admin.deleted == [ORPHAN]
+
+
+async def test_a_block_set_between_planning_and_teardown_stops_the_teardown() -> None:
+    """The guard decides after planning; a hold that appears meanwhile still wins (D23)."""
+    config = OnbotConfig.model_validate(_BASE)
+    rooms = config.sync_matrix_rooms_based_on_authentik_groups
+    rooms.disable_rooms_when_mapped_authentik_group_disappears = True
+    rooms.delete_disabled_rooms = True
+
+    class LateBlockAdmin(OrphanAdmin):
+        reads = 0
+
+        async def get_room_block(self, room_id: str) -> RoomBlock:
+            if room_id == ORPHAN:
+                self.reads += 1
+                if self.reads > 1:  # after the planning read
+                    self.blocks[ORPHAN] = HUMAN_ADMIN
+            return await super().get_room_block(room_id)
+
+    admin = LateBlockAdmin()
+    admin.room_state_events = {ORPHAN: room_state(OnbotRoomType.group_room, "g-gone")}
+    engine, admin, effectors, _attention = _engine(admin, config=config)
+
+    await engine.reconcile_once()
+
+    assert all(room != ORPHAN for room, _ in effectors.kicks)
+    assert admin.deleted == [] and admin.blocked_changes == []
+    assert any(r.room_id == ORPHAN and "D23" in "; ".join(r.problems) for r in engine.last_pass_report.rooms)
 
 
 # --- REC-09: space link -----------------------------------------------------------------------------
@@ -210,11 +308,41 @@ async def test_a_converged_room_gets_no_writes() -> None:
 # --- REC-09: marker and lock -----------------------------------------------------------------------
 
 
-async def test_a_removed_marker_is_restored_and_reported_once() -> None:
-    effectors = RecordingEffectors()
+class SharedStateAdmin(FakeAdmin):
+    """The admin Room State API serves the markers the effectors hold, so the identity scan and the
+    repair see one room (W4R-06: the repair tests used to pass only because the scan kept seeing the
+    intact marker while the effectors showed it removed)."""
+
+    def __init__(self, effectors: RecordingEffectors) -> None:
+        super().__init__()
+        self.effectors = effectors
+
+    async def get_room_state_events(self, room_id: str) -> list[dict[str, Any]]:
+        events = [e for e in await super().get_room_state_events(room_id) if not _is_marker(e["type"])]
+        for key, content in self.effectors.state_store.items():
+            if len(key) == 2 and key[0] == room_id and _is_marker(key[1]):
+                sender = self.effectors.senders.get(key, BOT)
+                events.append({"type": key[1], "state_key": "", "sender": sender, "content": content})
+        return events
+
+
+def _is_marker(event_type: str) -> bool:
+    return event_type.startswith("org.company.onbot.")
+
+
+def _running(
+    effectors: RecordingEffectors | None = None, **kwargs: Any
+) -> tuple[ReconcilerEngine, Any, RecordingEffectors, list[Event]]:
+    """An engine whose scan and repair share one room state, over converged rooms."""
+    effectors = effectors or RecordingEffectors()
     _seed_converged(effectors)
+    return _engine(SharedStateAdmin(effectors), effectors, **kwargs)
+
+
+async def test_a_removed_marker_is_restored_and_reported_once() -> None:
+    engine, _admin, effectors, attention = _running()
+    await engine.reconcile_once()
     effectors.state_store[(ROOM1, GROUP_MARKER)] = {}  # somebody at the bot's level removed it
-    engine, _admin, effectors, attention = _engine(effectors=effectors)
 
     await engine.reconcile_once()
     await engine.reconcile_once()
@@ -226,11 +354,10 @@ async def test_a_removed_marker_is_restored_and_reported_once() -> None:
 
 
 async def test_a_marker_rewritten_to_another_group_is_restored_from_what_the_bot_knows() -> None:
-    effectors = RecordingEffectors()
-    _seed_converged(effectors)
+    engine, _admin, effectors, attention = _running()
+    await engine.reconcile_once()
     effectors.state_store[(ROOM1, GROUP_MARKER)] = dump_room_state(GroupRoomState(group_id="g-other"))
     effectors.senders[(ROOM1, GROUP_MARKER)] = MODERATOR
-    engine, _admin, effectors, attention = _engine(effectors=effectors)
 
     await engine.reconcile_once()
 
@@ -241,16 +368,119 @@ async def test_a_marker_rewritten_to_another_group_is_restored_from_what_the_bot
 
 async def test_a_marker_somebody_else_wrote_is_rewritten_by_the_bot() -> None:
     """Same content, wrong sender: after a restart the scan would no longer trust it (W3R)."""
-    effectors = RecordingEffectors()
-    _seed_converged(effectors)
+    engine, _admin, effectors, attention = _running()
+    await engine.reconcile_once()
     effectors.senders[(ROOM1, GROUP_MARKER)] = MODERATOR
-    engine, _admin, effectors, attention = _engine(effectors=effectors)
 
     await engine.reconcile_once()
 
     assert effectors.senders[(ROOM1, GROUP_MARKER)] == BOT
     assert effectors.state_store[(ROOM1, GROUP_MARKER)] == dump_room_state(GroupRoomState(group_id="g1"))
     assert any(f"rewritten by {MODERATOR}" in e.payload["text"] for e in attention)
+
+
+# --- W4R-08: what a restored marker contains ------------------------------------------------------
+
+
+def _marker_writes(effectors: RecordingEffectors, since: int) -> list[dict[str, Any]]:
+    return [c for room, t, c in effectors.state_writes[since:] if (room, t) == (ROOM1, GROUP_MARKER)]
+
+
+def _with_global_admin() -> OnbotConfig:
+    config = OnbotConfig.model_validate(_BASE)
+    config.global_room_admins = ["carol"]
+    return config
+
+
+async def test_a_removed_marker_is_restored_with_what_the_bot_wrote_into_it() -> None:
+    """A fresh marker dropped `global_admins` (still a withdrawal source, D10) and
+    `avatar_source_url` (the avatar was fetched and uploaded again)."""
+    engine, _admin, effectors, _attention = _running(config=_with_global_admin(), authentik=AvatarAuthentik())
+    await engine.reconcile_once()
+    before = effectors.state_store[(ROOM1, GROUP_MARKER)]
+    assert before["global_admins"] == ["@carol:company.org"]
+    assert before["avatar_source_url"] == "https://cdn/t.png"
+    effectors.state_store[(ROOM1, GROUP_MARKER)] = {}
+    writes = len(effectors.state_writes)
+
+    await engine.reconcile_once()
+
+    (restored,) = _marker_writes(effectors, writes)  # one write: the restore, nothing to fix after it
+    assert restored == before
+    assert effectors.uploads == ["https://cdn/t.png"]  # not uploaded again
+
+
+async def test_a_same_role_marker_somebody_else_wrote_is_not_signed_by_the_bot() -> None:
+    """The foreign content (a human-chosen `global_admins`) used to be re-signed verbatim."""
+    engine, _admin, effectors, _attention = _running(config=_with_global_admin())
+    await engine.reconcile_once()
+    before = effectors.state_store[(ROOM1, GROUP_MARKER)]
+    effectors.state_store[(ROOM1, GROUP_MARKER)] = {**before, "global_admins": [MODERATOR]}
+    effectors.senders[(ROOM1, GROUP_MARKER)] = MODERATOR
+    writes = len(effectors.state_writes)
+
+    await engine.reconcile_once()
+
+    (restored,) = _marker_writes(effectors, writes)
+    assert restored == before and MODERATOR not in restored["global_admins"]
+
+
+# --- W4R-06: a marker lost while the bot did not run ------------------------------------------------
+
+
+def _restarted(
+    effectors: RecordingEffectors,
+) -> tuple[ReconcilerEngine, Any, RecordingEffectors, list[Event]]:
+    """A fresh process over ROOM1 as it is now; the group's alias still points at it."""
+    effectors.aliases["#g1:company.org"] = ROOM1
+    return _engine(SharedStateAdmin(effectors), effectors)
+
+
+async def test_a_marker_removed_while_the_bot_was_stopped_is_reported_with_what_to_do() -> None:
+    """A fresh process cannot tell the room from one that never was the group's room, so it does not
+    take it back (D20). Before, the group was skipped with a bare "carries no onbot marker"."""
+    effectors = RecordingEffectors()
+    _seed_converged(effectors)
+    effectors.state_store[(ROOM1, GROUP_MARKER)] = {}
+    engine, admin, effectors, _attention = _restarted(effectors)
+
+    await engine.reconcile_once()
+
+    assert effectors.state_store[(ROOM1, GROUP_MARKER)] == {}  # not taken back on a guess
+    assert effectors.created == []  # and no second room
+    assert all(room != ROOM1 for room, _ in effectors.kicks + admin.added)
+    problems = {r.room_id: "; ".join(r.problems) for r in engine.last_pass_report.rooms}
+    assert "which the bot created, but its onbot group_room marker was removed" in problems[None]
+    assert "restores the marker as the bot account or moves the alias away" in problems[None]
+    assert "docs/troubleshooting.md" in problems[ROOM1]  # the room itself, as a stray
+
+
+async def test_a_marker_a_human_restores_as_the_bot_counts_from_the_next_pass() -> None:
+    effectors = RecordingEffectors()
+    _seed_converged(effectors)
+    marker = effectors.state_store[(ROOM1, GROUP_MARKER)]
+    effectors.state_store[(ROOM1, GROUP_MARKER)] = {}
+    engine, admin, effectors, _attention = _restarted(effectors)
+    await engine.reconcile_once()
+
+    effectors.state_store[(ROOM1, GROUP_MARKER)] = marker  # a PUT with the bot's access token
+    await engine.reconcile_once()
+
+    assert (ROOM1, "@bob:company.org") in admin.added
+    assert engine.last_pass_report.rooms == []
+
+
+async def test_a_marker_rewritten_while_the_bot_was_stopped_is_reported_with_what_to_do() -> None:
+    effectors = RecordingEffectors()
+    _seed_converged(effectors)
+    effectors.senders[(ROOM1, GROUP_MARKER)] = MODERATOR
+    engine, _admin, effectors, _attention = _restarted(effectors)
+
+    await engine.reconcile_once()
+
+    assert effectors.senders[(ROOM1, GROUP_MARKER)] == MODERATOR
+    (group,) = ["; ".join(r.problems) for r in engine.last_pass_report.rooms if r.room_id is None]
+    assert f"the bot created, but it carries an onbot group_room marker written by {MODERATOR}" in group
 
 
 async def test_an_incomplete_marker_from_an_older_version_is_completed_quietly() -> None:
@@ -457,6 +687,61 @@ async def test_reopen_by_room_id_and_refusals() -> None:
     assert effectors.state_store[(LOBBY, JOIN_RULES)] == RESTRICTED
 
 
+# --- W4R-07: one refused repair does not stop the others -------------------------------------------
+
+
+class RefusingEffectors(RecordingEffectors):
+    """The server refuses the state writes named in ``refused`` ((room, event type) pairs)."""
+
+    def __init__(self, *refused: tuple[str, str]) -> None:
+        super().__init__()
+        self.refused = set(refused)
+
+    async def put_room_state(
+        self, room_id: str, event_type: str, content: dict[str, Any], state_key: str = ""
+    ) -> None:
+        if (room_id, event_type) in self.refused:
+            raise ApiError("PUT", f"/rooms/{room_id}/state/{event_type}", 403, {"errcode": "M_FORBIDDEN"})
+        await super().put_room_state(room_id, event_type, content, state_key)
+
+
+async def test_a_refused_space_repair_does_not_keep_new_users_out_of_the_space() -> None:
+    """The space's upkeep and joining users into it were one step: a refused marker restore (or an
+    alias an appservice reserved) failed it on every pass, and nobody new got into the space."""
+    effectors = RefusingEffectors((SPACE, SPACE_MARKER))
+    _seed_converged(effectors)
+    del effectors.state_store[(SPACE, SPACE_MARKER)]
+    engine, admin, effectors, _attention = _engine(effectors=effectors)
+
+    await engine.reconcile_once()
+
+    assert (SPACE, "@bob:company.org") in admin.added
+    (problem,) = [r for r in engine.last_pass_report.rooms if r.room_id == SPACE]
+    assert len(problem.problems) == 1 and problem.problems[0].startswith("marker repair failed")
+
+
+async def test_a_refused_repair_of_a_group_room_does_not_skip_the_others() -> None:
+    """A refused `m.space.parent` used to end the upkeep there: no avatar for the room."""
+    effectors = RefusingEffectors((ROOM1, PARENT))
+    _seed_converged(effectors)
+    del effectors.state_store[(ROOM1, PARENT, SPACE)]
+    del effectors.state_store[(SPACE, CHILD, ROOM1)]
+    engine = ReconcilerEngine(
+        OnbotConfig.model_validate(_BASE),
+        AvatarAuthentik(),
+        FakeAdmin(),  # type: ignore[arg-type]
+        effectors,
+        EventBus(),
+    )
+
+    await engine.reconcile_once()
+
+    assert effectors.state_store[(SPACE, CHILD, ROOM1)]["via"] == ["company.org"]  # before the refusal
+    assert effectors.avatars == [(ROOM1, "mxc://company.org/1")]  # after it
+    (problem,) = [r for r in engine.last_pass_report.rooms if r.room_id == ROOM1]
+    assert len(problem.problems) == 1 and problem.problems[0].startswith("space link repair failed")
+
+
 async def test_room_findings_are_posted_in_the_admin_room() -> None:
     sends: list[tuple[str, str]] = []
 
@@ -512,6 +797,64 @@ async def test_closed_rooms_do_not_count_against_the_limit_on_every_pass() -> No
     # The one kick in the live room is within the limit of 1; with the closed room's teardown
     # planned again it made two actions, and both were paused.
     assert effectors.kicks == [(ROOM1, "@stale:company.org")]
+
+
+LEGACY_ADMIN = "@legacy-admin:company.org"
+
+
+class StuckMemberOrphanAdmin(ClosedOrphanAdmin):
+    """A teardown left one member the bot cannot kick (here a v12 additional creator)."""
+
+    newcomer: str | None = None
+
+    async def list_room_members(self, room_id: str) -> list[str]:
+        if room_id == ORPHAN and room_id in self.blocks:
+            return [BOT, LEGACY_ADMIN, *([self.newcomer] if self.newcomer else [])]
+        return await super().list_room_members(room_id)
+
+
+def _stuck_orphan(limit: int) -> tuple[ReconcilerEngine, StuckMemberOrphanAdmin, RecordingEffectors]:
+    config = OnbotConfig.model_validate(
+        {**_BASE, "destructive_action_guard": {"max_reversible_actions_per_pass": limit}}
+    )
+    rooms = config.sync_matrix_rooms_based_on_authentik_groups
+    rooms.disable_rooms_when_mapped_authentik_group_disappears = True
+    admin = StuckMemberOrphanAdmin()
+    admin.room_state_events = {ORPHAN: room_state(OnbotRoomType.group_room, "g-gone")}
+    admin.blocks[ORPHAN] = BOT
+    effectors = RecordingEffectors()
+    effectors.state_store[(ORPHAN, "m.room.create")] = {
+        "room_version": "12",
+        "additional_creators": [LEGACY_ADMIN],
+    }
+    engine, admin, effectors, _attention = _engine(admin, effectors, config=config)
+    assert isinstance(admin, StuckMemberOrphanAdmin)
+    return engine, admin, effectors
+
+
+async def test_a_closed_room_with_a_member_the_bot_cannot_kick_is_not_torn_down_again() -> None:
+    """W4R-01: closed meant "only the bot is left", so a room keeping a member nobody can kick (a v12
+    additional creator, a PL 100 human of a migrated room) was torn down again on every pass, and
+    from eleven of them on every pass tripped layer 2."""
+    engine, admin, effectors = _stuck_orphan(limit=1)
+
+    for _ in range(3):
+        await engine.reconcile_once()
+
+    assert admin.blocked_changes == []
+    assert all(room != ORPHAN for room, _ in effectors.kicks)
+    # Within the limit of 1 on every pass (the fake keeps the kicked member listed).
+    assert effectors.kicks == [(ROOM1, "@stale:company.org")] * 3
+
+
+async def test_a_closed_room_somebody_kickable_joined_is_torn_down_again() -> None:
+    engine, admin, effectors = _stuck_orphan(limit=10)
+    admin.newcomer = "@alice:company.org"  # back in the blocked room somehow (an admin join)
+
+    await engine.reconcile_once()
+
+    assert (ORPHAN, "@alice:company.org") in effectors.kicks
+    assert (ORPHAN, LEGACY_ADMIN) not in effectors.kicks
 
 
 async def test_a_closed_room_is_still_deleted_once_deletion_is_switched_on() -> None:

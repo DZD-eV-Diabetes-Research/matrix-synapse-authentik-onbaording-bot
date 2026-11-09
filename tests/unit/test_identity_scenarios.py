@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
+from onbot.clients.synapse_admin import RoomBlock
 from onbot.config import OnbotConfig
 from onbot.events import Event, EventBus, Signal
 from onbot.guard import DestructiveActionGuard, GuardLimits, MatrixAccountDataGuardStore
@@ -115,6 +116,10 @@ class Synapse(IdentityScanMixin):
 
     async def room_is_blocked(self, room_id: str) -> bool:
         return False
+
+    async def get_room_block(self, room_id: str) -> RoomBlock:
+        # Without it every room's setup failed, and before W4R-04 the room was managed anyway.
+        return RoomBlock(blocked=False)
 
     async def get_room_details(self, room_id: str) -> dict[str, Any]:
         return {"room_id": room_id, "version": "12", "creator": mx("bot")}
@@ -284,25 +289,34 @@ async def test_a_changed_mapping_attribute_kicks_and_locks_nobody() -> None:
     assert len(w.identity_reports) == 1 and "15 Authentik user(s)" in w.identity_reports[0]
 
 
-async def test_a_newcomer_naming_an_existing_account_leaves_it_alone() -> None:
-    """SEC-07: carl's attribute names alice's account, which only a binding ties to alice (no MAS).
-    Neither carl's groups reach @alice nor is @alice kicked, demoted or (once disabled) locked: both
-    are skipped until an admin decides."""
+async def test_without_mas_the_bound_owner_keeps_her_account_against_a_guess() -> None:
+    """SEC-07, D21 (2026-11-09): carl's attribute names alice's account, which only onbot's recorded
+    binding ties to alice (no MAS). The binding wins like a MAS link: carl's groups never reach
+    @alice, and alice stays managed as usual, locked once disabled. Before, both were frozen."""
     w = World(attribute="attributes.mx")
     w.person(1, "alice", "g1", mx="alice")
+    for pk in range(4, 10):  # one leaver of seven stays under the guard's 20 % drop limit
+        w.person(pk, f"user{pk}", "g1", mx=f"user{pk}")
     before = await _settled(w)
+    w.mas.calls.clear()
 
     w.directory.add(3, "carl", "g2", mx="alice")
     await w.tick()
     await w.tick()
     _assert_untouched(w, before)
     assert (ROOM2, mx("alice")) not in w.synapse.added
-    assert any("'carl' (pk 3)" in r and mx("alice") in r for r in w.identity_reports)
+    assert (
+        sum(
+            "'carl' (pk 3)" in r and "the one of 'alice' (pk 1) (a recorded binding)" in r
+            for r in w.identity_reports
+        )
+        == 1
+    )
 
     w.directory.users[1]["is_active"] = False  # alice leaves the company meanwhile
-    await w.tick()
-    await w.tick()
-    assert w.mas.calls == []  # frozen, never locked while the conflict stands
+    await w.tick()  # mark
+    await w.tick()  # lock: the guess froze nothing
+    assert w.mas.ops("lock") == ["alice"]
 
 
 async def test_with_mas_the_linked_owner_keeps_her_account_against_a_guess() -> None:

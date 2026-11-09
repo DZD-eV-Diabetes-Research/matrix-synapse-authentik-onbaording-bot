@@ -203,28 +203,31 @@ class WelcomeService:
         if created:
             state = DirectRoomState(user_id=mxid, setup_complete=False)
         else:
-            try:
-                state = await self._load_direct_state(room_id, mxid)
-                await self._heal_power_levels(room_id)
-            except ApiError as exc:
-                if exc.status_code not in _NOT_IN_ROOM or room_id in await self.client.joined_rooms():
-                    raise
+            lost = await self._board_lost(room_id)
+            if lost is None:
+                try:
+                    state = await self._load_direct_state(room_id, mxid)
+                    await self._heal_power_levels(room_id)
+                except ApiError as exc:
+                    if exc.status_code not in _NOT_IN_ROOM or room_id in await self.client.joined_rooms():
+                        raise
+                    lost = f"HTTP {exc.status_code}"
+            if lost is not None:
                 # The bot is no longer in it (purged by hand, or kicked by a user of a room from
                 # before the notice boards): a room nobody can post into is no notice board (ONB-08).
                 log.warning(
-                    "the bot is no longer in %s, the notice board of %s (HTTP %s); opening a new one",
+                    "the bot is no longer in %s, the notice board of %s (%s); opening a new one",
                     room_id,
                     mxid,
-                    exc.status_code,
+                    lost,
                 )
                 await self._forget_direct_room(mxid, room_id)
                 # Again from the top: the next room on record, if any, or a new one.
                 await self._welcome_user(mxid, messages)
                 return
-            else:
-                await self._maybe_reinvite(room_id, mxid, state)
-                if state.setup_complete and await self._converge_avatar(room_id, state):
-                    await self._persist(room_id, state)
+            await self._maybe_reinvite(room_id, mxid, state)
+            if state.setup_complete and await self._converge_avatar(room_id, state):
+                await self._persist(room_id, state)
         if not state.setup_complete:
             await self._finish_setup(room_id, mxid, state)
 
@@ -544,6 +547,25 @@ class WelcomeService:
             ) from exc
         assert isinstance(parsed, DirectRoomState)
         return parsed
+
+    async def _board_lost(self, room_id: str) -> str | None:
+        """Why the bot is no longer in the notice board ``room_id``; ``None`` while it still is.
+
+        A read error does not tell: Synapse answers a member who left, a kick included, with the room
+        state as it was when they left, so every read keeps working after a user kicked the bot and
+        only sends fail (W4R-03). Only a purged or forgotten room, or a ban, makes reads fail. The bot's
+        own membership event does tell; anything but ``join`` (or no answer) is checked against the
+        rooms the bot is joined to, which is authoritative, before the room is given up.
+        """
+        try:
+            membership = await self.client.get_membership(room_id, self.bot_id)
+        except ApiError as exc:
+            if exc.status_code not in _NOT_IN_ROOM:
+                raise
+            membership = None
+        if membership == "join" or room_id in await self.client.joined_rooms():
+            return None
+        return f"its membership there is {membership!r}" if membership else "it cannot read the room"
 
     async def _forget_direct_room(self, mxid: str, room_id: str) -> None:
         """Drop ``room_id`` from ``mxid``'s ``m.direct`` entry (and the entry, once it is empty)."""

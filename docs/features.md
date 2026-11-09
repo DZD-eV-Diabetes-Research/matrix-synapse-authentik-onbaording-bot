@@ -179,12 +179,17 @@ in, so your identity directory and your chat rooms need not be the same list.
   there), still carries its marker as Onbot wrote it, and that the marker is still protected. A room
   whose creation was cut off halfway, a room from before the space existed, or the rooms of a space
   that was recreated are linked in again. A marker somebody at Onbot's own level removed or rewrote,
-  or whose protection they lowered, is restored from what Onbot already knows about the room, and
-  reported once; Onbot never takes over what such a marker claims.
+  or whose protection they lowered, is restored from what Onbot last wrote there itself, and
+  reported once; Onbot never takes over what such a marker claims. Each repair stands on its own: one
+  the server refuses is reported, and the others still run. This works while Onbot runs: a marker
+  removed or rewritten while Onbot was stopped (or before its last restart) makes the room look like
+  one that never belonged to the group, and Onbot does not take it back on its own. It reports the
+  group instead; see [A room lost its onbot marker](troubleshooting.md#a-room-lost-its-onbot-marker).
 - **A room a server admin blocked stays blocked.** Synapse records who blocked a room. Onbot unblocks
   only rooms it blocked itself (when their group disappeared and came back). A group room or lobby a
   server admin blocked (for moderation, a legal hold) is left blocked, and Onbot does not manage it
   while it is: no joins, kicks, levels or renames. It is reported once in the admin control room.
+  When Synapse cannot say whether a room is blocked, Onbot leaves the room alone for that pass too.
 - **Rooms upgraded by a human are left alone.** When somebody other than Onbot upgrades a group room to
   a new room version (only possible when `chatroom_params` lowered the upgrade permission), Onbot
   reports it and skips that group until an admin decides; it does not follow the upgrade.
@@ -422,7 +427,9 @@ hand.
   always put a user back with Synapse's admin join API.
 - **A notice board the bot is no longer in is replaced.** If such a room was purged by hand, or the
   user of a very old room removed the bot, Onbot drops it from its `m.direct` and opens a new notice
-  board (which sends the welcome messages again). A notice board whose onbot state event was edited
+  board (which sends the welcome messages again). Onbot goes by its own membership in the room, so a
+  kick is noticed too (Synapse keeps answering the reads of a member that was kicked). It looks when
+  it next checks that user: after a restart, or when the user leaves a room. A notice board whose onbot state event was edited
   into something unreadable is reported in the log once per start and left alone.
 - **The welcome room is deliberately separate and unencrypted**, even when your group rooms are
   encrypted: the bot posts here, and it stays outside encryption everywhere it writes messages.
@@ -783,11 +790,15 @@ that nobody owns.
 - A group's [visitor lobby](#visitor-lobby) is torn down together with its group room, so a blocked
   room is never left beside a still-open lobby. When the group comes back, both are unblocked.
 - **A closed room is closed once.** A room Onbot has blocked and emptied is not closed again on later
-  passes, so rooms closed long ago never count against the guard's limit. With
+  passes, so rooms closed long ago never count against the guard's limit. Members Onbot cannot remove
+  (an extra room creator, or somebody at Onbot's own level in a room older than version 12, common in
+  migrated rooms) are reported when the room is closed and do not make it count as open again. With
   `delete_disabled_rooms` switched on later, such a room is still deleted (under the guard).
-- **A block a server admin set is kept.** Closing a room that a server admin has blocked already
-  kicks its members but leaves the block as theirs, so the room is not unblocked later when its group
-  returns.
+- **A room somebody else blocked is a hold.** When a server admin (or anybody other than Onbot)
+  blocked the room, for moderation or a legal hold, Onbot neither removes its members nor deletes it
+  while that block exists, even when its group is gone and `delete_disabled_rooms` is on. It reports
+  the room once in the log and the admin control room, and the room does not count against the
+  guard. Once the block is lifted, the room is closed (and deleted, if configured) as usual.
 - **Teardowns go through the guard.** If Authentik suddenly returns no groups, or far fewer than
   before, no room is closed until an administrator confirms (see
   [guard against mass removals](#guard-against-mass-removals)).
