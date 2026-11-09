@@ -52,7 +52,7 @@ Start a session by pointing Claude at this file and the session ID, for example:
 | 14 | S12 | Broadcast and admin room | S | S8 | done (merged in wave 4) |
 | 15 | S13 | Security hardening and config validation | M | S0 | done (merged in wave 1b) |
 | 16 | S15 | CI and release hardening | M | S0 | done (merged in wave 1b) |
-| 17 | S14 | Docs, dead code, cleanup | S | last | open |
+| 17 | S14 | Docs, dead code, cleanup | M | last | part 1 done (merged in wave 5), part 2 open |
 | 18 | S17 | Bot-driven room upgrades (D20) | M | S6, S7 | deferred: later iteration, not before the next release |
 
 S1 to S3 should land before the next release: together they close every known way the bot can
@@ -707,6 +707,18 @@ constants (D25).
 
 **Findings:** REC-15, include all inputs in the discovery fingerprint; optionally REC-16 and REC-17
 (engine restructure) now that the engine's shape has settled.
+
+**From S14 part 1 (items in files W6R owned):** remove `MappedUser.matrix_obj` (written in `engine.py`,
+never read); decide on `legacy_user_matches_or_outranks_creator` (kept for the deferred
+`recreate-dm-rooms` in `todo.md`); AD-n references (now ADR-000n) in `reconciler/`, `media.py`,
+`control_room.py`, `rooms/admin.py`, `rooms/identity.py`; the em dash in the `!status` line
+(`control_room.py`); MNT-14 moves (`reconciler/state.py` to `onbot/state.py`, `rooms/admin.py` to
+`admin/`, a `ReconcileStatus` protocol for the control room, the `media.py` / `clients/matrix.py`
+import cycle, orphan gathering into `lifecycle/`); the reconciler test fakes still define
+`list_non_space_rooms` and `list_spaces`, which the client no longer has; about 43 em dashes in
+`docs/features.md`; the config doc banners still point to `./gen_config_docs.sh` (regenerate after
+changing them). W6R changed the effector avatar interface (`avatar_image`, `upload_avatar(image)`,
+`MediaUploader.upload`) and made `SharedStateAdmin` a mixin.
 
 ---
 
