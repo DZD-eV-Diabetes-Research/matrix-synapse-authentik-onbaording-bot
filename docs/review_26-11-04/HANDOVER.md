@@ -71,15 +71,23 @@ S18 merged (b0aec61): the D24 follow-ups plus W5R-01 to W5R-05. Its full run on 
 identical to main: 1502 passed; the flaky deletion test passed 10 of 10 times. Unit and contract on
 main: 1413 passed. D25 records the S18 confirmations.
 
-Running: cold review of S18 (`git diff 3d01196 b0aec61`), read-only agent.
+Cold review of S18: 8 findings (1 medium, 7 low), no critical or high, written up as W6R in
+`SESSIONS.md` (items from S14 that sit in the same files moved there). The production template is not
+affected by W6R-01 (it uses hyphenated pks; the other filters are empty). S14 is split into part 1
+(parallel to W6R) and part 2 (after W6R).
 
-Then: fixups from that review if any (W6R, or fold them into S14), then wave 5: S14 (docs, dead code,
-cleanup, `!room adopt` for lobbies (D25), the integration suite speed-up from D17), then a last full
-integration run and cold review. S17 (bot-driven room upgrades, D20) is deferred: not before the next
-release.
+Running in parallel since f507e64:
 
-If this session stops before they finish: rerun the cold review of S18 if no W6R notes
-exist in `SESSIONS.md`, then start S14.
+- W6R in its own worktree, branch `review/w6r-fixups`, stack instance 2.
+- S14 part 1 (docs, CHANGELOG history, dead code outside the W6R files, integration suite speed-up)
+  in its own worktree, branch `review/s14-part1-cleanup`, stack instance 1.
+
+Then: merge both (W6R first), full integration run on main, cold review of W6R plus S14 part 1, then
+S14 part 2, last full run and cold review. S17 (bot-driven room upgrades, D20) is deferred: not before
+the next release.
+
+If this session stops before they finish: check `git branch` and `git worktree list` for
+`review/w6r-*` and `review/s14-*`, review each against its brief and merge per "How merging works".
 
 ## Questions collected for the maintainer
 
