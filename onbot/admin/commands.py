@@ -1,4 +1,4 @@
-"""Parsing and help text for the control room's commands (pure — no I/O, no Matrix).
+"""Parsing and help text for the control room's commands (pure: no I/O, no Matrix).
 
 Commands carry a ``!`` prefix. A bare message without one is **not** a command and is ignored
 entirely, so admins can discuss an outage in the control room without a stray sentence paging every
@@ -45,7 +45,7 @@ def parse_command(body: str) -> Command | None:
     """Parse a room message into a :class:`Command`, or ``None`` if it is not one.
 
     ``None`` covers ordinary conversation: no prefix, a lone ``!``, or ``! spaced`` (which is far
-    more likely to be someone typing than to be a command). Unknown verbs *do* parse — the caller
+    more likely to be someone typing than to be a command). Unknown verbs *do* parse; the caller
     answers them with the help text rather than staying silent, since silence looks like a bug.
     """
     text = body.strip()
@@ -69,7 +69,7 @@ def help_text() -> str:
     """
     return "\n".join(
         (
-            "Onbot commands — messages without a ! prefix are ignored.",
+            "Onbot commands. Messages without a ! prefix are ignored.",
             "",
             f"{COMMAND_PREFIX}{ANNOUNCE} <message>  send <message> to every user's onboarding room",
             f"{COMMAND_PREFIX}{STATUS}             bot version, last reconcile, managed rooms",

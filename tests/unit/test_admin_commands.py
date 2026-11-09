@@ -52,3 +52,10 @@ def test_unknown_verbs_parse_so_the_caller_can_answer_them() -> None:
 @pytest.mark.parametrize("verb", ["announce", "help", "status", "pending", "confirm", "reject"])
 def test_the_supported_verbs_are_documented(verb: str) -> None:
     assert f"!{verb}" in help_text()
+
+
+def test_the_help_text_uses_plain_punctuation() -> None:
+    """Admins read it in Matrix clients; it uses no em or en dashes (project writing rule)."""
+    text = help_text()
+    assert "\u2014" not in text
+    assert "\u2013" not in text
