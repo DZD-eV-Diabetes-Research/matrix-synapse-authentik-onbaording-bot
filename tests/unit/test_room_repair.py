@@ -28,6 +28,7 @@ from tests.unit.test_engine import (
     _BASE,
     BOT,
     LOCKED_EVENTS,
+    AvatarAuthentik,
     FakeAdmin,
     FakeAuthentik,
     LobbyAdmin,
@@ -552,6 +553,61 @@ async def test_reopen_by_room_id_and_refusals() -> None:
     assert (await engine.reopen_lobby(LOBBY)).startswith("Reopened")
     assert "not closed by hand" in await engine.reopen_lobby(LOBBY)
     assert effectors.state_store[(LOBBY, JOIN_RULES)] == RESTRICTED
+
+
+# --- W4R-07: one refused repair does not stop the others -------------------------------------------
+
+
+class RefusingEffectors(RecordingEffectors):
+    """The server refuses the state writes named in ``refused`` ((room, event type) pairs)."""
+
+    def __init__(self, *refused: tuple[str, str]) -> None:
+        super().__init__()
+        self.refused = set(refused)
+
+    async def put_room_state(
+        self, room_id: str, event_type: str, content: dict[str, Any], state_key: str = ""
+    ) -> None:
+        if (room_id, event_type) in self.refused:
+            raise ApiError("PUT", f"/rooms/{room_id}/state/{event_type}", 403, {"errcode": "M_FORBIDDEN"})
+        await super().put_room_state(room_id, event_type, content, state_key)
+
+
+async def test_a_refused_space_repair_does_not_keep_new_users_out_of_the_space() -> None:
+    """The space's upkeep and joining users into it were one step: a refused marker restore (or an
+    alias an appservice reserved) failed it on every pass, and nobody new got into the space."""
+    effectors = RefusingEffectors((SPACE, SPACE_MARKER))
+    _seed_converged(effectors)
+    del effectors.state_store[(SPACE, SPACE_MARKER)]
+    engine, admin, effectors, _attention = _engine(effectors=effectors)
+
+    await engine.reconcile_once()
+
+    assert (SPACE, "@bob:company.org") in admin.added
+    (problem,) = [r for r in engine.last_pass_report.rooms if r.room_id == SPACE]
+    assert len(problem.problems) == 1 and problem.problems[0].startswith("marker repair failed")
+
+
+async def test_a_refused_repair_of_a_group_room_does_not_skip_the_others() -> None:
+    """A refused `m.space.parent` used to end the upkeep there: no avatar for the room."""
+    effectors = RefusingEffectors((ROOM1, PARENT))
+    _seed_converged(effectors)
+    del effectors.state_store[(ROOM1, PARENT, SPACE)]
+    del effectors.state_store[(SPACE, CHILD, ROOM1)]
+    engine = ReconcilerEngine(
+        OnbotConfig.model_validate(_BASE),
+        AvatarAuthentik(),
+        FakeAdmin(),  # type: ignore[arg-type]
+        effectors,
+        EventBus(),
+    )
+
+    await engine.reconcile_once()
+
+    assert effectors.state_store[(SPACE, CHILD, ROOM1)]["via"] == ["company.org"]  # before the refusal
+    assert effectors.avatars == [(ROOM1, "mxc://company.org/1")]  # after it
+    (problem,) = [r for r in engine.last_pass_report.rooms if r.room_id == ROOM1]
+    assert len(problem.problems) == 1 and problem.problems[0].startswith("space link repair failed")
 
 
 async def test_room_findings_are_posted_in_the_admin_room() -> None:

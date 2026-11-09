@@ -19,7 +19,7 @@ import logging
 import time
 from collections.abc import Awaitable, Callable, Collection, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TypeVar
 
 from pydantic import ValidationError
 
@@ -106,6 +106,8 @@ from onbot.rooms.identity import (
 from onbot.rooms.provision import ManagedRoomSpec, lock_markers, markers_locked
 
 log = get_logger(__name__)
+
+_T = TypeVar("_T")
 
 JOIN_RULES_EVENT_TYPE = "m.room.join_rules"
 CREATE_EVENT_TYPE = "m.room.create"
@@ -417,13 +419,31 @@ class ReconcilerEngine:
         await self._converge_obsolete_rooms(index, group_maps, report, plan)
         await self._converge_switched_off_lobbies(index, group_maps, space, report, plan)
         if space is not None:
+            # Two steps: a refused repair of the space (its marker, an alias an appservice holds) must
+            # not keep new users out of it (W4R-07).
+            cfg = self.config.create_matrix_rooms_in_a_matrix_space
+            await self._guarded(
+                report,
+                room_kind=OnbotRoomType.space,
+                room_id=space.room_id,
+                group_pk=None,
+                step="space upkeep",
+                work=self._converge_room_upkeep(
+                    space,
+                    SpaceRoomState(configured_alias=cfg.alias),
+                    alias=build_canonical(cfg.alias, self.server_name, "#"),
+                    alias_usable=True,
+                    avatar_source_url=cfg.create_matrix_space_if_not_exists.avatar_url,
+                    index=index,
+                ),
+            )
             await self._guarded(
                 report,
                 room_kind=OnbotRoomType.space,
                 room_id=space.room_id,
                 group_pk=None,
                 step="space",
-                work=self._converge_space(space, users, index),
+                work=self._converge_space_membership(space, users),
             )
         await self._converge_room_membership_and_levels(group_maps, users, space, report, plan)
         return len(group_maps)
@@ -893,17 +913,39 @@ class ReconcilerEngine:
         pass got all of that with ``createRoom``. ``marker`` is the marker the room's role calls for;
         the role comes from how the room was resolved (its locked, bot-written marker, D20), never
         from what a marker says now.
+
+        Each repair stands on its own (W4R-07): one the server refuses (a 403, an alias an appservice
+        reserved) is reported with the room, and the others still run.
         """
         room_type = OnbotRoomType(marker.room_type)
+        problems: list[str] = []
         content: dict[str, Any] | None = None
         if room.room_id not in self._created_this_pass:
-            content = await self._repair_marker(room, marker)
-            await self._repair_lock(room, marker)
+            content = await self._repair_step(problems, "marker", self._repair_marker(room, marker))
+            await self._repair_step(problems, "marker lock", self._repair_lock(room, marker))
             if alias is not None and alias_usable:
-                await self._repair_alias(room, marker, alias, index)
+                await self._repair_step(problems, "alias", self._repair_alias(room, marker, alias, index))
             if space_id is not None:
-                await self._repair_space_link(room, space_id, suggested=suggested)
-        await self._converge_avatar(room.room_id, room_type, avatar_source_url, marker, marker=content)
+                await self._repair_step(
+                    problems, "space link", self._repair_space_link(room, space_id, suggested=suggested)
+                )
+        await self._repair_step(
+            problems,
+            "avatar",
+            self._converge_avatar(room.room_id, room_type, avatar_source_url, marker, marker=content),
+        )
+        if problems:
+            raise _RoomStepProblems(problems)
+
+    async def _repair_step(self, problems: list[str], what: str, work: Awaitable[_T]) -> _T | None:
+        """Run one repair of the upkeep; a failure is added to ``problems`` and the next one runs."""
+        try:
+            return await work
+        except Exception as exc:
+            if not isinstance(exc, ApiError):
+                log.exception("unexpected error in the %s repair", what)
+            problems.append(f"{what} repair failed: {describe_error(exc)}")
+            return None
 
     def _describe(self, marker: AnyRoomState) -> str:
         group_id = getattr(marker, "group_id", None)
@@ -1301,16 +1343,7 @@ class ReconcilerEngine:
         log.warning("deleting room %s (delete_disabled_rooms is enabled)", room.room_id)
         await self.admin.delete_room(room.room_id, block=True, purge=True, message=self._teardown_reason())
 
-    async def _converge_space(self, space: MatrixRoom, users: list[MappedUser], index: RoomIndex) -> None:
-        cfg = self.config.create_matrix_rooms_in_a_matrix_space
-        await self._converge_room_upkeep(
-            space,
-            SpaceRoomState(configured_alias=cfg.alias),
-            alias=build_canonical(cfg.alias, self.server_name, "#"),
-            alias_usable=True,
-            avatar_source_url=cfg.create_matrix_space_if_not_exists.avatar_url,
-            index=index,
-        )
+    async def _converge_space_membership(self, space: MatrixRoom, users: list[MappedUser]) -> None:
         if not self.config.sync_authentik_users_with_matrix_rooms.enabled:
             return  # user sync off: membership is not managed anywhere (REC-02)
         problems: list[str] = []
