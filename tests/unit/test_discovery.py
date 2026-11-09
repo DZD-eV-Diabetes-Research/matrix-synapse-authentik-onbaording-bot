@@ -40,14 +40,24 @@ class FakeAuthentik:
     def __init__(self) -> None:
         self.users: list[dict[str, Any]] = []
         self.groups: list[dict[str, Any]] = []
+        # Groups that grant a power level (the engine's second group query), and the users a
+        # username lookup finds (the global room admins).
+        self.power_level_groups: list[dict[str, Any]] = []
+        self.by_username: dict[str, list[dict[str, Any]]] = {}
         self.calls = 0
 
-    async def list_users(self, **_: Any) -> list[dict[str, Any]]:
+    async def list_users(self, *, filter_by_username: str | None = None, **_: Any) -> list[dict[str, Any]]:
         self.calls += 1
+        if filter_by_username is not None:
+            return list(self.by_username.get(filter_by_username, []))
         return list(self.users)
 
-    async def list_groups(self, **_: Any) -> list[dict[str, Any]]:
+    async def list_groups(
+        self, *, filter_has_non_empty_attributes: Any = None, **_: Any
+    ) -> list[dict[str, Any]]:
         self.calls += 1
+        if filter_has_non_empty_attributes is not None:
+            return list(self.power_level_groups)
         return list(self.groups)
 
 
@@ -148,14 +158,14 @@ async def test_a_deactivated_user_triggers_a_reconcile() -> None:
     assert len(triggered) == 1
 
 
-async def test_poll_touches_only_authentik_and_only_twice() -> None:
-    """The whole point: one poll is two Authentik requests and nothing against Synapse."""
+async def test_poll_touches_only_authentik_and_only_three_times() -> None:
+    """The whole point: one poll is a few Authentik requests and nothing against Synapse."""
     authentik = FakeAuthentik()
     poller = DiscoveryPoller(authentik, _config(), lambda: None)  # type: ignore[arg-type]
 
     await poller.poll_once()
 
-    assert authentik.calls == 2  # list_users + list_groups
+    assert authentik.calls == 3  # list_users + list_groups (room groups, power-level groups)
 
 
 async def test_a_disabled_poll_returns_immediately() -> None:
@@ -192,3 +202,121 @@ async def test_run_stops_promptly_and_keeps_polling_after_an_error() -> None:
     await asyncio.wait_for(task, timeout=1)
 
     assert len(failures) >= 2  # recovered and polled again rather than dying
+
+
+# --- REC-15: the fingerprint covers every Authentik input the engine acts on ----------------------
+
+
+async def _polls_until_changed(
+    authentik: FakeAuthentik, change: Any, config: OnbotConfig | None = None
+) -> bool:
+    triggered: list[None] = []
+    poller = DiscoveryPoller(
+        authentik,  # type: ignore[arg-type]
+        config or _config(),
+        lambda: triggered.append(None),
+    )
+    await poller.poll_once()
+    change()
+    return await poller.poll_once() and len(triggered) == 1
+
+
+async def test_a_power_level_group_outside_the_room_groups_triggers_a_reconcile() -> None:
+    """The documented "Moderators" group carries the level, not the chat opt-in attribute."""
+    authentik = FakeAuthentik()
+    authentik.users = [_user("1", groups_obj=[{"pk": "g1"}, {"pk": "mods"}])]
+    authentik.groups = [_group("g1")]
+    moderators = {
+        "pk": "mods",
+        "name": "Moderators",
+        "attributes": {"matrix-power-level": 50},
+        "users": ["1"],
+    }
+    authentik.power_level_groups = [moderators]
+
+    def raise_the_level() -> None:
+        moderators["attributes"] = {"matrix-power-level": 100}
+
+    assert await _polls_until_changed(authentik, raise_the_level)
+
+
+async def test_a_new_member_of_a_power_level_group_triggers_a_reconcile() -> None:
+    authentik = FakeAuthentik()
+    moderators = {
+        "pk": "mods",
+        "name": "Moderators",
+        "attributes": {"matrix-power-level": 50},
+        "users": ["1"],
+    }
+    authentik.power_level_groups = [moderators]
+
+    def add_member() -> None:
+        moderators["users"] = ["1", "2"]
+
+    assert await _polls_until_changed(authentik, add_member)
+
+
+def test_fingerprint_moves_on_a_new_group_parent() -> None:
+    """`only_for_children_of_groups_with_uid` selects room groups by their parent."""
+    before = fingerprint([], [_group(parent="p1")], ATTR)
+    after = fingerprint([], [_group(parent="p2")], ATTR)
+    assert before != after
+
+
+async def test_a_global_room_admin_outside_the_scope_triggers_a_reconcile() -> None:
+    config = _config()
+    config.global_room_admins = ["helpdesk"]
+    authentik = FakeAuthentik()
+    authentik.users = [_user("1")]
+    helpdesk = _user("9", username="helpdesk")
+
+    def activate() -> None:
+        authentik.by_username["helpdesk"] = [helpdesk]
+
+    assert await _polls_until_changed(authentik, activate, config)
+
+
+async def test_a_global_admin_lookup_ignores_users_a_server_returns_for_another_name() -> None:
+    """The username filter is only a hint, like in the engine's lookup."""
+    config = _config()
+    config.global_room_admins = ["helpdesk"]
+    authentik = FakeAuthentik()
+
+    def server_ignores_the_filter() -> None:
+        authentik.by_username["helpdesk"] = [_user("1", username="someone-else")]
+
+    assert not await _polls_until_changed(authentik, server_ignores_the_filter, config)
+
+
+# --- S18: the group scope is re-checked like in the engine (SEC-09) -------------------------------
+
+
+def _group_scoped_config() -> OnbotConfig:
+    config = _config()
+    config.sync_authentik_users_with_matrix_rooms.sync_only_users_of_groups_with_id = ["staff"]
+    return config
+
+
+async def test_users_outside_the_sync_groups_do_not_move_the_fingerprint() -> None:
+    """An Authentik that ignores `groups_by_pk` answers with every user; the strays are dropped."""
+    authentik = FakeAuthentik()
+    member = _user("1", groups_obj=[{"pk": "staff"}])
+    stray = _user("2", groups_obj=[{"pk": "other"}])
+    authentik.users = [member, stray]
+
+    def stray_changes() -> None:
+        stray["is_superuser"] = True
+        authentik.users.append(_user("3"))
+
+    assert not await _polls_until_changed(authentik, stray_changes, _group_scoped_config())
+
+
+async def test_a_user_joining_a_sync_group_triggers_a_reconcile() -> None:
+    authentik = FakeAuthentik()
+    newcomer = _user("2", groups_obj=[{"pk": "other"}])
+    authentik.users = [_user("1", groups_obj=[{"pk": "staff"}]), newcomer]
+
+    def join() -> None:
+        newcomer["groups_obj"] = [{"pk": "other"}, {"pk": "staff"}]
+
+    assert await _polls_until_changed(authentik, join, _group_scoped_config())
