@@ -458,9 +458,17 @@ async def test_broadcast_touches_only_what_a_broadcast_needs() -> None:
             200, json={}
         )
         # Who the mapped users are (SEC-06): the accounts, the directory and the recorded bindings.
-        router.get(f"{HS}/_synapse/admin/v2/users").respond(200, json={"users": [], "total": 0})
+        router.get(f"{HS}/_synapse/admin/v2/users").respond(
+            200, json={"users": [{"name": "@alice:example.test"}], "total": 1}
+        )
         router.get("https://authentik.test/api/v3/core/users/").respond(
-            200, json={"results": [], "pagination": {"count": 0, "next": 0}}
+            200,
+            json={
+                "results": [
+                    {"pk": 1, "username": "alice", "is_active": True, "path": "users", "attributes": {}}
+                ],
+                "pagination": {"count": 1, "next": 0},
+            },
         )
         router.get(
             f"{HS}/_matrix/client/v3/user/@bot:example.test/account_data/test.example.onbot.known_users"
@@ -497,6 +505,37 @@ async def test_broadcast_without_user_sync_is_refused_and_fails_the_command(
         assert await run_broadcast(config, "hello") == 1
 
     assert capsys.readouterr().out.startswith("not sent:")
+
+
+async def test_broadcast_with_nobody_in_scope_is_refused_and_fails_the_command(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """W4R-05: an empty Authentik answer (outage, token scope, filter typo) maps nobody.
+
+    That used to print "sent to 0 rooms, 0 failed" and exit 0, which a script reads as delivered.
+    """
+    config = _config()
+    with respx.mock(assert_all_mocked=False, assert_all_called=False) as router:
+        router.get(f"{HS}/_matrix/client/v3/account/whoami").respond(
+            200, json={"user_id": "@bot:example.test", "device_id": "DEV"}
+        )
+        router.get(f"{HS}/_matrix/client/v3/user/@bot:example.test/account_data/m.direct").respond(
+            200, json={"@alice:example.test": ["!ra:example.test"]}
+        )
+        router.get(f"{HS}/_synapse/admin/v2/users").respond(
+            200, json={"users": [{"name": "@alice:example.test"}], "total": 1}
+        )
+        router.get("https://authentik.test/api/v3/core/users/").respond(
+            200, json={"results": [], "pagination": {"count": 0, "next": 0}}
+        )
+        router.get(
+            f"{HS}/_matrix/client/v3/user/@bot:example.test/account_data/test.example.onbot.known_users"
+        ).respond(200, json={})
+
+        assert await run_broadcast(config, "hello") == 1
+
+    out = capsys.readouterr().out
+    assert out.startswith("not sent: no users are mapped")
 
 
 async def test_reconcile_once_runs_every_startup_step_before_its_pass(

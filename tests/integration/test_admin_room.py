@@ -11,6 +11,8 @@ the part that matters — that taking it away really takes them away, on a runni
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from onbot.admin.admins import AdminResolver
@@ -38,8 +40,12 @@ async def _messages_in(client: ApiClientMatrix, room_id: str) -> list[str]:
 
 
 async def _pump_once(handler: ControlRoomHandler, client: ApiClientMatrix) -> None:
-    """Feed the handler one real sync slice, exactly as the SyncPump would."""
+    """Feed the handler one real sync slice, exactly as the SyncPump would.
+
+    A ``!announce`` runs beside the stream (ONB-03); wait for it, so its result is in the room.
+    """
     await handler.handle_sync(await client.sliding_sync(None))
+    await handler.wait_for_broadcast()
 
 
 def _resolver(authentik: ApiClientAuthentik, config: OnbotConfig, *, ttl_sec: float = 0) -> AdminResolver:
@@ -223,3 +229,112 @@ async def test_reconcile_once_provisions_the_admin_room_and_invites_new_admins(
     authentik_admin.add_user_to_group(group["pk"], second_user["pk"])
     await run_reconcile_once(config)
     assert await matrix_client.get_membership(control_room, second.mxid) == "invite"
+
+
+# --- S12: pacing (ONB-03), markdown (ONB-10), edits (ONB-11) ---------------------------------------
+
+
+async def _bot_contents(client: ApiClientMatrix, room_id: str) -> list[dict[str, Any]]:
+    resp = await client.get_json(f"v3/rooms/{room_id}/messages", params={"dir": "b", "limit": 100})
+    return [
+        ev.get("content") or {}
+        for ev in resp.get("chunk", [])
+        if ev.get("type") == "m.room.message" and ev.get("sender") == S.BOT_USER_ID
+    ]
+
+
+class _BotRooms(BroadcastService):
+    """Targets rooms the bot is alone in, so the pacing runs against Synapse with no users to set up."""
+
+    def __init__(self, client: ApiClientMatrix, config: OnbotConfig, rooms: list[str]) -> None:
+        super().__init__(client, config, recipients=S.recipients(S.BOT_USER_ID))
+        self.rooms = rooms
+
+    async def target_rooms(self) -> dict[str, str]:
+        return dict.fromkeys(self.rooms, S.BOT_USER_ID)
+
+
+async def test_a_throttled_broadcast_reaches_every_room_and_keeps_the_markdown(
+    make_config, matrix_client: ApiClientMatrix, admin_client: ApiClientSynapseAdmin
+) -> None:
+    """ONB-03 against Synapse's real limiter: the bot limited to 1 message/s with a burst of 1.
+
+    The stack lifts the limit globally (rc_message 1000/s), so the test narrows it for the bot alone
+    with the same admin API the bot uses to lift it, and restores it afterwards.
+    """
+    config = make_config()
+    rooms = [await matrix_client.create_room(name=S.uniq("paced")) for _ in range(12)]
+    await admin_client.override_ratelimit(S.BOT_USER_ID, messages_per_second=1, burst_count=1)
+    try:
+        service = _BotRooms(matrix_client, config, rooms)
+        service.rate_limit_lifted = False
+        result = await service.broadcast("**Maintenance** tonight, see [status](https://status.example.org)")
+    finally:
+        await admin_client.override_ratelimit(S.BOT_USER_ID)  # 0/0: no limit, as the bot sets it
+
+    assert result.failures == []
+    assert sorted(result.sent) == sorted(rooms)
+    assert result.rate_limited >= 1  # Synapse really did push back
+    assert "send rate limit is not lifted" in result.summary()
+    for room in rooms:
+        contents = await _bot_contents(matrix_client, room)
+        assert len(contents) == 1  # exactly once, despite the retries
+        assert contents[0]["msgtype"] == "m.notice"
+        assert contents[0]["body"].startswith("**Maintenance**")
+        assert "<strong>Maintenance</strong>" in contents[0]["formatted_body"]
+
+
+async def test_an_edited_announce_is_not_sent_again(
+    make_config,
+    authentik_admin: S.AuthentikAdmin,
+    authentik_client: ApiClientAuthentik,
+    matrix_client: ApiClientMatrix,
+    admin_client: ApiClientSynapseAdmin,
+    room_identity: RoomIdentityResolver,
+) -> None:
+    """ONB-11: an edit without Element's ``* `` fallback prefix must not page everybody twice."""
+    _u, target = S.provision(authentik_admin, S.uniq("edittarget"))
+    _a, admin = S.provision(authentik_admin, S.uniq("editadmin"))
+
+    config = make_config()
+    config.admin_room.enabled = True
+    config.admin_room.alias = S.uniq("onbot-admin")
+    config.admin_room.admin_user_ids = [admin.mxid]
+
+    await run_reconcile_once(config)
+    direct = await matrix_client.get_account_data(S.BOT_USER_ID, "m.direct")
+    notice_board = direct[target.mxid][0]
+
+    resolver = _resolver(authentik_client, config)
+    control_room = await AdminRoomProvisioner(matrix_client, config, resolver, room_identity).ensure()
+    assert control_room is not None
+    await admin_client.add_user_to_room(control_room, admin.mxid)
+    handler = ControlRoomHandler(
+        matrix_client,
+        config,
+        BroadcastService(matrix_client, config, recipients=S.recipients(target.mxid)),
+        resolver,
+    )
+    await handler.start(control_room)
+
+    original = S.send_message(
+        admin.access_token, control_room, {"msgtype": "m.text", "body": "!announce At 22:00"}
+    )
+    await _pump_once(handler, matrix_client)
+    S.send_message(
+        admin.access_token,
+        control_room,
+        {
+            "msgtype": "m.text",
+            "body": "!announce At 23:00",  # no "* " prefix: a client that does not follow Element
+            "m.new_content": {"msgtype": "m.text", "body": "!announce At 23:00"},
+            "m.relates_to": {"rel_type": "m.replace", "event_id": original},
+        },
+    )
+    await _pump_once(handler, matrix_client)
+
+    delivered = await _messages_in(matrix_client, notice_board)
+    assert "At 22:00" in delivered
+    assert "At 23:00" not in delivered
+    replies = await _messages_in(matrix_client, control_room)
+    assert any("Edits are not commands" in r for r in replies)

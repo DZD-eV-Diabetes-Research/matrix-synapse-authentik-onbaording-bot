@@ -140,8 +140,9 @@ async def _relax_bot_ratelimit(admin: ApiClientSynapseAdmin, config: OnbotConfig
 
     A broadcast is one account writing into every managed direct room at once, which the limiter sees
     as a flood. A homeserver that refuses the override for good (no admin rights, the endpoint
-    remounted) only makes broadcasts slower, never wrong: the fan-out is bounded and retries 429s (see
-    :mod:`onbot.admin.broadcast`).
+    remounted) only makes broadcasts slower, never wrong: the fan-out paces itself by the server's 429
+    answers (see :mod:`onbot.admin.broadcast`). The outcome is recorded on the broadcast service, so
+    ``!status`` and the ``!announce`` result can say when the override is not in effect (ONB-03).
     """
     await admin.override_ratelimit(config.synapse_server.bot_user_id)
     log.info("lifted Synapse send rate limit for %s", config.synapse_server.bot_user_id)
@@ -226,7 +227,12 @@ class App:
             await self.events.emit(Signal.lifecycle_attention, mxid=None, action="preflight", detail=warning)
 
     async def relax_ratelimit(self) -> None:
-        await _relax_bot_ratelimit(self.admin, self.config)
+        try:
+            await _relax_bot_ratelimit(self.admin, self.config)
+        except Exception:
+            self.broadcast.rate_limit_lifted = False
+            raise
+        self.broadcast.rate_limit_lifted = True
 
     async def apply_bot_avatar(self) -> None:
         """Set the bot's own avatar from the configured URL (G6.8).
@@ -562,6 +568,9 @@ async def _stop_loops(
     app.discovery.request_stop()
     app.listener.request_stop()  # the user in hand is finished, the rest of the queue waits
     supervisor.request_stop()
+    if app.control_room is not None:
+        # A broadcast in flight would hold the shutdown for as long as the rate limit allows.
+        await app.control_room.stop()
     # The discovery poll only reads Authentik; nothing is lost by cutting it off.
     tasks["discovery"].cancel()
     unfinished = await drain(set(tasks.values()), grace=grace, forced=shutdown.forced)
@@ -611,8 +620,8 @@ async def run_broadcast(config: OnbotConfig, message: str) -> int:
                 StartupStep("rate-limit override", app.relax_ratelimit),
             ]
         ).run_once()
-        result = await BroadcastService(app.matrix, config, recipients=app.engine.mapped_mxids).broadcast(
-            message
-        )
+        service = BroadcastService(app.matrix, config, recipients=app.engine.mapped_mxids)
+        service.rate_limit_lifted = app.broadcast.rate_limit_lifted
+        result = await service.broadcast(message)
     print(result.summary())
     return 1 if result.failures or result.refused else 0
