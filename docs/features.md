@@ -426,7 +426,9 @@ hand.
   always put a user back with Synapse's admin join API.
 - **A notice board the bot is no longer in is replaced.** If such a room was purged by hand, or the
   user of a very old room removed the bot, Onbot drops it from its `m.direct` and opens a new notice
-  board (which sends the welcome messages again). A notice board whose onbot state event was edited
+  board (which sends the welcome messages again). Onbot goes by its own membership in the room, so a
+  kick is noticed too (Synapse keeps answering the reads of a member that was kicked). It looks when
+  it next checks that user: after a restart, or when the user leaves a room. A notice board whose onbot state event was edited
   into something unreadable is reported in the log once per start and left alone.
 - **The welcome room is deliberately separate and unencrypted**, even when your group rooms are
   encrypted: the bot posts here, and it stays outside encryption everywhere it writes messages.
