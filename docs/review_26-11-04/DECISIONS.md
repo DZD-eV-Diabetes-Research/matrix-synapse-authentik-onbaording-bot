@@ -249,3 +249,11 @@ integration suite stays a required gate, but:
   canonical alias stays the old one. Intended.
 - S7: D16 covers closing only. A lobby that a human made `public` is reverted to the config (opening
   is the risky direction).
+
+## D23 Rooms blocked by someone else (wave 4 review, W4R-02, decided 2026-11-09)
+
+A room that someone other than the bot blocked (server admin moderation, legal hold) is a hold. When
+its group disappears or the room is disabled, the bot neither kicks its members nor deletes it while
+that block exists; it reports the room once in the admin room and the log. When the block is lifted,
+the normal teardown applies. (REC-11 already keeps such a block in place and leaves live
+human-blocked rooms unmanaged.)

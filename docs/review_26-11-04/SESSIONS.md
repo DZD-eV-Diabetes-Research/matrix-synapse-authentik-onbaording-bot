@@ -36,6 +36,7 @@ Start a session by pointing Claude at this file and the session ID, for example:
 | 7a | W2F | Wave 2 fixups: test stack MAS 1.28 and Synapse 1.164, LIF-09 refusal, admin room default (D19) | S | S3, S4 | done (merged in wave 2) |
 | 7b | W2R | Wave 2 review fixups: guard fails closed, rejected batches end, ledger report, guard gaps | S | S3, S4 | done (merged in wave 2) |
 | 11a | W3R | Wave 3 review fixups: identity guess vs MAS owner, marker sender, upgrade claims, lock retry, batch expiry | S | S5, S6, S9 | done (merged in wave 3) |
+| 11b | W4R | Wave 4 review fixups: closed rooms, human-blocked rooms as hold (D23), lost notice boards, upkeep isolation, binding wins (D21) | S | S7, S8 | open |
 | 4 | S3 | Guard layers 1 and 2, reconciler dry-run | M | S2 | done (merged in wave 2) |
 | 5 | S16 | Git history scrub | S | S0, no open branches | done (force-pushed 2026-11-06, new main 89afecf) |
 | 6 | S4 | Offboarding completeness | M | S1 | done (merged in wave 2) |
@@ -91,6 +92,50 @@ orchestrator's summary) and checks that every listed finding is really fixed and
 - Product decisions not covered by `DECISIONS.md`: stop and report the question instead of guessing.
 - Commit on your branch in small, reviewable commits. No push, no AI attribution, no em or en dashes.
 - Use your own integration stack instance (see `tests/README.md` after S0) and tear it down at the end.
+
+---
+
+## W4R Wave 4 review fixups
+
+From the cold review of wave 4 (`git diff b5fd0b5 a47c0f1`, S7 and S8), 2026-11-09. No critical
+finding. W4R-05 (empty mapped set, broadcast exits 0) went to S12.
+
+- **W4R-01 (medium):** a closed room is only recognised when the bot blocked it and only the bot is
+  left (`_closed_by_the_bot`, `_plan_teardown` in `engine.py`). `_disable_room` skips unkickable
+  members (v12 `additional_creators`, humans at PL 100 in pre-v12 rooms, typical for migrated rooms),
+  so such a room plans `room_teardown` on every pass and counts against layer 2; from 11 of them every
+  pass trips layer 2. Fix: closed means blocked by the bot and every remaining member is the bot or
+  unkickable (or an equivalent durable record).
+- **W4R-02 (medium, D23):** a room blocked by someone other than the bot is a hold. No kick, no
+  deletion while that block exists, reported once in the admin room and the log, and it does not
+  count against layer 2 every pass. Today the teardown kicks everyone and `delete_disabled_rooms`
+  purges it. `test_teardown_keeps_a_block_a_server_admin_set` asserts the kick and must change.
+- **W4R-03 (low):** ONB-08 is not fixed when a user kicked the bot from their notice board. Synapse
+  serves a departed user's state reads from the state at leave time (`allow_departed_users=True`);
+  only purge, forget or ban answer 403. The stale `m.direct` entry stays and every welcome fails with
+  403. The unit fake in `tests/unit/test_welcome.py` models the wrong behaviour. Decide "board lost"
+  from the bot's membership (`joined_rooms()`) or a 403 on send. Prove the Synapse behaviour with an
+  integration test (kick the bot from a board, expect a new board).
+- **W4R-04 (low):** when `get_room_block` fails, a human-blocked room is fully managed (REC-11 fails
+  open): `gm.room` is set before `_converge_block`. Skip membership, power levels and upkeep while the
+  block status is unknown.
+- **W4R-06 (low):** marker repair only works while the room identity is cached in the process; after
+  a restart a room whose marker was removed or rewritten is skipped and never repaired. Report such a
+  group clearly (admin room and log, with what a human has to do) and document the limit; no
+  automatic re-adoption (D20). Make the repair test fakes serve the same state to scan and effector.
+- **W4R-07 (low):** room upkeep is all-or-nothing and shares the guarded "space" step with joining
+  users into the space: one refused upkeep write stops new users joining the space on every pass;
+  for group rooms the avatar is skipped when an earlier repair is refused. Run space upkeep as its
+  own step and isolate each repair.
+- **W4R-08 (low):** marker restore takes its content from the wrong source (`repair.py`): a fresh
+  marker drops `global_admins` and `avatar_source_url`; a foreign same-role marker is re-signed
+  verbatim. Restore from the cached bot-written `RoomIdentity.marker_content`.
+- **D21 addition:** when MAS is not configured or does not link the account, the holder of a recorded
+  binding wins over claimants that only resolve by the mapping attribute; those are skipped and
+  reported.
+
+Experiment tests from the review (asserting the faulty behaviour) are in the orchestrator's
+scratchpad, `review-w4/test_w4_experiments.py`; turn them into real regression tests.
 
 ---
 
