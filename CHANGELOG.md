@@ -11,6 +11,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Announcements render markdown (review S12, ONB-10),** like the welcome messages; plain text stays
+  a plain message.
 - **`!lobby reopen <group pk | room id | alias>`** hands a manually closed lobby back to the bot (review
   S7, D16); "Rooms:" reports in the admin room; live tests for room teardown and deletion.
 - **Welcome messages can carry an `id`** so their text can be corrected without re-sending; whitespace-only
@@ -66,6 +68,26 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   This `CHANGELOG.md`.
 
 ### Changed
+- **`!announce` runs beside the sync stream (review S12, ONB-03):** it answers "Sending the
+  announcement to N rooms" and posts the result when done. A second `!announce` while one runs is
+  refused, not queued; a broadcast still running at shutdown is cancelled.
+- **Broadcasts follow the homeserver's rate limit instead of failing (review S12, ONB-03):** once
+  throttled they send one message at a time at the pace Synapse asks (each wait capped at 60 s) and
+  give up only after 5 minutes without progress. Each room keeps one transaction id across attempts.
+  `!status` and the result say whether the bot's rate limit override is in effect.
+- **Shorter broadcast results (review S12, ONB-04):** the result names at most 20 failed rooms and
+  counts failures by cause, without request URLs. Every room is in the log; a result that cannot be
+  posted is replaced by a short note.
+- **Broadcasts with nobody in the sync scope are refused (wave 4 review, W4R-05):** `onbot broadcast`
+  and `!announce` say "no users are mapped" (CLI exit 1) when Authentik returns nobody in the sync
+  scope, instead of reporting "sent to 0 rooms".
+- **An admin who declines or leaves the control room is not invited again (review S12, ONB-12):**
+  removing them from the admin set and adding them again sends a new invitation. Admins who left
+  before the upgrade get one more invitation.
+- **Avatars are keyed by image content as well as URL (review S12, ONB-15):** a new picture behind an
+  unchanged URL reaches the bot profile, rooms, lobbies, the space and notice boards on the next start.
+  Each avatar URL is fetched once per start. The first start after the upgrade rewrites every onbot
+  room marker once (new `avatar_sha256` field).
 - **Rooms are repaired on every pass, not only at creation (review S7, REC-09):** the space child and
   parent links; the onbot marker (restored when removed, rewritten, unreadable or written by somebody
   else, and completed once for older markers, which drops the legacy `authentik_server` key); the
@@ -291,6 +313,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   model forbids unknown keys, so remove these two settings if present.
 
 ### Security
+- **Edits are never commands (review S12, ONB-11, SEC-12):** an `m.replace` event is not executed; an
+  admin who edits a command is told to send a new message.
+- **Only allowlisted admins' commands enter the replay buffer (review S12, SEC-12):** a non-admin
+  member can no longer push real commands out of it.
+- **Bot admin group membership is re-checked on each Authentik user object (review S12, SEC-09)**
+  instead of trusting the `groups_by_pk` filter; users the filter should have excluded are dropped and
+  logged as an error.
 - **The bot unblocks only rooms it blocked itself (review S7, REC-11):** a room a server admin blocked
   stays blocked and unmanaged and is reported once, and teardown keeps an existing foreign block.
   Lobbies closed by a teardown are now unblocked when their group returns.

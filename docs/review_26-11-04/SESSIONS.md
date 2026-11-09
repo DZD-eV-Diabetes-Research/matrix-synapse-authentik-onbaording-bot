@@ -47,7 +47,7 @@ Start a session by pointing Claude at this file and the session ID, for example:
 | 11 | S9 | User identity across renames | M | S1, S3 | done (merged in wave 3) |
 | 12 | S10 | Runtime lifecycle: startup, sync recovery, shutdown, liveness | M | S0 | done (merged in wave 1a) |
 | 13 | S11 | HTTP layer: retries, idempotency, token provider | M | S10 | done (merged in wave 2) |
-| 14 | S12 | Broadcast and admin room | S | S8 | open |
+| 14 | S12 | Broadcast and admin room | S | S8 | done (merged in wave 4) |
 | 15 | S13 | Security hardening and config validation | M | S0 | done (merged in wave 1b) |
 | 16 | S15 | CI and release hardening | M | S0 | done (merged in wave 1b) |
 | 17 | S14 | Docs, dead code, cleanup | S | last | open |
@@ -569,6 +569,13 @@ only after the allowlist check; key avatars by content hash as well as URL (ONB-
 (`onbot/rooms/admin.py`) gets no marker, alias or lock repair yet; stale space links to an old space
 are not removed after the space is recreated; a closed lobby keeps the levels the bot granted there;
 the integration teardown tests delete other tests' group rooms on the shared stack (harmless today).
+
+**From S12:** the first start after the upgrade rewrites every onbot marker once ("marker was
+incomplete", info log) and downloads each older notice board's avatar once; the broadcast stall
+limit (300 s), the wait cap (60 s) and the 20-room listing are constants; pre-existing em dashes in
+the `!status` line and the help text. Not done, would need a decision: re-fetching an avatar URL
+without a restart (ETag or periodic check), the SEC-09 local re-check for
+`sync_only_users_of_groups_with_id`, the ONB-11 duplicate guard for identical announcements.
 
 **From D17:** speed up the integration suite (about 20 minutes in CI): cache or reuse the stack start
 (Authentik dominates), run independent test files in parallel where the stack allows it.
