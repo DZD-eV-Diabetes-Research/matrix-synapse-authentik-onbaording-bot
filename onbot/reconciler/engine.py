@@ -25,7 +25,7 @@ from pydantic import ValidationError
 
 from onbot.clients.authentik import ApiClientAuthentik
 from onbot.clients.base import ApiError
-from onbot.clients.synapse_admin import ApiClientSynapseAdmin
+from onbot.clients.synapse_admin import ApiClientSynapseAdmin, RoomBlock
 from onbot.config import OnbotConfig, SyncMatrixRoomsBasedOnAuthentikGroups
 from onbot.events import EventBus, Signal
 from onbot.guard import (
@@ -245,10 +245,10 @@ class ReconcilerEngine:
         self._create_info_cache: dict[str, tuple[str | None, frozenset[str]]] = {}
         # Findings about rooms already reported to the admins (`room_attention`), once per process.
         self._reported_rooms: set[str] = set()
-        # This pass: rooms created by it (nothing to repair yet), and managed rooms a server admin
-        # blocked, which the bot leaves alone (REC-11).
+        # This pass: rooms created by it (nothing to repair yet), and managed rooms the bot leaves
+        # alone: blocked by somebody else (REC-11), or with a block status it could not read (W4R-04).
         self._created_this_pass: set[str] = set()
-        self._blocked_by_others: set[str] = set()
+        self._left_alone: set[str] = set()
         # The visitor lobbies the last pass managed with their feature on (room id -> group), for the
         # admin room's `!lobby reopen` (D16).
         self.active_lobbies: dict[str, str] = {}
@@ -405,7 +405,7 @@ class ReconcilerEngine:
         if not rooms_cfg.enabled and not self.config.create_matrix_rooms_in_a_matrix_space.enabled:
             return 0
         self._created_this_pass = set()
-        self._blocked_by_others = set()
+        self._left_alone = set()
         index = await self.rooms.scan()
         space = await self._resolve_space(index)
         group_maps = await self._gather_group_room_maps()
@@ -687,7 +687,7 @@ class ReconcilerEngine:
                 step="room setup",
                 work=self._converge_group_room_existence(gm, parent_space_id, index, collisions),
             )
-            if gm.room is not None and gm.room.room_id not in self._blocked_by_others:
+            if gm.room is not None and gm.room.room_id not in self._left_alone:
                 await self._guarded(
                     report,
                     room_kind=OnbotRoomType.group_room,
@@ -715,7 +715,7 @@ class ReconcilerEngine:
                 step="lobby setup",
                 work=self._converge_lobby_existence(gm, parent_space_id, index, collisions),
             )
-            if gm.lobby is not None and gm.lobby.room_id not in self._blocked_by_others:
+            if gm.lobby is not None and gm.lobby.room_id not in self._left_alone:
                 await self._guarded(
                     report,
                     room_kind=OnbotRoomType.visitor_lobby,
@@ -739,7 +739,7 @@ class ReconcilerEngine:
         self.active_lobbies = {
             gm.lobby.room_id: gm.group_pk
             for gm in group_maps
-            if gm.lobby is not None and gm.lobby.room_id not in self._blocked_by_others
+            if gm.lobby is not None and gm.lobby.room_id not in self._left_alone
         }
 
     async def _resolve_room(
@@ -786,15 +786,23 @@ class ReconcilerEngine:
         group is back gets unblocked (G2.3). Synapse records who set a block; a block somebody else
         set (moderation, a legal hold) is theirs: the room stays blocked, the bot does not manage it
         while it is, and the admins hear of it once.
+
+        A block status that cannot be read leaves the room alone for this pass as well (W4R-04): it
+        may be a server admin's block, so membership, power levels and upkeep wait for a pass that
+        can tell. The error fails the room's setup step and is reported with it.
         """
-        block = await self.admin.get_room_block(room.room_id)
+        try:
+            block = await self.admin.get_room_block(room.room_id)
+        except Exception:
+            self._left_alone.add(room.room_id)
+            raise
         if not block.blocked:
             return
         if block.by == self.config.synapse_server.bot_user_id:
             log.info("unblocking room %s, the %s (group reappeared)", room.room_id, key.describe())
             await self.admin.room_set_blocked(room.room_id, blocked=False)
             return
-        self._blocked_by_others.add(room.room_id)
+        self._left_alone.add(room.room_id)
         await self._report_once(
             f"blocked|{room.room_id}|{block.by}",
             f"room {room.room_id}, the {key.describe()}, was blocked by {block.by or 'an unknown account'}, "
@@ -1138,19 +1146,6 @@ class ReconcilerEngine:
                 ),
             )
 
-    async def _closed_by_the_bot(self, room: MatrixRoom) -> bool:
-        """Whether an obsolete room is torn down already: blocked by the bot, nobody but the bot in it.
-
-        Such a room needs no teardown again. Planning one on every pass made every room ever closed
-        count against the guard's layer 2 limit forever, so from eleven closed rooms on every kick and
-        teardown of every pass waited for a confirmation.
-        """
-        block = await self.admin.get_room_block(room.room_id)
-        bot_id = self.config.synapse_server.bot_user_id
-        if not block.blocked or block.by != bot_id:
-            return False
-        return all(member == bot_id for member in await self.admin.list_room_members(room.room_id))
-
     async def _plan_teardown(
         self,
         room: MatrixRoom,
@@ -1160,10 +1155,47 @@ class ReconcilerEngine:
         room_type: OnbotRoomType,
         plan: PassPlan,
     ) -> None:
-        closed = await self._closed_by_the_bot(room)
+        """Plan the teardown (and deletion) of an obsolete room, unless it is closed or on hold.
+
+        A room somebody other than the bot blocked (server admin moderation, a legal hold) is a hold
+        (D23): nothing is planned for it, so it is neither cleared nor deleted and does not count
+        against the guard. The admins hear of it once. Once the block is lifted, the next pass tears
+        the room down as usual.
+        """
+        block = await self.admin.get_room_block(room.room_id)
+        if self._blocked_by_someone_else(block):
+            await self._report_once(
+                f"hold|{room.room_id}|{block.by}",
+                f"room {room.room_id}, the {RoomKey(room_type, group_id).describe()}, is obsolete (its group "
+                f"is no longer synced), but {block.by or 'an unknown account'} blocked it, not the bot. "
+                "The bot neither removes its members nor deletes it while that block exists (D23); once "
+                "a server admin lifts the block, the room is torn down as usual.",
+            )
+            return
+        closed = block.blocked and await self._nobody_left_to_kick(room)
         if closed and not settings.delete_disabled_rooms:
             return
         self._defer_teardown(room, group_id, settings, report, room_type, plan, closed=closed)
+
+    def _blocked_by_someone_else(self, block: RoomBlock) -> bool:
+        """A block the bot did not set (an unknown blocker counts as somebody else, REC-11, D23)."""
+        return block.blocked and block.by != self.config.synapse_server.bot_user_id
+
+    async def _nobody_left_to_kick(self, room: MatrixRoom) -> bool:
+        """Whether a room the bot blocked holds nobody it could still remove: torn down already.
+
+        Such a room needs no teardown again. Planning one on every pass made every room ever closed
+        count against the guard's layer 2 limit forever, so from eleven closed rooms on every kick and
+        teardown of every pass waited for a confirmation. A member the bot cannot kick (a v12
+        additional creator, a human at the bot's level in an older room, typical for migrated rooms)
+        stays after the teardown and does not make the room "open" again (W4R-01); the teardown
+        reported them already.
+        """
+        bot_id = self.config.synapse_server.bot_user_id
+        members = [m for m in await self.admin.list_room_members(room.room_id) if m != bot_id]
+        if not members:
+            return True
+        return not await self._kickable(room, members, [])
 
     def _defer_teardown(
         self,
@@ -1237,15 +1269,12 @@ class ReconcilerEngine:
         room) is reported and skipped, so the rest of the room is still cleared.
         """
         reason = self._teardown_reason()
+        bot_id = self.config.synapse_server.bot_user_id
+        await self._refuse_if_held(room)
         log.info("disabling room %s: authentik group %s disappeared", room.room_id, group_id)
         block = await self.admin.get_room_block(room.room_id)
-        bot_id = self.config.synapse_server.bot_user_id
         if not block.blocked:
             await self.admin.room_set_blocked(room.room_id, blocked=True)
-        elif block.by != bot_id:
-            # Blocking again would record the bot as the blocker, and a group that comes back would
-            # then unblock a room a server admin blocked (REC-11).
-            log.info("room %s is blocked by %s already; leaving that block as it is", room.room_id, block.by)
 
         problems: list[str] = []
         members = [m for m in await self.admin.list_room_members(room.room_id) if m != bot_id]
@@ -1254,8 +1283,21 @@ class ReconcilerEngine:
         )
         report.extend(room_kind=room_type, room_id=room.room_id, group_pk=group_id, problems=problems)
 
+    async def _refuse_if_held(self, room: MatrixRoom) -> None:
+        """Stop a teardown or deletion of a room somebody else blocked since it was planned (D23).
+
+        Blocking again would also record the bot as the blocker, and a group that comes back would
+        then unblock a room a server admin blocked (REC-11).
+        """
+        block = await self.admin.get_room_block(room.room_id)
+        if self._blocked_by_someone_else(block):
+            raise _RoomStepProblems(
+                [f"blocked by {block.by or 'an unknown account'} meanwhile; left as it is (D23)"]
+            )
+
     async def _delete_room(self, room: MatrixRoom) -> None:
         """Delete an obsolete room for good (``delete_disabled_rooms``); irreversible."""
+        await self._refuse_if_held(room)
         log.warning("deleting room %s (delete_disabled_rooms is enabled)", room.room_id)
         await self.admin.delete_room(room.room_id, block=True, purge=True, message=self._teardown_reason())
 
@@ -1327,8 +1369,8 @@ class ReconcilerEngine:
                 continue
             room = gm.room
             steps: list[tuple[str, Awaitable[None]]] = []
-            if room.room_id in self._blocked_by_others:
-                pass  # a server admin blocked it: left alone (REC-11, reported once)
+            if room.room_id in self._left_alone:
+                pass  # blocked by somebody else, or its block unknown: left alone (REC-11, W4R-04)
             elif manage_members:
                 steps.append(
                     (
@@ -1344,13 +1386,13 @@ class ReconcilerEngine:
                         ),
                     )
                 )
-            if room.room_id not in self._blocked_by_others:
+            if room.room_id not in self._left_alone:
                 steps.append(
                     ("name and topic", self._converge_room_attributes(room, gm.desired, gm.group_pk))
                 )
             await self._run_room_steps(report, OnbotRoomType.group_room, room.room_id, gm.group_pk, steps)
 
-            if gm.lobby is not None and gm.lobby.room_id not in self._blocked_by_others:
+            if gm.lobby is not None and gm.lobby.room_id not in self._left_alone:
                 lobby = gm.lobby
                 assert gm.lobby_desired is not None  # a lobby only exists where one was computed
                 lobby_steps: list[tuple[str, Awaitable[None]]] = []

@@ -11,6 +11,8 @@ from __future__ import annotations
 from typing import Any, ClassVar
 
 from onbot.admin.notifier import AdminRoomNotifier
+from onbot.clients.base import ApiError
+from onbot.clients.synapse_admin import RoomBlock
 from onbot.config import OnbotConfig
 from onbot.events import Event, EventBus, Signal
 from onbot.reconciler.engine import ReconcilerEngine
@@ -145,24 +147,119 @@ async def test_a_lobby_the_bot_blocked_is_unblocked_with_its_group() -> None:
     assert sorted(admin.blocked_changes) == [(LOBBY, False), (ROOM1, False)]
 
 
-async def test_teardown_keeps_a_block_a_server_admin_set() -> None:
-    """Blocking again would record the bot as the blocker, and the room would be unblocked later."""
-    config = OnbotConfig.model_validate(_BASE)
-    rooms = config.sync_matrix_rooms_based_on_authentik_groups
-    rooms.disable_rooms_when_mapped_authentik_group_disappears = True
-    admin = OrphanAdmin()
-    admin.room_state_events = {ORPHAN: room_state(OnbotRoomType.group_room, "g-gone")}
-    admin.blocks[ORPHAN] = HUMAN_ADMIN
-    engine, admin, effectors, _attention = _engine(admin, config=config)
+class FlakyBlockAdmin(FakeAdmin):
+    """Synapse answers the block status of ROOM1 with a 500."""
+
+    async def get_room_block(self, room_id: str) -> RoomBlock:
+        if room_id == ROOM1:
+            raise ApiError("GET", f"/rooms/{room_id}/block", 500)
+        return await super().get_room_block(room_id)
+
+
+async def test_a_room_whose_block_cannot_be_read_is_left_alone_this_pass() -> None:
+    """W4R-04: the room was resolved before its block was checked, so a failed read left a room a
+    server admin may have blocked fully managed (REC-11 failed open): kicks, joins, power levels."""
+    effectors = RecordingEffectors()
+    _seed_converged(effectors)
+    effectors.state_store[(ROOM1, "m.room.topic")] = {"topic": "old"}
+    admin = FlakyBlockAdmin()
+    admin.blocks[ROOM1] = HUMAN_ADMIN  # a server admin's block the bot cannot read this pass
+    engine, admin, effectors, _attention = _engine(admin, effectors)
 
     await engine.reconcile_once()
 
+    assert all(room != ROOM1 for room, _ in effectors.kicks)
+    assert all(room != ROOM1 for room, _ in admin.added)
+    assert all(room != ROOM1 for room, _ in effectors.power_levels)
+    assert _writes(effectors, ROOM1) == []
     assert admin.blocked_changes == []
-    assert admin.blocks[ORPHAN] == HUMAN_ADMIN
+    (problem,) = engine.last_pass_report.rooms
+    assert problem.group_pk == "g1" and "room setup failed" in problem.problems[0]
+    assert ("!space:company.org", "@bob:company.org") in admin.added  # the rest of the pass ran
+
+
+# --- D23: an obsolete room somebody else blocked is a hold --------------------------------------------
+
+
+def _held_orphan(
+    *, delete: bool = False, limit: int = 10
+) -> tuple[ReconcilerEngine, Any, RecordingEffectors, list[Event]]:
+    config = OnbotConfig.model_validate(
+        {**_BASE, "destructive_action_guard": {"max_reversible_actions_per_pass": limit}}
+    )
+    rooms = config.sync_matrix_rooms_based_on_authentik_groups
+    rooms.disable_rooms_when_mapped_authentik_group_disappears = True
+    rooms.delete_disabled_rooms = delete
+    admin = OrphanAdmin()
+    admin.room_state_events = {ORPHAN: room_state(OnbotRoomType.group_room, "g-gone")}
+    admin.blocks[ORPHAN] = HUMAN_ADMIN  # moderation or a legal hold, then the group went away
+    return _engine(admin, config=config)
+
+
+async def test_an_obsolete_room_a_server_admin_blocked_is_neither_cleared_nor_deleted() -> None:
+    """W4R-02, D23: the teardown kicked every member and `delete_disabled_rooms` purged the room."""
+    engine, admin, effectors, attention = _held_orphan(delete=True)
+
+    await engine.reconcile_once()
+    await engine.reconcile_once()
+
+    assert all(room != ORPHAN for room, _ in effectors.kicks)
+    assert admin.deleted == []
+    assert admin.blocked_changes == [] and admin.blocks[ORPHAN] == HUMAN_ADMIN
+    (report,) = [e.payload["text"] for e in attention if ORPHAN in e.payload["text"]]  # once
+    assert f"{HUMAN_ADMIN} blocked it" in report and "D23" in report
+
+
+async def test_a_held_room_does_not_count_against_the_limit() -> None:
+    """Planned again on every pass, the held room's teardown kept the one kick in ROOM1 paused."""
+    engine, _admin, effectors, _attention = _held_orphan(limit=1)
+
+    await engine.reconcile_once()
+
+    assert effectors.kicks == [(ROOM1, "@stale:company.org")]
+
+
+async def test_a_held_room_is_torn_down_once_the_block_is_lifted() -> None:
+    engine, admin, effectors, _attention = _held_orphan(delete=True)
+    await engine.reconcile_once()
+
+    del admin.blocks[ORPHAN]  # the server admin lifts the block
+    await engine.reconcile_once()
+
+    assert (ORPHAN, True) in admin.blocked_changes
     assert {mxid for room, mxid in effectors.kicks if room == ORPHAN} == {
         "@alice:company.org",
         "@stale:company.org",
     }
+    assert admin.deleted == [ORPHAN]
+
+
+async def test_a_block_set_between_planning_and_teardown_stops_the_teardown() -> None:
+    """The guard decides after planning; a hold that appears meanwhile still wins (D23)."""
+    config = OnbotConfig.model_validate(_BASE)
+    rooms = config.sync_matrix_rooms_based_on_authentik_groups
+    rooms.disable_rooms_when_mapped_authentik_group_disappears = True
+    rooms.delete_disabled_rooms = True
+
+    class LateBlockAdmin(OrphanAdmin):
+        reads = 0
+
+        async def get_room_block(self, room_id: str) -> RoomBlock:
+            if room_id == ORPHAN:
+                self.reads += 1
+                if self.reads > 1:  # after the planning read
+                    self.blocks[ORPHAN] = HUMAN_ADMIN
+            return await super().get_room_block(room_id)
+
+    admin = LateBlockAdmin()
+    admin.room_state_events = {ORPHAN: room_state(OnbotRoomType.group_room, "g-gone")}
+    engine, admin, effectors, _attention = _engine(admin, config=config)
+
+    await engine.reconcile_once()
+
+    assert all(room != ORPHAN for room, _ in effectors.kicks)
+    assert admin.deleted == [] and admin.blocked_changes == []
+    assert any(r.room_id == ORPHAN and "D23" in "; ".join(r.problems) for r in engine.last_pass_report.rooms)
 
 
 # --- REC-09: space link -----------------------------------------------------------------------------
@@ -512,6 +609,64 @@ async def test_closed_rooms_do_not_count_against_the_limit_on_every_pass() -> No
     # The one kick in the live room is within the limit of 1; with the closed room's teardown
     # planned again it made two actions, and both were paused.
     assert effectors.kicks == [(ROOM1, "@stale:company.org")]
+
+
+LEGACY_ADMIN = "@legacy-admin:company.org"
+
+
+class StuckMemberOrphanAdmin(ClosedOrphanAdmin):
+    """A teardown left one member the bot cannot kick (here a v12 additional creator)."""
+
+    newcomer: str | None = None
+
+    async def list_room_members(self, room_id: str) -> list[str]:
+        if room_id == ORPHAN and room_id in self.blocks:
+            return [BOT, LEGACY_ADMIN, *([self.newcomer] if self.newcomer else [])]
+        return await super().list_room_members(room_id)
+
+
+def _stuck_orphan(limit: int) -> tuple[ReconcilerEngine, StuckMemberOrphanAdmin, RecordingEffectors]:
+    config = OnbotConfig.model_validate(
+        {**_BASE, "destructive_action_guard": {"max_reversible_actions_per_pass": limit}}
+    )
+    rooms = config.sync_matrix_rooms_based_on_authentik_groups
+    rooms.disable_rooms_when_mapped_authentik_group_disappears = True
+    admin = StuckMemberOrphanAdmin()
+    admin.room_state_events = {ORPHAN: room_state(OnbotRoomType.group_room, "g-gone")}
+    admin.blocks[ORPHAN] = BOT
+    effectors = RecordingEffectors()
+    effectors.state_store[(ORPHAN, "m.room.create")] = {
+        "room_version": "12",
+        "additional_creators": [LEGACY_ADMIN],
+    }
+    engine, admin, effectors, _attention = _engine(admin, effectors, config=config)
+    assert isinstance(admin, StuckMemberOrphanAdmin)
+    return engine, admin, effectors
+
+
+async def test_a_closed_room_with_a_member_the_bot_cannot_kick_is_not_torn_down_again() -> None:
+    """W4R-01: closed meant "only the bot is left", so a room keeping a member nobody can kick (a v12
+    additional creator, a PL 100 human of a migrated room) was torn down again on every pass, and
+    from eleven of them on every pass tripped layer 2."""
+    engine, admin, effectors = _stuck_orphan(limit=1)
+
+    for _ in range(3):
+        await engine.reconcile_once()
+
+    assert admin.blocked_changes == []
+    assert all(room != ORPHAN for room, _ in effectors.kicks)
+    # Within the limit of 1 on every pass (the fake keeps the kicked member listed).
+    assert effectors.kicks == [(ROOM1, "@stale:company.org")] * 3
+
+
+async def test_a_closed_room_somebody_kickable_joined_is_torn_down_again() -> None:
+    engine, admin, effectors = _stuck_orphan(limit=10)
+    admin.newcomer = "@alice:company.org"  # back in the blocked room somehow (an admin join)
+
+    await engine.reconcile_once()
+
+    assert (ORPHAN, "@alice:company.org") in effectors.kicks
+    assert (ORPHAN, LEGACY_ADMIN) not in effectors.kicks
 
 
 async def test_a_closed_room_is_still_deleted_once_deletion_is_switched_on() -> None:

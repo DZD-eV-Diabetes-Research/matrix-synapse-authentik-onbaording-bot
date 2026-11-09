@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
+from onbot.clients.synapse_admin import RoomBlock
 from onbot.config import OnbotConfig
 from onbot.events import Event, EventBus, Signal
 from onbot.guard import DestructiveActionGuard, GuardLimits, MatrixAccountDataGuardStore
@@ -115,6 +116,10 @@ class Synapse(IdentityScanMixin):
 
     async def room_is_blocked(self, room_id: str) -> bool:
         return False
+
+    async def get_room_block(self, room_id: str) -> RoomBlock:
+        # Without it every room's setup failed, and before W4R-04 the room was managed anyway.
+        return RoomBlock(blocked=False)
 
     async def get_room_details(self, room_id: str) -> dict[str, Any]:
         return {"room_id": room_id, "version": "12", "creator": mx("bot")}
