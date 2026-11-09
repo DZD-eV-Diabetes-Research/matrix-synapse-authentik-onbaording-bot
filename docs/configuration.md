@@ -122,6 +122,11 @@ avatar_fetch:
 A refused avatar is logged with the reason. A group room keeps its previous avatar and is retried on
 the next reconcile; a refused bot avatar is not retried until the next start.
 
+Each avatar URL is downloaded once per start, and Onbot records a hash of the image next to every
+avatar it sets (the bot's profile, rooms, the space, notice boards). A new picture at the same URL is
+therefore picked up on the next restart, everywhere it is worn. While the URL cannot be fetched, the
+current pictures stay as they are.
+
 ## The MXID localpart contract
 
 This is the single most important thing to get right.
