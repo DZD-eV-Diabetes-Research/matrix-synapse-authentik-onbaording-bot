@@ -54,19 +54,24 @@ blocks a release from a safety point of view.
 
 ## Next steps (session of 2026-11-09, in progress)
 
-Running in parallel since cf5c582:
+Done this session: cold review of wave 4 (8 findings, no critical; report in the session
+scratchpad `review-w4/REPORT.md`, summarised as the W4R brief in `SESSIONS.md`), decisions D22 and
+D23.
 
-- Full integration run on main (instance 0), log `itest-main-a47c0f1.log` in the session scratchpad.
-- Cold review of wave 4 (`git diff b5fd0b5 a47c0f1`) by a fresh read-only agent.
-- S12 in its own worktree, branch `review/s12-broadcast-admin` from cf5c582, stack instance 1.
+Running in parallel:
 
-Then: W4R fixups (cold review findings plus the D21 addition "binding wins without MAS"), then wave
-5: S14 (docs, dead code, cleanup; also the integration suite speed-up from D17). S17 (bot-driven room
-upgrades, D20) is deferred: not before the next release.
+- Full integration run on main at a47c0f1 (instance 0), log `itest-main-a47c0f1.log` in the session
+  scratchpad.
+- S12 in its own worktree, branch `review/s12-broadcast-admin` from cf5c582, stack instance 1. It
+  also got W4R-05 (empty mapped set must refuse the broadcast).
+- W4R in its own worktree, branch `review/w4r-fixups` from 5c3c561, stack instance 2.
+
+Then: merge S12 and W4R (expect small conflicts in `engine.py`), full integration run on main, cold
+review of S12 plus W4R, then wave 5: S14 (docs, dead code, cleanup; also the integration suite
+speed-up from D17). S17 (bot-driven room upgrades, D20) is deferred: not before the next release.
 
 If this session stops before they finish: check `git branch` and `git worktree list` for
-`review/s12-*`, review it against the brief, merge per "How merging works"; rerun the cold review if
-no W4R brief exists in `SESSIONS.md`.
+`review/s12-*` and `review/w4r-*`, review each against its brief, merge per "How merging works".
 
 ## Questions collected for the maintainer
 
