@@ -257,3 +257,30 @@ its group disappears or the room is disabled, the bot neither kicks its members 
 that block exists; it reports the room once in the admin room and the log. When the block is lifted,
 the normal teardown applies. (REC-11 already keeps such a block in place and leaves live
 human-blocked rooms unmanaged.)
+
+## D24 S12 and W4R confirmations (decided 2026-11-09)
+
+Confirmed as implemented:
+
+- ONB-12: an admin who declines or leaves the control room is not invited again; removing them from
+  the admin set and adding them again sends a new invitation. Document it.
+- ONB-03: a second `!announce` while a broadcast runs is refused, not queued.
+- W4R-03: a notice board the bot was removed from is replaced at the next check of that user. Users
+  cannot remove the bot (PL 0 in current boards; in legacy boards user and bot are both at 100 and a
+  kick needs a higher level), so only somebody above the bot, in practice a server admin, causes this.
+  No immediate reaction to the bot's own leave.
+- D21: while MAS is configured but unreadable, binding against attribute guess still fails closed for
+  that pass.
+- D23: a block whose blocker is unknown counts as somebody else's block, so it is a hold.
+
+New work (session S18):
+
+- ONB-15: re-check avatar URLs periodically (about daily, conditional GET with ETag or
+  Last-Modified), not only once per process start.
+- SEC-09: the local membership re-check applies to `sync_only_users_of_groups_with_id` too. Authentik
+  returning no `groups` then empties the scope, which guard layer 1 holds and reports.
+- ONB-11: an `!announce` with the same text from the same admin within 60 seconds asks for a
+  confirmation before sending.
+- W4R-06: an admin command to re-adopt a group room that lost its marker (for example
+  `!room adopt <group> <room>`): allowlisted admins only, only rooms the bot created (D20), the bot
+  writes its marker and reports.

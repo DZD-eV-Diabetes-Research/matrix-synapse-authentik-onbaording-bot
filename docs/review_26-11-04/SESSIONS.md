@@ -36,7 +36,8 @@ Start a session by pointing Claude at this file and the session ID, for example:
 | 7a | W2F | Wave 2 fixups: test stack MAS 1.28 and Synapse 1.164, LIF-09 refusal, admin room default (D19) | S | S3, S4 | done (merged in wave 2) |
 | 7b | W2R | Wave 2 review fixups: guard fails closed, rejected batches end, ledger report, guard gaps | S | S3, S4 | done (merged in wave 2) |
 | 11a | W3R | Wave 3 review fixups: identity guess vs MAS owner, marker sender, upgrade claims, lock retry, batch expiry | S | S5, S6, S9 | done (merged in wave 3) |
-| 11b | W4R | Wave 4 review fixups: closed rooms, human-blocked rooms as hold (D23), lost notice boards, upkeep isolation, binding wins (D21) | S | S7, S8 | open |
+| 11b | W4R | Wave 4 review fixups: closed rooms, human-blocked rooms as hold (D23), lost notice boards, upkeep isolation, binding wins (D21) | S | S7, S8 | done (merged in wave 4) |
+| 14a | S18 | Wave 4 follow-ups (D24): avatar re-check, sync scope re-check, duplicate announce guard, `!room adopt`, flaky deletion test | S | S12, W4R | open |
 | 4 | S3 | Guard layers 1 and 2, reconciler dry-run | M | S2 | done (merged in wave 2) |
 | 5 | S16 | Git history scrub | S | S0, no open branches | done (force-pushed 2026-11-06, new main 89afecf) |
 | 6 | S4 | Offboarding completeness | M | S1 | done (merged in wave 2) |
@@ -136,6 +137,38 @@ finding. W4R-05 (empty mapped set, broadcast exits 0) went to S12.
 
 Experiment tests from the review (asserting the faulty behaviour) are in the orchestrator's
 scratchpad, `review-w4/test_w4_experiments.py`; turn them into real regression tests.
+
+---
+
+## S18 Wave 4 follow-ups (D24)
+
+Decided by the maintainer on 2026-11-09 after S12 and W4R. Read D24, D20, D13, D4 and the S12 and
+W4R entries in `CHANGELOG.md` first.
+
+- **ONB-15 avatar re-check:** avatar URLs are fetched once per process start today (S12 keys avatars
+  by SHA-256 in `onbot/media.py`, markers, the bot profile record and notice boards). Re-check them
+  about once a day with a conditional GET (ETag or Last-Modified, falling back to a full fetch and
+  hash compare); a changed picture reaches the profile, rooms, lobbies, space and notice boards
+  without a restart. Keep the SEC-03 fetch limits.
+- **SEC-09 sync scope re-check:** apply the local membership re-check S12 added for bot admin groups
+  (`members_of` in `onbot/admin/admins.py`) to `sync_only_users_of_groups_with_id`: a user returned
+  by Authentik whose own `groups` / `groups_obj` names none of the configured groups is dropped and
+  logged as an error. Make sure an Authentik that stops returning `groups` empties the scope in a way
+  guard layer 1 holds and reports (test it), never in a way that offboards.
+- **ONB-11 duplicate guard:** an `!announce` with the same text (after whitespace normalisation) from
+  the same admin within 60 seconds of the previous one is not sent; the bot asks for a confirmation
+  (reuse the `!confirm <id>` style if it fits, or a dedicated reply). Edits are already ignored (S12).
+- **W4R-06 `!room adopt`:** an admin command to re-adopt a group room that lost its marker or carries
+  a foreign one (W4R-06 reports these with instructions, `docs/troubleshooting.md` "A room lost its
+  onbot marker"). Allowlisted admins only; only rooms the bot created (D20: creator check is
+  mandatory); the admin names the group and the room; the bot writes and locks its marker, remembers
+  it (`_put_marker`), reports, and the next pass manages the room. Refuse with a clear reason
+  otherwise (not bot-created, group unknown, group already has a trusted room).
+- **Flaky test:** `tests/integration/test_http_layer.py::test_room_deletion_whose_response_was_lost_is_awaited_not_failed`
+  passed, failed, passed when run alone (W4R). Likely cause: right after the lost DELETE response
+  `delete_status` sometimes answers 404, so `_existing_room_deletion` returns None and the original
+  error is re-raised. Fix the cause (a short retry of the status lookup on 404 in `delete_room`) and
+  prove it by running the test repeatedly.
 
 ---
 
@@ -576,6 +609,9 @@ limit (300 s), the wait cap (60 s) and the 20-room listing are constants; pre-ex
 the `!status` line and the help text. Not done, would need a decision: re-fetching an avatar URL
 without a restart (ETag or periodic check), the SEC-09 local re-check for
 `sync_only_users_of_groups_with_id`, the ONB-11 duplicate guard for identical announcements.
+
+**From W4R:** the reconciler unit fakes still do not serve one shared room state everywhere; only
+the marker tests in `test_room_repair.py` use `SharedStateAdmin`.
 
 **From D17:** speed up the integration suite (about 20 minutes in CI): cache or reuse the stack start
 (Authentik dominates), run independent test files in parallel where the stack allows it.

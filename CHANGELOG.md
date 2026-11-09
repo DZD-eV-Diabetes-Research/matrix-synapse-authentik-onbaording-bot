@@ -68,6 +68,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   This `CHANGELOG.md`.
 
 ### Changed
+- **Rooms blocked by someone other than the bot are a hold (wave 4 review, W4R-02, D23):** server
+  admin moderation, legal hold, or a block whose author is unknown. When their group disappears the bot
+  neither kicks the members nor deletes the room while the block exists, even with
+  `delete_disabled_rooms`; it reports the room once and the room does not count against the guard.
+  After the block is lifted the normal teardown applies.
+- **A closed room with members the bot cannot kick stays closed (wave 4 review, W4R-01):** extra v12
+  creators or PL 100 humans in older rooms no longer make the bot tear the room down again on every
+  pass, so such rooms no longer count against guard layer 2 on every pass.
+- **A recorded binding wins without MAS (wave 4 review, D21):** when MAS is not configured or links
+  the account to nobody, a user with a recorded binding keeps the account against users who only name
+  it by the mapping attribute; those are skipped and reported. Before, both were frozen. With MAS
+  configured but unreadable it still fails closed for that pass.
 - **`!announce` runs beside the sync stream (review S12, ONB-03):** it answers "Sending the
   announcement to N rooms" and posts the result when done. A second `!announce` while one runs is
   refused, not queued; a broadcast still running at shutdown is cancelled.
@@ -228,6 +240,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   troubleshooting.
 
 ### Fixed
+- **A room whose block status cannot be read is left alone for that pass (wave 4 review, W4R-04)**
+  instead of being fully managed (REC-11 failed open).
+- **A refused repair no longer blocks other work (wave 4 review, W4R-07):** space upkeep is its own
+  step, so a refused space repair no longer keeps new users out of the space; each room repair runs on
+  its own.
+- **Markers are restored from what the bot wrote (wave 4 review, W4R-08):** a restored marker keeps
+  `global_admins`, `avatar_source_url` and `avatar_sha256`; a marker someone else wrote is never
+  re-signed by the bot.
+- **A notice board the bot was removed from is replaced (wave 4 review, W4R-03):** detected by the
+  bot's own membership; before, every welcome failed with a 403.
+- **A group room whose marker was removed or rewritten while the bot was stopped is reported with
+  instructions (wave 4 review, W4R-06);** a marker restored as the bot account counts from the next
+  pass.
 - **A room the bot already closed is no longer torn down again on every pass.** Before, from 11 closed
   rooms on, every kick and teardown waited for a confirmation (review S7).
 - **Concurrent welcomes no longer lose `m.direct` entries,** which caused duplicate notice boards and
