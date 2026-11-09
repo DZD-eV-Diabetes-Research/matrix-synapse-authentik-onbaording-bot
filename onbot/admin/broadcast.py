@@ -330,7 +330,8 @@ class _FanOut:
 
     async def _attempt(self, room_id: str, user_id: str) -> None:
         await self._pace()
-        if self._gave_up or self._clock() - self._last_progress > self._stall_limit_sec:
+        stalled = self._throttled and self._clock() - self._last_progress > self._stall_limit_sec
+        if self._gave_up or stalled:
             self._gave_up = True
             self.queue.appendleft((room_id, user_id))
             return

@@ -418,3 +418,25 @@ async def test_a_broadcast_that_never_gets_through_gives_up_after_the_stall_limi
     assert all("gave up" in failure.error for failure in result.failures)
     # The limit plus at most one capped wait: the server's ten minutes are not waited out per room.
     assert 300 <= server.now <= 300 + 60 + 1
+
+
+async def test_slow_failures_without_a_rate_limit_never_count_as_a_stall() -> None:
+    """Only a throttled broadcast gives up; slow, failing rooms are just failures."""
+    now = [0.0]
+
+    class _Slow(_FakeClient):
+        async def send_text_message(self, room_id: str, body: str, **kwargs: object) -> str:
+            now[0] += 200  # each send takes long (the client's own retries of a 5xx, say)
+            if room_id != "!r2:x":
+                raise RuntimeError("HTTP 500")
+            return "$e"
+
+    client = _Slow({f"@u{i}:matrix.test": [f"!r{i}:x"] for i in range(3)})
+
+    async def sleep(seconds: float) -> None:
+        now[0] += seconds
+
+    result = await _service(client, concurrency=1, clock=lambda: now[0], sleep=sleep).broadcast("hi")
+
+    assert result.sent == ["!r2:x"]
+    assert [f.error for f in result.failures] == ["RuntimeError: HTTP 500", "RuntimeError: HTTP 500"]
