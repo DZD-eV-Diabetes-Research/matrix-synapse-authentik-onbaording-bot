@@ -20,7 +20,7 @@ Local `main` is ahead of `origin/main` (the maintainer pushes; last push was the
 | between | S16, CI1 | history scrub (force-pushed by the maintainer), shorter CI (D17) | first GitHub CI run green |
 | 2 | S11, S3, S4, W2F, W2R | HTTP layer, guard layers 1 and 2 with `!confirm <id>`, offboarding completeness (D7), D19 fixups (MAS 1.28 and Synapse 1.164 in the test stack, admin room on by default), wave 2 review fixups | 1130 passed |
 | 3 | S5, S6, S9, W3R | guard layer 3, room identity by creator plus locked marker (D20), user identity across renames (D8, D21), wave 3 review fixups | 1277 passed (before W3R; W3R's own full run on its branch: 1295 passed) |
-| 4 | S8, S7 (merged), S12 (not started) | onboarding correctness, room repair | 1384 passed, 1 failed, fixed (see "Wave 4"); rerun at a47c0f1: 1385 passed |
+| 4 | S8, S7, S12, W4R (merged), S18 (running) | onboarding correctness, room repair, broadcast and admin room, wave 4 review fixups | 1384 passed, 1 failed, fixed (see "Wave 4"); rerun at a47c0f1: 1385 passed |
 
 Status per session: the table in `SESSIONS.md`. Release notes: `CHANGELOG.md` (Unreleased) has a line
 for every merged session.
@@ -54,27 +54,36 @@ blocks a release from a safety point of view.
 
 ## Next steps (session of 2026-11-09, in progress)
 
-Done this session: full integration run on main at a47c0f1 (1385 passed, 19 minutes), cold review of wave 4 (8 findings, no critical; report in the session
-scratchpad `review-w4/REPORT.md`, summarised as the W4R brief in `SESSIONS.md`), decisions D22 and
-D23.
+Done this session:
 
-Running in parallel:
+- Full integration run on main at a47c0f1: 1385 passed.
+- Cold review of wave 4 (8 findings, no critical) turned into W4R; decisions D22, D23, D24.
+- S12 merged (15c772b, its full run on the branch: 1432 passed), W4R merged (5deb135, its full run:
+  1405 passed, 1 flaky HTTP-layer test now in S18). The W4R merge had conflicts with S12 in
+  `welcome.py` and `engine.py`: S12's avatar marker writes now go through W4R's `_put_marker`.
+  Unit and contract after both: 1369 passed.
 
-- S12 in its own worktree, branch `review/s12-broadcast-admin` from cf5c582, stack instance 1. It
-  also got W4R-05 (empty mapped set must refuse the broadcast).
-- W4R in its own worktree, branch `review/w4r-fixups` from 5c3c561, stack instance 2.
+Running in parallel since 3d01196:
 
-Then: merge S12 and W4R (expect small conflicts in `engine.py`), full integration run on main, cold
-review of S12 plus W4R, then wave 5: S14 (docs, dead code, cleanup; also the integration suite
-speed-up from D17). S17 (bot-driven room upgrades, D20) is deferred: not before the next release.
+- Full integration run on main at 5deb135 (instance 0), log `itest-main-5deb135.log` in the session
+  scratchpad (first run with S12 and W4R together).
+- Cold review of S12 plus W4R (`git diff b28fbb1 5deb135`), read-only agent. Findings become W5R.
+- S18 (wave 4 follow-ups from D24) in its own worktree, branch `review/s18-followups` from 3d01196,
+  stack instance 1.
+
+Then: W5R fixups if the review finds anything, merge S18, full integration run, then wave 5: S14
+(docs, dead code, cleanup; also the integration suite speed-up from D17). S17 (bot-driven room
+upgrades, D20) is deferred: not before the next release.
 
 If this session stops before they finish: check `git branch` and `git worktree list` for
-`review/s12-*` and `review/w4r-*`, review each against its brief, merge per "How merging works".
+`review/s18-*`, review it against its brief and merge per "How merging works"; rerun the cold review
+of `b28fbb1..5deb135` if no W5R brief exists in `SESSIONS.md`.
 
 ## Questions collected for the maintainer
 
-All answered on 2026-11-09 (recommended options throughout): recorded in D13 (guard details), D21
-(binding wins without MAS, implementation in W4R) and D22 (S7 and S8 confirmations).
+All answered on 2026-11-09: recorded in D13 (guard details), D21 (binding wins without MAS, done in
+W4R), D22 (S7 and S8 confirmations), D23 (rooms blocked by someone else are a hold, done in W4R) and
+D24 (S12 and W4R confirmations, new work in S18).
 
 ## Maintainer to-dos outside the code
 
