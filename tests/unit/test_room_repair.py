@@ -675,6 +675,65 @@ async def test_closing_a_lobby_goes_through_the_guard() -> None:
     assert effectors.state_store[(SPACE, CHILD, LOBBY)]["via"] == ["company.org"]
 
 
+CAROL = "@carol:company.org"
+GRANTS = "org.company.onbot.granted_power_levels"
+
+
+class _CarolAdminInLobby(RecordingEffectors):
+    """The lobby's power levels as the bot left them: the global admin carol seated at 100."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.lobby_users: dict[str, int] = {CAROL: 100}
+        self.account_data[(LOBBY, GRANTS)] = {"users": {CAROL: 100}}
+
+    async def get_room_power_levels(self, room_id: str) -> dict[str, Any]:
+        power = await super().get_room_power_levels(room_id)
+        return {**power, "users": dict(self.lobby_users)} if room_id == LOBBY else power
+
+    async def set_room_power_levels(self, room_id: str, power_levels: dict[str, Any]) -> None:
+        await super().set_room_power_levels(room_id, power_levels)
+        if room_id == LOBBY:
+            self.lobby_users = dict(power_levels.get("users") or {})
+
+
+@pytest.mark.parametrize("still_global_admin", [True, False])
+async def test_a_switched_off_lobby_loses_the_levels_the_bot_granted_there(still_global_admin: bool) -> None:
+    """S7 leftover: a closed lobby is no longer managed, so a grant left there would stay for good."""
+    config = OnbotConfig.model_validate(_BASE)  # lobbies off by default
+    if still_global_admin:
+        config.global_room_admins = ["carol"]
+    effectors = _CarolAdminInLobby()
+    effectors.state_store[(LOBBY, JOIN_RULES)] = RESTRICTED
+    _seed_converged(effectors, LOBBY, suggested=True)
+    engine, _admin, effectors, _attention = _engine(SwitchedOffLobbyAdmin(), effectors, config=config)
+    assert isinstance(effectors, _CarolAdminInLobby)
+
+    await engine.reconcile_once()
+
+    assert effectors.state_store[(LOBBY, JOIN_RULES)] == {"join_rule": "invite"}
+    assert CAROL not in effectors.lobby_users
+    assert effectors.account_data[(LOBBY, GRANTS)]["users"] == {}
+    lobby_writes = [w for w in effectors.power_levels if w[0] == LOBBY]
+    await engine.reconcile_once()
+    assert [w for w in effectors.power_levels if w[0] == LOBBY] == lobby_writes  # nothing more to do
+
+
+async def test_withdrawing_the_grants_of_a_switched_off_lobby_goes_through_the_guard() -> None:
+    effectors = _CarolAdminInLobby()
+    effectors.state_store[(LOBBY, JOIN_RULES)] = RESTRICTED
+    _seed_converged(effectors, LOBBY, suggested=True)
+    config = OnbotConfig.model_validate(
+        {**_BASE, "destructive_action_guard": {"max_reversible_actions_per_pass": 0}}
+    )
+    engine, _admin, effectors, _attention = _engine(SwitchedOffLobbyAdmin(), effectors, config=config)
+    assert isinstance(effectors, _CarolAdminInLobby)
+
+    await engine.reconcile_once()
+
+    assert effectors.lobby_users == {CAROL: 100}
+
+
 async def test_a_lobby_the_bot_closed_opens_again_when_switched_back_on() -> None:
     engine, _admin, effectors, _attention = _switched_off()
     await engine.reconcile_once()

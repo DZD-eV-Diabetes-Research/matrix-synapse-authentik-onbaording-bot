@@ -96,9 +96,11 @@ arrangement, so a visitor is never confused about where they have landed, and it
   `visitor_lobby_inject_group_members` off.
 - **Switching a lobby off closes it.** When a group no longer wants a lobby (the group attribute set
   to `false`, or `visitor_lobby_enabled` turned off), Onbot sets the lobby's join rule to invite-only
-  and takes it out of the space. Nobody is kicked; the people in it can stay and talk. Closing counts
-  as a removal for the [guard](#guard-against-mass-removals), so many lobbies closing at once wait for
-  a confirmation. Turn the lobby on again and Onbot reopens it and puts it back into the space.
+  and takes it out of the space. Nobody is kicked; the people in it can stay and talk. The power
+  levels Onbot granted there (the global room admins) are withdrawn. Closing and each withdrawal count
+  as removals for the [guard](#guard-against-mass-removals), so many lobbies closing at once wait for
+  a confirmation. Turn the lobby on again and Onbot reopens it, puts it back into the space and seats
+  the global room admins again.
 - **A lobby somebody closed by hand stays closed.** If a room admin of the lobby changes its join rule
   to invite-only (or knock, or private), Onbot leaves it that way, logs a warning and reports it once
   in the admin control room. To hand the lobby back to Onbot, an admin types

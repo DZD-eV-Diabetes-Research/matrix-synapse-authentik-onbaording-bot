@@ -1285,7 +1285,9 @@ class ReconcilerEngine:
         used to drop the lobby out of management while it stayed open and suggested in the space.
         Now its join rule becomes ``invite`` and it leaves the space. Members stay (nobody is
         kicked); closing counts as a reversible destructive action and goes through the guard (D19).
-        A lobby that is closed and detached already costs two reads. A lobby of a group that is gone
+        The power levels the bot granted there are withdrawn, each through the guard like any
+        withdrawal (D10). A lobby that is closed and detached already, without a grant of the bot's,
+        costs four reads. A lobby of a group that is gone
         is torn down instead (:meth:`_converge_obsolete_rooms`).
         """
         switched_off = {gm.group_pk for gm in group_maps if gm.lobby_desired is None}
@@ -1302,6 +1304,26 @@ class ReconcilerEngine:
                 group_pk=identity.key.group_id,
                 step="close",
                 work=self._plan_lobby_close(identity.room_id, identity.key.group_id, space, report, plan),
+            )
+            lobby = index.rooms.get(identity.room_id) or MatrixRoom(room_id=identity.room_id)
+            # The levels the bot granted there (the global admins) go too, through the guard like any
+            # withdrawal (D10): a closed lobby is no longer managed, so nothing would take them back.
+            await self._guarded(
+                report,
+                room_kind=OnbotRoomType.visitor_lobby,
+                room_id=identity.room_id,
+                group_pk=identity.key.group_id,
+                step="power levels",
+                work=self._converge_levels(
+                    lobby,
+                    OnbotRoomType.visitor_lobby,
+                    VisitorLobbyRoomState(group_id=identity.key.group_id),
+                    identity.key.group_id,
+                    {},
+                    report,
+                    plan,
+                    seat_global_admins=False,
+                ),
             )
 
     async def _plan_lobby_close(
@@ -2023,6 +2045,8 @@ class ReconcilerEngine:
         desired: dict[str, int],
         report: PassReport,
         plan: PassPlan,
+        *,
+        seat_global_admins: bool = True,
     ) -> None:
         """Grant now; record the withdrawals (D10) for the guard and carry out the permitted ones later.
 
@@ -2031,7 +2055,9 @@ class ReconcilerEngine:
         """
         problems: _RoomStepProblems | None = None
         try:
-            held = await self._write_power_levels(room, room_type, fresh_state, desired=desired)
+            held = await self._write_power_levels(
+                room, room_type, fresh_state, desired=desired, seat_global_admins=seat_global_admins
+            )
         except _RoomStepProblems as exc:
             problems, held = exc, exc.held
         # A held withdrawal of an account several Authentik users resolve to is never proposed: its
@@ -2058,6 +2084,7 @@ class ReconcilerEngine:
                     fresh_state,
                     desired=desired,
                     withdraw=frozenset(by_key[k] for k in allowed),
+                    seat_global_admins=seat_global_admins,
                 ),
             )
 
@@ -2073,8 +2100,12 @@ class ReconcilerEngine:
         *,
         desired: dict[str, int],
         withdraw: Collection[str] = frozenset(),
+        seat_global_admins: bool = True,
     ) -> list[str]:
         """Apply ``desired`` levels plus the global room admins at PL 100, and withdraw stale grants.
+
+        ``seat_global_admins=False`` (a switched-off lobby) seats nobody, so every grant of the bot's
+        is withdrawn.
 
         Withdrawal follows D10: only entries the bot itself wrote are taken back. They are recorded,
         with the level written, in the bot's per-room account data (:class:`GrantedPowerLevels`),
@@ -2093,7 +2124,7 @@ class ReconcilerEngine:
         """
         room_id = room.room_id
         bot_id = self.config.synapse_server.bot_user_id
-        global_admins = self.global_admins.mxids
+        global_admins = self.global_admins.mxids if seat_global_admins else frozenset()
         event_type = event_type_name(self.server_name, room_type)
         raw = await self.effectors.get_room_state(room_id, event_type)
         state = self._marker_basis(room_id, room_type, fresh_state, raw)

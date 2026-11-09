@@ -457,11 +457,15 @@ async def test_a_switched_off_lobby_is_closed_and_detached_and_reopens_when_swit
     prefix = S.uniq("lbo")
     group = _lobby_group(authentik_admin, prefix, lobby=True)
     _v, visitor = S.provision(authentik_admin, S.uniq("lbovisitor"))
+    keeper_name = S.uniq("lbokeeper")
+    _k, keeper = S.provision(authentik_admin, keeper_name)
     config = _with_space(_config(make_config, prefix))
+    config.global_room_admins = [keeper_name]  # seated at power level 100 in the lobby
     await run_reconcile_once(config)
     space_id = await _space_of(matrix_client, config)
     lobby_id = await _lobby_of(matrix_client, config, group)
     assert S.join_room_status(visitor.access_token, lobby_id) == 200
+    assert (await matrix_client.get_room_power_levels(lobby_id))["users"].get(keeper.mxid) == 100
 
     authentik_admin.set_group_attributes(group["pk"], {"is_chatroom": True, "chatroom_visitor_lobby": False})
     await run_reconcile_once(config)
@@ -471,6 +475,8 @@ async def test_a_switched_off_lobby_is_closed_and_detached_and_reopens_when_swit
     assert not child.get("via")
     assert lobby_id not in S.space_hierarchy_room_ids(visitor.access_token, space_id)
     assert visitor.mxid in await admin_client.list_room_members(lobby_id)  # nobody is kicked
+    # The level the bot granted there goes with the close (S14 part 2).
+    assert keeper.mxid not in (await matrix_client.get_room_power_levels(lobby_id))["users"]
 
     authentik_admin.set_group_attributes(group["pk"], {"is_chatroom": True, "chatroom_visitor_lobby": True})
     await run_reconcile_once(config)
@@ -479,6 +485,7 @@ async def test_a_switched_off_lobby_is_closed_and_detached_and_reopens_when_swit
     assert rule.get("join_rule") == "restricted"
     child = await matrix_client.get_room_state_event(space_id, "m.space.child", lobby_id) or {}
     assert child.get("suggested") is True
+    assert (await matrix_client.get_room_power_levels(lobby_id))["users"].get(keeper.mxid) == 100
 
 
 async def test_a_lobby_a_human_closed_stays_closed_until_an_admin_reopens_it(
