@@ -12,6 +12,7 @@ the part that matters — that taking it away really takes them away, on a runni
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import quote
 
 import pytest
 
@@ -23,8 +24,11 @@ from onbot.clients.authentik import ApiClientAuthentik
 from onbot.clients.matrix import ApiClientMatrix
 from onbot.clients.synapse_admin import ApiClientSynapseAdmin
 from onbot.config import OnbotConfig
+from onbot.events import Event, Signal
+from onbot.reconciler.state import OnbotRoomType, event_type_name
 from onbot.rooms.admin import AdminRoomProvisioner
 from onbot.rooms.identity import RoomIdentityResolver
+from onbot.rooms.provision import markers_locked
 from tests.integration import stack_api as S
 
 pytestmark = pytest.mark.integration
@@ -426,3 +430,52 @@ async def test_a_repeated_announce_is_held_until_its_admin_confirms_it(
     assert S.send_message_status(admin.access_token, control_room, f"!confirm {held_id}") == 200
     await _pump_once(handler, matrix_client)
     assert (await _messages_in(matrix_client, notice_board)).count("Pasted twice") == 1 + 1
+
+
+# --- W6R-08: the control room is repaired like the other managed rooms -------------------------------
+
+
+async def test_the_control_rooms_marker_lock_and_alias_are_repaired_after_a_pass(
+    make_config,
+    authentik_admin: S.AuthentikAdmin,
+    authentik_client: ApiClientAuthentik,
+    matrix_client: ApiClientMatrix,
+    room_identity: RoomIdentityResolver,
+) -> None:
+    """Before W6R-08 only the group rooms, lobbies and the space got their marker, its lock and their
+    alias back; the control room kept whatever somebody at the bot's level had done to it."""
+    _a, admin = S.provision(authentik_admin, S.uniq("repairadmin"))
+    config = make_config()
+    config.admin_room.enabled = True
+    config.admin_room.alias = S.uniq("onbot-admin")
+    config.admin_room.admin_user_ids = [admin.mxid]
+    provisioner = AdminRoomProvisioner(
+        matrix_client, config, _resolver(authentik_client, config), room_identity
+    )
+    control_room = await provisioner.ensure()
+    assert control_room is not None
+    marker_type = event_type_name(S.SERVER_NAME, OnbotRoomType.admin_room)
+    before = await matrix_client.get_room_state_event(control_room, marker_type)
+    assert before and before.get("invited_admins") == [admin.mxid]
+
+    # What somebody at the bot's own level could do: remove the marker, lower its lock, drop the alias.
+    await matrix_client.put_room_state_event(control_room, marker_type, {})
+    power = await matrix_client.get_room_power_levels(control_room)
+    power["events"] = {**power["events"], marker_type: 50}
+    await matrix_client.set_room_power_levels(control_room, power)
+    alias = f"#{config.admin_room.alias}:{S.SERVER_NAME}"
+    await matrix_client.delete_json(f"v3/directory/room/{quote(alias, safe='')}")
+    assert await matrix_client.resolve_room_alias(alias) is None
+
+    await provisioner.on_reconcile(Event(signal=Signal.reconcile_completed, payload={}))
+
+    marker = await matrix_client.get_room_state_event_with_sender(control_room, marker_type)
+    assert marker is not None and marker["sender"] == S.BOT_USER_ID
+    assert marker["content"] == before  # restored from what the bot knows, invitations included
+    power = await matrix_client.get_room_power_levels(control_room)
+    create = await matrix_client.get_room_state_event(control_room, "m.room.create") or {}
+    assert markers_locked(power, S.SERVER_NAME, S.BOT_USER_ID, room_version=create.get("room_version"))
+    assert await matrix_client.resolve_room_alias(alias) == control_room
+    reports = await _messages_in(matrix_client, control_room)
+    assert any("marker was removed" in r for r in reports), reports
+    assert any("had been lowered" in r for r in reports), reports

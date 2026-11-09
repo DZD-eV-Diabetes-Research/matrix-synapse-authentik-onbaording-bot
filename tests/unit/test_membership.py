@@ -21,6 +21,12 @@ def test_desired_members_use_exact_pk_match() -> None:
     assert desired_room_members("g1", users) == {"@a:x", "@c:x"}
 
 
+def test_desired_members_match_the_group_uuid_in_any_form() -> None:
+    """W6R-01: a group pk is compared as a UUID wherever it is compared."""
+    users = [_user("@a:x", "1120a6e1-124f-309b-be96-c8be5fb09eab"), _user("@b:x", "g2")]
+    assert desired_room_members("1120A6E1124F309BBE96C8BE5FB09EAB", users) == {"@a:x"}
+
+
 def test_diff_adds_and_kicks() -> None:
     diff = diff_room_membership(
         desired_mxids={"@a:x", "@b:x"},

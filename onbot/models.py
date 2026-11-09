@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from onbot.utils import normalize_group_pk
+
 
 @dataclass(frozen=True, slots=True)
 class RoomCreateAttributes:
@@ -71,7 +73,8 @@ class MappedUser:
 
     @property
     def group_pks(self) -> set[str]:
-        return {g["pk"] for g in self.authentik_obj.get("groups_obj", [])}
+        """The pks of the user's groups, in the form :func:`~onbot.utils.normalize_group_pk` gives."""
+        return {normalize_group_pk(g["pk"]) for g in self.authentik_obj.get("groups_obj", [])}
 
 
 @dataclass(slots=True)

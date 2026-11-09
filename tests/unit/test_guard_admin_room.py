@@ -286,3 +286,44 @@ async def test_a_failed_post_does_not_fail_the_pass() -> None:
     notifier = AdminRoomNotifier(_Failing())
     await notifier.bind(ROOM)
     await notifier.post("hello")  # logged, not raised
+
+
+# --- W6R-04: held announcements and guard batches share the `!confirm <id>` namespace ---------------
+
+
+async def test_a_held_announcement_never_takes_the_id_of_an_open_batch(monkeypatch: Any) -> None:
+    from onbot.admin import control_room
+
+    guard, batch_id = await _guard_with_batch()
+    ids = iter([batch_id, batch_id, "hhhhhh"])
+    monkeypatch.setattr(control_room, "new_batch_id", lambda: next(ids))
+    client = _FakeClient()
+    handler = _handler(client, guard, _Engine())
+    await _run(handler, _message("!announce hi", event_id="$a"), _message("!announce hi", event_id="$b"))
+
+    assert "!confirm hhhhhh" in client.sends[-1][1]
+    await _run(handler, _message("!pending", event_id="$c"))
+    assert batch_id in client.sends[-1][1] and "Announcement hhhhhh" in client.sends[-1][1]
+
+
+async def test_a_new_batch_never_takes_the_id_of_a_held_announcement() -> None:
+    ids = iter(["hhhhhh", "hhhhhh", "bbbbbb"])
+    guard = DestructiveActionGuard(
+        GuardLimits(),
+        MemoryGuardStore(GuardState(baseline=InputCounts(users_in_scope=100, mapped_groups=5))),
+        EventBus(),
+        id_factory=lambda: next(ids),
+    )
+    handler = _handler(_FakeClient(), guard, _Engine())
+    handler._held_announcements["hhhhhh"] = control_room_held()
+
+    decision = await guard.decide(InputCounts(users_in_scope=1, mapped_groups=5), KICKS)
+    await guard.record(decision, KICKS, complete=True)
+
+    assert [b.id for b in await guard.open_batches()] == ["bbbbbb"]
+
+
+def control_room_held() -> Any:
+    from onbot.admin.control_room import HeldAnnouncement
+
+    return HeldAnnouncement("@admin:matrix.test", "hi", 0.0)

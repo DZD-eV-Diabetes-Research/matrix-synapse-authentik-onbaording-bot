@@ -97,6 +97,7 @@ from onbot.reconciler.state import (
     parse_room_state,
 )
 from onbot.rooms.identity import (
+    MarkerWriteFailed,
     Resolution,
     RoomIdentity,
     RoomIdentityResolver,
@@ -193,34 +194,49 @@ class _RoomStepProblems(Exception):
         self.held = list(held)
 
 
-# `!room adopt` (W4R-06): how long it waits for a running pass, and how it is used.
+# `!room adopt` (W4R-06, D25): how long it waits for a running pass, and how it is used.
 ADOPT_WAIT_SEC = 60.0
-ADOPT_USAGE = "!room adopt <group pk> <room id or alias>"
+ADOPT_LOBBY = "lobby"
+ADOPT_USAGE = "!room adopt [lobby] <group pk> <room id or alias>"
+# What `!room adopt` hands back: a group room, or with `lobby` the group's visitor lobby.
+ADOPTABLE = (OnbotRoomType.group_room, OnbotRoomType.visitor_lobby)
 
 
-def _adoption_refusal(identity: RoomIdentity) -> str | None:
-    """Why a room the bot created cannot be adopted as a group room; ``None`` if it can (W4R-06).
+def _kind_name(kind: OnbotRoomType) -> str:
+    return "visitor lobby" if kind is OnbotRoomType.visitor_lobby else "group room"
 
-    Only a room whose one managed marker is a group room marker that was removed, or that somebody
-    other than the bot wrote, qualifies: the cases the bot reports with "A room lost its onbot marker".
+
+def _adoption_refusal(identity: RoomIdentity, kind: OnbotRoomType = OnbotRoomType.group_room) -> str | None:
+    """Why a room the bot created cannot be adopted as a ``kind`` room; ``None`` if it can (W4R-06).
+
+    Only a room whose one managed marker is a ``kind`` marker that was removed, or that somebody other
+    than the bot wrote, qualifies: the cases the bot reports with "A room lost its onbot marker". A
+    space is never one, and a room with a visitor lobby's join rule is no group room (W6R-05).
     """
+    name = _kind_name(kind)
     if identity.trusted:
         assert identity.key is not None
         return f"is already the {identity.key.describe()}"
     if identity.tombstone is not None:
         return f"was upgraded to {identity.tombstone}; it is not adopted"
-    group_room = OnbotRoomType.group_room
-    removed = identity.removed_markers == (group_room,) and not identity.marker_types
-    foreign = identity.marker_types == (group_room,) and identity.foreign_markers == (group_room,)
-    if removed or foreign:
-        return None
-    if identity.marker_types or identity.removed_markers:
-        kinds = ", ".join(sorted({k.value for k in (*identity.marker_types, *identity.removed_markers)}))
+    if identity.is_space:
+        return f"is a space, not a {name}; it is not adopted"
+    removed = identity.removed_markers == (kind,) and not identity.marker_types
+    foreign = identity.marker_types == (kind,) and identity.foreign_markers == (kind,)
+    if not (removed or foreign):
+        if identity.marker_types or identity.removed_markers:
+            kinds = ", ".join(sorted({k.value for k in (*identity.marker_types, *identity.removed_markers)}))
+            return (
+                f"carries onbot markers ({kinds}) that are not a lost {name} marker; only a {name} "
+                "whose marker was removed or written by somebody else is adopted"
+            )
+        return f"never was a {name} (it carries no onbot marker); it is not adopted"
+    if kind is OnbotRoomType.group_room and identity.join_rule == "restricted":
         return (
-            f"carries onbot markers ({kinds}) that are not a lost group room marker; only a group room "
-            "whose marker was removed or written by somebody else is adopted"
+            "has the join rule of a visitor lobby (restricted), so it is not adopted as a group room; "
+            "if it is the group's lobby, use `!room adopt lobby`"
         )
-    return "never was a group room (it carries no onbot marker); it is not adopted"
+    return None
 
 
 class ReconcilerEngine:
@@ -743,14 +759,15 @@ class ReconcilerEngine:
         Keyed by the source URL *and* the image's content (ONB-15): the room's onbot state event
         records ``avatar_source_url`` and ``avatar_sha256``, and the avatar is set again when either
         differs, so a picture replaced behind an unchanged URL reaches the room too. The image is
-        fetched once per process (:class:`~onbot.media.MediaUploader`), so a stable avatar costs one
-        state read per tick and no upload. A marker from before the digest was recorded adopts the
-        current content without setting the avatar again. Applies to already-existing rooms too, not
-        just freshly created ones. Best-effort: a fetch/upload failure is logged and retried on a later
-        tick, and the room keeps its picture meanwhile. Clearing the source URL stops future updates
-        but leaves the current icon in place (removing avatars is out of scope). ``fresh_state`` seeds
-        the state event (its ``group_id``) when the room has none yet. ``marker`` is the marker's
-        content when the caller has just read it (the upkeep step), saving a read.
+        fetched about once a day (:class:`~onbot.media.MediaUploader`), so a stable avatar costs one
+        state read per tick and no upload, and the image just fetched is what gets uploaded. A marker
+        from before the digest was recorded adopts the current content without setting the avatar
+        again. Applies to already-existing rooms too, not just freshly created ones. Best-effort: a
+        fetch/upload failure is logged and retried on a later tick, and the room keeps its picture
+        meanwhile. Clearing the source URL stops future updates but leaves the current icon in place
+        (removing avatars is out of scope). ``fresh_state`` seeds the state event (its ``group_id``)
+        when the room has none yet. ``marker`` is the marker's content when the caller has just read
+        it (the upkeep step), saving a read.
 
         The marker it writes is built from what the bot knows the room's marker to be, never from what
         it reads in the room (W5R-01): see :meth:`_marker_basis`.
@@ -766,10 +783,11 @@ class ReconcilerEngine:
             await self._put_marker(room_id, event_type, dump_room_state(state))
             return
         try:
-            digest = await self.effectors.avatar_digest(desired)
+            image = await self.effectors.avatar_image(desired)
         except Exception as exc:
             log.warning("could not fetch the avatar of %s from %s: %s", room_id, desired, exc)
             return
+        digest = image.sha256
         if desired == state.avatar_source_url:
             if digest == state.avatar_sha256:
                 return
@@ -781,14 +799,16 @@ class ReconcilerEngine:
                 await self._put_marker(room_id, event_type, dump_room_state(state))
                 return
         try:
-            mxc = await self.effectors.upload_avatar(desired)
-            await self.effectors.set_room_avatar(room_id, mxc)
+            # The image as just fetched, bytes included, so the upload needs no second download
+            # (W6R-02); what was set is recorded, should the picture have changed meanwhile.
+            uploaded = await self.effectors.upload_avatar(image)
+            await self.effectors.set_room_avatar(room_id, uploaded.mxc)
         except Exception:
             log.exception("failed to set avatar of %s from %s", room_id, desired)
             return
         log.info("set avatar of %s from %s", room_id, desired)
         state.avatar_source_url = desired
-        state.avatar_sha256 = digest
+        state.avatar_sha256 = uploaded.sha256
         await self._put_marker(room_id, event_type, dump_room_state(state))
 
     def _marker_basis(
@@ -1765,7 +1785,10 @@ class ReconcilerEngine:
         elif target.startswith("#"):
             room_id = await self.effectors.resolve_room_alias(target)
         else:
-            room_id = next((r for r, g in self.active_lobbies.items() if g == target), None)
+            wanted = normalize_group_pk(target)  # any form of the group's UUID (W6R-01)
+            room_id = next(
+                (r for r, g in self.active_lobbies.items() if normalize_group_pk(g) == wanted), None
+            )
         space_id = self.rooms.space_id
         if room_id is None or room_id not in self.active_lobbies or space_id is None:
             return (
@@ -1789,12 +1812,17 @@ class ReconcilerEngine:
             "again, and the bot manages it from the configuration."
         )
 
-    async def adopt_room(self, group_pk: str, target: str, *, by: str) -> str:
-        """``!room adopt <group> <room>``: hand a group room that lost its marker back to the bot.
+    async def adopt_room(
+        self, group_pk: str, target: str, *, by: str, kind: OnbotRoomType = OnbotRoomType.group_room
+    ) -> str:
+        """``!room adopt [lobby] <group> <room>``: hand a group room or visitor lobby that lost its
+        marker back to the bot (W4R-06, D25).
 
         Returns the reply for the admin room. Waits for a running pass to end (at most
         :data:`ADOPT_WAIT_SEC`) so the two never decide about the same group at once.
         """
+        if kind not in ADOPTABLE:
+            return f"Usage: {ADOPT_USAGE}"
         try:
             async with asyncio.timeout(ADOPT_WAIT_SEC):
                 await self._pass_lock.acquire()
@@ -1803,16 +1831,17 @@ class ReconcilerEngine:
                 "A reconcile pass is still running; send the command again in a minute. Nothing was changed."
             )
         try:
-            reply, adopted = await self._adopt_room(group_pk.strip(), target.strip(), by)
+            reply, adopted = await self._adopt_room(group_pk.strip(), target.strip(), by, kind)
         finally:
             self._pass_lock.release()
         if adopted:
             self.trigger()  # manage it now, not a whole tick later
         return reply
 
-    async def _adopt_room(self, group_pk: str, target: str, by: str) -> tuple[str, bool]:
+    async def _adopt_room(self, group_pk: str, target: str, by: str, kind: OnbotRoomType) -> tuple[str, bool]:
         """The checks and the write of :meth:`adopt_room`; ``(reply, adopted)``. Fails closed (D20)."""
         unchanged = " Nothing was changed."
+        lobby = kind is OnbotRoomType.visitor_lobby
         if not self.config.sync_matrix_rooms_based_on_authentik_groups.enabled:
             return "Group rooms are switched off in the configuration." + unchanged, False
         if target.startswith("#"):
@@ -1834,7 +1863,13 @@ class ReconcilerEngine:
                 "by the configuration)." + unchanged,
                 False,
             )
-        key = RoomKey(OnbotRoomType.group_room, group.group_pk)
+        if lobby and group.lobby_desired is None:
+            return (
+                f"Group {group.group_pk} has no visitor lobby: lobbies are switched off for it in the "
+                "configuration (or its group attribute)." + unchanged,
+                False,
+            )
+        key = RoomKey(kind, group.group_pk)
         index = await self.rooms.scan()
         if not index.complete:
             return (
@@ -1843,7 +1878,10 @@ class ReconcilerEngine:
             )
         current = [i.room_id for i in index.claims(key) if i.locked]
         if current:
-            where = "is already that room" if current == [room_id] else f"already has the room {current[0]}"
+            what = "visitor lobby" if lobby else "room"
+            where = (
+                f"is already that {what}" if current == [room_id] else f"already has the {what} {current[0]}"
+            )
             return f"Group {group.group_pk} {where}; the bot manages it." + unchanged, False
         try:
             identity = await self.rooms.reread(room_id)
@@ -1855,16 +1893,38 @@ class ReconcilerEngine:
                 "(D20), so it does not take this one over." + unchanged,
                 False,
             )
-        refusal = _adoption_refusal(identity)
+        refusal = _adoption_refusal(identity, kind)
+        if refusal is None and await self.rooms.is_notice_board(room_id):
+            refusal = "is a user's notice board (in the bot's m.direct); it is not adopted"
         if refusal is not None:
             return f"The room {room_id} {refusal}." + unchanged, False
-        try:
-            await self.rooms.adopt(identity, key, dump_room_state(GroupRoomState(group_id=group.group_pk)))
-        except ApiError as exc:
-            return f"Writing the marker into {room_id} failed ({describe_error(exc)})." + unchanged, False
-        log.warning(
-            "room identity: %s adopted %s as the room of group %s (!room adopt)", by, room_id, group.group_pk
+        marker = (
+            VisitorLobbyRoomState(group_id=group.group_pk)
+            if lobby
+            else GroupRoomState(group_id=group.group_pk)
         )
+        try:
+            await self.rooms.adopt(identity, key, dump_room_state(marker))
+        except MarkerWriteFailed as exc:
+            return (
+                f"Writing the marker into {room_id} failed ({describe_error(exc.cause)}). The bot had "
+                "already raised the power level needed to change onbot markers there, which stays; send "
+                "the command again.",
+                False,
+            )
+        except ApiError as exc:
+            return (
+                f"Protecting the marker in {room_id} failed ({describe_error(exc)})." + unchanged,
+                False,
+            )
+        log.warning("room identity: %s adopted %s as the %s (!room adopt)", by, room_id, key.describe())
+        if lobby:
+            return (
+                f"Adopted {room_id} as the visitor lobby of group {group.group_pk}: the bot wrote and "
+                "protected its marker and manages the lobby from the next pass on (join rule, space "
+                "link, power levels, name, avatar).",
+                True,
+            )
         return (
             f"Adopted {room_id} as the room of group {group.group_pk}: the bot wrote and protected its "
             "marker and manages the room from the next pass on (members, power levels, name, avatar).",
@@ -1881,7 +1941,7 @@ class ReconcilerEngine:
         report: PassReport,
         plan: PassPlan,
     ) -> None:
-        members_in_room = [u for u in users if group_pk in u.group_pks]
+        members_in_room = [u for u in users if normalize_group_pk(group_pk) in u.group_pks]
         desired = compute_desired_user_levels(
             members_in_room,
             pl_groups,

@@ -6,12 +6,15 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+import pytest
+
 from onbot.admin import control_room
 from onbot.admin.admins import AdminResolver
 from onbot.admin.broadcast import BroadcastResult
 from onbot.admin.control_room import ControlRoomHandler
 from onbot.clients.matrix import RoomSync, SyncResult
 from onbot.config import AdminRoom, AuthentikServer, OnbotConfig, SynapseServer
+from onbot.reconciler.state import OnbotRoomType
 
 BOT = "@bot:matrix.test"
 ADMIN = "@admin:matrix.test"
@@ -717,15 +720,87 @@ async def test_a_broadcast_cut_off_by_a_shutdown_says_how_far_it_got() -> None:
     assert "interrupted by a shutdown of the bot after 0 of 2 rooms" in client.sends[-1][1]
 
 
+class _SlowClient(_FakeClient):
+    """A send takes one real round trip, like an HTTP request."""
+
+    async def send_text_message(self, room_id: str, body: str, *, msgtype: str = "m.text") -> str:
+        await asyncio.sleep(0.01)
+        return await super().send_text_message(room_id, body, msgtype=msgtype)
+
+
+async def test_the_shutting_down_notice_survives_the_second_stop_in_production_order() -> None:
+    """W6R-03: app._stop_loops runs stop(), drains the pump (its slice handles the command), and runs
+    stop() again at once. The notice used to be a task the second stop() cancelled before it posted."""
+    client, broadcast = _SlowClient(), _FakeBroadcast()
+    handler = _handler(client, broadcast)
+    await handler.stop()
+    await handler.handle_sync(_message("!announce too late"))  # the slice the drain waits for
+    await handler.stop()  # no pause in between, as in production
+
+    assert broadcast.calls == []
+    assert [body for _, body in client.sends] == [control_room.SHUTTING_DOWN]
+
+
+async def test_a_shutting_down_notice_the_server_does_not_answer_does_not_hold_the_shutdown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Hanging(_FakeClient):
+        async def send_text_message(self, room_id: str, body: str, *, msgtype: str = "m.text") -> str:
+            await asyncio.Event().wait()
+            return ""
+
+    monkeypatch.setattr(control_room, "INTERRUPTED_NOTE_TIMEOUT_SEC", 0.01)
+    handler = _handler(_Hanging(), _FakeBroadcast())
+    await handler.stop()
+    await asyncio.wait_for(handler.handle_sync(_message("!announce too late")), timeout=2)
+
+
+async def test_a_held_announcement_id_is_matched_in_any_case_like_a_guard_batch_id() -> None:
+    """W6R-04: a phone keyboard capitalises the first letter; guard batch ids already allowed that."""
+    client, broadcast, clock = _FakeClient(), _FakeBroadcast(), _Clock()
+    handler = _handler(client, broadcast, clock=clock)
+    await _run(
+        handler, _message("!announce hello", event_id="$a"), _message("!announce hello", event_id="$b")
+    )
+    held = _held_id(client.sends[-1][1])
+
+    await _run(handler, _message(f"!confirm  {held.capitalize()} ", event_id="$c"))
+
+    assert broadcast.calls == ["hello", "hello"]
+
+
+async def test_pending_lists_the_held_announcements_with_who_may_release_them() -> None:
+    client, broadcast, clock = _FakeClient(), _FakeBroadcast(), _Clock()
+    handler = _handler(client, broadcast, clock=clock)
+    await _run(
+        handler,
+        _message("!announce Maintenance at 22:00", event_id="$a"),
+        _message("!announce Maintenance at 22:00", event_id="$b"),
+    )
+    held = _held_id(client.sends[-1][1])
+    clock.now += 120
+
+    await _run(handler, _message("!pending", event_id="$c"))
+
+    body = client.sends[-1][1]
+    assert "The destructive-action guard is not available" in body  # no guard in this handler
+    assert f"Announcement {held}" in body and "'Maintenance at 22:00'" in body
+    assert f"Only {ADMIN} sends it with !confirm {held}" in body and "lapses in 8 minute(s)" in body
+
+    clock.now += control_room.DUPLICATE_CONFIRM_SEC
+    await _run(handler, _message("!pending", event_id="$d"))
+    assert held not in client.sends[-1][1]
+
+
 # --- S18 (W4R-06): `!room adopt <group> <room>` -----------------------------------------------------
 
 
 class _AdoptEngine:
     def __init__(self) -> None:
-        self.adopted: list[tuple[str, str, str]] = []
+        self.adopted: list[tuple[str, str, str, str]] = []
 
-    async def adopt_room(self, group_pk: str, target: str, *, by: str) -> str:
-        self.adopted.append((group_pk, target, by))
+    async def adopt_room(self, group_pk: str, target: str, *, by: str, kind: OnbotRoomType) -> str:
+        self.adopted.append((group_pk, target, by, kind.value))
         return f"Adopted {target} for {group_pk}"
 
 
@@ -735,8 +810,20 @@ async def test_room_adopt_asks_the_engine_with_the_admin_and_answers_with_its_re
 
     await _run(_handler(client, broadcast, engine=engine), _message("!room adopt g1 !old:matrix.test"))
 
-    assert engine.adopted == [("g1", "!old:matrix.test", ADMIN)]
+    assert engine.adopted == [("g1", "!old:matrix.test", ADMIN, "group_room")]
     assert client.sends == [(ROOM, "Adopted !old:matrix.test for g1")]
+
+
+async def test_room_adopt_lobby_asks_the_engine_for_the_visitor_lobby() -> None:
+    """D25: `!room adopt lobby <group> <room>` hands a lobby that lost its marker back."""
+    client, broadcast = _FakeClient(), _FakeBroadcast()
+    engine = _AdoptEngine()
+
+    await _run(
+        _handler(client, broadcast, engine=engine), _message("!room adopt Lobby g1 #g1-lobby:matrix.test")
+    )
+
+    assert engine.adopted == [("g1", "#g1-lobby:matrix.test", ADMIN, "visitor_lobby")]
 
 
 async def test_room_adopt_explains_the_usage_and_is_refused_off_the_allowlist() -> None:

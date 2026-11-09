@@ -10,6 +10,7 @@ from onbot.clients.synapse_admin import RoomBlock
 from onbot.config import OnbotConfig
 from onbot.events import EventBus, Signal
 from onbot.lifecycle.accounts import DirectorySnapshot, DirectoryUser
+from onbot.media import SourceImage, UploadedImage
 from onbot.reconciler.effectors import DryRunEffectors
 from onbot.reconciler.engine import ReconcilerEngine
 from onbot.reconciler.state import OnbotRoomType
@@ -154,11 +155,11 @@ class RecordingEffectors(DryRunEffectors):
             power_levels = {k: v for k, v in power_levels.items() if k != "events"}
         self.power_levels.append((room_id, power_levels))
 
-    async def upload_avatar(self, url: str) -> str:
-        self.uploads.append(url)
+    async def upload_avatar(self, image: SourceImage) -> UploadedImage:
+        self.uploads.append(image.url)
         mxc = f"mxc://company.org/{len(self.uploads)}"
-        self.mxc_digests[mxc] = await self.avatar_digest(url)
-        return mxc
+        self.mxc_digests[mxc] = image.sha256
+        return UploadedImage(mxc, image.sha256)
 
     async def set_room_avatar(self, room_id: str, mxc_uri: str) -> None:
         self.avatars.append((room_id, mxc_uri))
@@ -1223,10 +1224,10 @@ class _ContentEffectors(RecordingEffectors):
         self.content: dict[str, str] = {}
         self.fail_fetch = False
 
-    async def avatar_digest(self, url: str) -> str:
+    async def avatar_image(self, url: str) -> SourceImage:
         if self.fail_fetch:
             raise RuntimeError("cdn down")
-        return f"sha-of-{self.content.get(url, 'first')}"
+        return SourceImage(url, None, "image/png", f"sha-of-{self.content.get(url, 'first')}")
 
 
 async def test_a_new_picture_behind_an_unchanged_url_reaches_the_group_room() -> None:
@@ -1280,3 +1281,35 @@ async def test_an_unreachable_avatar_keeps_the_room_picture() -> None:
 
     assert len(effectors.avatars) == 1
     assert effectors.state_store[key] == recorded
+
+
+async def test_the_room_records_the_picture_the_upload_set_and_hands_over_the_fetched_bytes() -> None:
+    """W6R-02: the upload gets the image the digest came from, and a picture that changed before
+    its bytes could be fetched again is recorded as what was set, not as what was asked for."""
+
+    class Changing(_ContentEffectors):
+        def __init__(self) -> None:
+            super().__init__()
+            self.handed: list[SourceImage] = []
+
+        async def avatar_image(self, url: str) -> SourceImage:
+            image = await super().avatar_image(url)
+            return SourceImage(url, b"bytes", image.content_type, image.sha256)
+
+        async def upload_avatar(self, image: SourceImage) -> UploadedImage:
+            self.handed.append(image)
+            uploaded = await super().upload_avatar(image)
+            return UploadedImage(uploaded.mxc, "sha-of-what-the-refetch-found")
+
+    config = OnbotConfig.model_validate(_BASE)
+    effectors = Changing()
+    engine = ReconcilerEngine(config, AvatarAuthentik(), FakeAdmin(), effectors)  # type: ignore[arg-type]
+    await engine.reconcile_once()
+
+    assert [i.content for i in effectors.handed] == [b"bytes"]
+    marker = next(
+        c
+        for (room, t), c in effectors.state_store.items()
+        if room == "!room1:company.org" and "group_room" in t
+    )
+    assert marker["avatar_sha256"] == "sha-of-what-the-refetch-found"

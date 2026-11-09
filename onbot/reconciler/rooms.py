@@ -29,19 +29,22 @@ def filter_synced_groups(groups: list[dict[str, Any]], config: OnbotConfig) -> l
     """Apply the selective group→room rules (G2.5): ignore list, name prefix, parentage.
 
     The attribute filter (``only_groups_with_attributes``) is applied at the Authentik query level,
-    so it is not repeated here.
+    so it is not repeated here. Group pks are compared as UUIDs (:func:`normalize_group_pk`): Authentik
+    answers with the hyphenated form, the configuration may use 32 hex digits or upper case (W6R-01).
     """
     settings = config.sync_matrix_rooms_based_on_authentik_groups
     result = groups
     if config.authentik_group_id_ignore_list:
-        ignore = set(config.authentik_group_id_ignore_list)
-        result = [g for g in result if g["pk"] not in ignore]
+        ignore = {normalize_group_pk(pk) for pk in config.authentik_group_id_ignore_list}
+        result = [g for g in result if normalize_group_pk(g["pk"]) not in ignore]
     if settings.only_for_groupnames_starting_with:
         prefix = settings.only_for_groupnames_starting_with
         result = [g for g in result if g["name"].startswith(prefix)]
     if settings.only_for_children_of_groups_with_uid:
-        parents = set(settings.only_for_children_of_groups_with_uid)
-        result = [g for g in result if g.get("parent") in parents]
+        parents = {normalize_group_pk(pk) for pk in settings.only_for_children_of_groups_with_uid}
+        result = [
+            g for g in result if g.get("parent") is not None and normalize_group_pk(g["parent"]) in parents
+        ]
     return result
 
 

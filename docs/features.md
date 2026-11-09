@@ -148,7 +148,7 @@ in, so your identity directory and your chat rooms need not be the same list.
   attribute (`only_groups_with_attributes`, e.g. `is_chatroom: true`), a name prefix
   (`only_for_groupnames_starting_with`), or being a direct child of a parent group
   (`only_for_children_of_groups_with_uid`). `authentik_group_id_ignore_list` excludes named groups
-  outright, before every other filter.
+  outright, before every other filter. Group pks can be written with or without hyphens, in any case.
 - **A room is created once and then reused.** By default its permanent Matrix alias is derived from
   the group's stable primary key, not its name (`matrix_alias_from_authentik_attribute`) — precisely
   so that renaming the group in Authentik does not strand the room, because a Matrix alias can never
@@ -185,9 +185,10 @@ in, so your identity directory and your chat rooms need not be the same list.
   removed or rewritten while Onbot was stopped (or before its last restart) makes the room look like
   one that never belonged to the group, and Onbot does not take it back on its own. It reports the
   group instead. An allowlisted admin hands such a group room back with `!room adopt <group pk>
-  <room id or alias>` in the admin control room: Onbot checks that it created the room, that the
-  group is one it keeps a room for and has no other room, writes and protects the marker, and manages
-  the room from the next pass on. See
+  <room id or alias>` in the admin control room, and a visitor lobby with `!room adopt lobby
+  <group pk> <room id or alias>`: Onbot checks that it created the room, that the group is one it
+  keeps a room (or lobby) for and has no other one, that the room is not a space or a user's notice
+  board, writes and protects the marker, and manages the room from the next pass on. See
   [A room lost its onbot marker](troubleshooting.md#a-room-lost-its-onbot-marker).
 - **A room a server admin blocked stays blocked.** Synapse records who blocked a room. Onbot unblocks
   only rooms it blocked itself (when their group disappeared and came back). A group room or lobby a
@@ -691,7 +692,7 @@ to a shell.
 - **As an ordinary user:** an announcement simply appears in your welcome / notice-board room.
 - **As an administrator:** you are invited to the control room. Typing `!announce <message>`,
   `!status`, `!pending`, `!confirm <id>`, `!reject <id>`, `!guard reset`, `!lobby reopen <group>`,
-  `!room adopt <group> <room>` or `!help` does something;
+  `!room adopt [lobby] <group> <room>` or `!help` does something;
   any message *without* a `!` prefix is ignored, so admins can discuss an incident in the room
   without a stray sentence paging the whole company.
 - The bot also reports into the room: destructive actions it paused (see
@@ -727,6 +728,11 @@ to a shell.
   another of its rooms), Onbot never posts, invites or takes commands there: the control room stays
   off, with an error in the log naming the alias. The room is unencrypted and unfederated, so the bot
   can read it and it cannot be commanded from off-server.
+- **It is repaired like the other rooms.** At startup and after every reconcile pass Onbot restores
+  the control room's marker if somebody at its own level removed or rewrote it, raises the marker's
+  protection again if it was lowered, and puts back a removed alias (or reports once that another
+  room took it). It restores the marker from what it last wrote itself, the invitation record and the
+  pinned help included, and never takes over what a rewritten marker says.
 - **Broadcasts are fail-soft.** They go out as quiet `m.notice` messages, and one unreachable room is
   reported rather than allowed to silence the announcement for everyone else. Markdown is rendered
   like in the welcome messages (`**bold**`, links). The `onbot broadcast` CLI command does the same
@@ -748,9 +754,12 @@ to a shell.
 - **The same announcement twice asks first.** An `!announce` with the same text (spacing aside) from
   the same admin within 60 seconds of their previous one is not sent: Onbot answers with an id, and
   only `!confirm <id>` from that admin within 10 minutes sends it (`!reject <id>` drops it). A message
-  pasted twice, or sent again because the first answer was slow, does not page everybody twice.
+  pasted twice, or sent again because the first answer was slow, does not page everybody twice. The
+  id is matched in any case, like a guard batch id, never repeats an open batch's id, and `!pending`
+  lists the held announcements beside the paused batches.
 - **A shutdown interrupts an announcement.** Stopping the bot cancels a broadcast in flight; Onbot
-  posts how many rooms it reached. An `!announce` sent while the bot shuts down is not sent.
+  posts how many rooms it reached. An `!announce` sent while the bot shuts down is not sent, and Onbot
+  says so in the room.
 - **Admins who leave stay out.** An admin who declines the invitation or leaves the room is not
   invited again on the next reconcile. To get back in, they need to drop out of the admin list (or
   group) and be added again, which brings a new invitation. Admins who left before this behaviour

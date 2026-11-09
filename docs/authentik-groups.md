@@ -119,6 +119,9 @@ Notes:
 - Multiple filters are **combined**, so a group must satisfy all the ones you set.
 - `authentik_group_id_ignore_list` (a list of group `pk`s) is applied first and wins over everything,
   including a group that carries the opt-in attribute.
+- Wherever the configuration names a group `pk` (the ignore list, the parent filter, the keys of
+  `per_authentik_group_pk_matrix_room_settings`, the user and admin group lists), any form of the
+  group's UUID works: with or without hyphens, in upper or lower case. Authentik shows it hyphenated.
 - The attribute name `is_chatroom` is an **example**, not a built-in. Whatever key/value pair you put
   in `only_groups_with_attributes` is the one your groups must carry.
 

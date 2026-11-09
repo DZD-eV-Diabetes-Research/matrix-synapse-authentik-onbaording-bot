@@ -24,6 +24,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from onbot.clients.synapse_admin import RoomBlock
 from onbot.logging import get_logger
+from onbot.media import SourceImage, UploadedImage
 from onbot.rooms.provision import ManagedRoomSpec
 
 log = get_logger(__name__)
@@ -49,12 +50,19 @@ class MatrixEffectors(Protocol):
 
     async def set_room_avatar(self, room_id: str, mxc_uri: str) -> None: ...
 
-    async def avatar_digest(self, url: str) -> str:
-        """SHA-256 of the image at ``url``, fetched at most once per process (ONB-15)."""
+    async def avatar_image(self, url: str) -> SourceImage:
+        """The image at ``url`` with its SHA-256, fetched again about once a day (ONB-15).
+
+        Carries the bytes when it was just fetched, so :meth:`upload_avatar` needs no second download.
+        """
         ...
 
-    async def upload_avatar(self, url: str) -> str:
-        """Fetch ``url`` and upload it to the media repo, returning its ``mxc://`` URI."""
+    async def upload_avatar(self, image: SourceImage) -> UploadedImage:
+        """The ``mxc://`` URI holding ``image`` (uploaded once per content), and the digest it holds.
+
+        The digest differs from ``image``'s only when the picture changed before its bytes, which
+        were not at hand, could be fetched again (W6R-02).
+        """
         ...
 
     async def room_wears(self, room_id: str, digest: str) -> bool:
@@ -144,16 +152,16 @@ class DryRunEffectors:
     async def set_room_avatar(self, room_id: str, mxc_uri: str) -> None:
         log.info("[dry-run] would set avatar of %s -> %s", room_id, mxc_uri)
 
-    async def avatar_digest(self, url: str) -> str:
+    async def avatar_image(self, url: str) -> SourceImage:
         # Fetching only reads, so a preview with live reads compares the real content. Without
         # them (the unit tests) the URL stands in for the image.
         if self._reads is not None:
-            return await self._reads.avatar_digest(url)
-        return hashlib.sha256(url.encode()).hexdigest()
+            return await self._reads.avatar_image(url)
+        return SourceImage(url, None, "image/png", hashlib.sha256(url.encode()).hexdigest())
 
-    async def upload_avatar(self, url: str) -> str:
-        log.info("[dry-run] would upload avatar from %s", url)
-        return f"mxc://dry-run/{uuid.uuid4().hex[:12]}"
+    async def upload_avatar(self, image: SourceImage) -> UploadedImage:
+        log.info("[dry-run] would upload avatar from %s", image.url)
+        return UploadedImage(f"mxc://dry-run/{uuid.uuid4().hex[:12]}", image.sha256)
 
     async def room_wears(self, room_id: str, digest: str) -> bool:
         live = self._live(room_id)
