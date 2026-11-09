@@ -1,6 +1,6 @@
 """Matrix Client-Server API client (async) + the concrete :class:`MatrixEffectors`.
 
-Phase 4. Drives the CS API over the shared async :class:`BaseApiClient` (ADR-0007) — *not* a Matrix
+Phase 4. Drives the CS API over the shared async :class:`BaseApiClient` (ADR-0007), *not* a Matrix
 library: the library decision (``matrix-nio`` vs. raw httpx vs. ``mautrix``) is an explicit Phase 6
 ADR (BATTLE_PLAN §5). Building on the base client keeps everything async, pooled and uniformly
 authenticated, and lets the reconciler's :class:`~onbot.reconciler.effectors.MatrixEffectors` seam
@@ -8,10 +8,10 @@ get its concrete implementation here (the Phase 3 deferral).
 
 Two things live here:
 
-* :class:`ApiClientMatrix` — the CS-API operations the bot needs (room/space creation, kicks, power
+* :class:`ApiClientMatrix`: the CS-API operations the bot needs (room/space creation, kicks, power
   levels, room name/topic, custom state events, sending messages, account data, and the sync
   stream).
-* :class:`CSApiEffectors` — adapts that client to the reconciler's ``MatrixEffectors`` protocol,
+* :class:`CSApiEffectors`: adapts that client to the reconciler's ``MatrixEffectors`` protocol,
   replacing the dry-run effectors when the bot runs for real.
 
 The sync transport is **Simplified Sliding Sync** (MSC4186, ADR-0003). Its endpoint is still unstable;
@@ -46,7 +46,7 @@ from onbot.rooms.provision import ManagedRoomSpec, create_managed_room
 
 log = get_logger(__name__)
 
-# MSC4186 Simplified Sliding Sync. Unstable path — gated by version negotiation (Phase 6).
+# MSC4186 Simplified Sliding Sync. Unstable path, gated by version negotiation (Phase 6).
 SLIDING_SYNC_PATH = "unstable/org.matrix.simplified_msc3575/sync"
 
 ENCRYPTION_ALGORITHM = "m.megolm.v1.aes-sha2"
@@ -141,7 +141,7 @@ class ApiClientMatrix(BaseApiClient):
 
         A MAS-issued token (a ``mas-cli`` compatibility token or a client login) carries a device
         id, but Synapse only persists a ``devices`` row once the client uploads device keys. Until
-        then, *sending a message* — which records the transaction id per device — fails with a
+        then, *sending a message* (which records the transaction id per device) fails with a
         foreign-key 500 (``event_txn_id_device_id``). State-only writes (room create, power levels,
         account data) are unaffected, which is why this only bites the welcome DM flow.
 
@@ -197,9 +197,9 @@ class ApiClientMatrix(BaseApiClient):
 
         The bot is the *creator* of every room it makes. Under room version 12 (the spec default) the
         creator holds an infinite, immutable power level and is deliberately **absent** from
-        ``m.room.power_levels`` — naming it in a ``power_level_content_override``'s ``users`` map is
-        rejected by the auth rules — so callers must not put the bot there (see
-        :mod:`onbot.onboarding.notice_board`, :mod:`onbot.rooms.admin`). The returned ``room_id`` is a
+        ``m.room.power_levels``: naming it in a ``power_level_content_override``'s ``users`` map is
+        rejected by the auth rules, so callers must not put the bot there (see
+        :mod:`onbot.onboarding.notice_board`, :mod:`onbot.admin.provisioner`). The returned ``room_id`` is a
         hash with no ``:domain`` component under v12; treat it as an opaque token, never split it.
         """
         initial_state: list[dict[str, Any]] = []
@@ -321,7 +321,7 @@ class ApiClientMatrix(BaseApiClient):
     async def resolve_room_alias(self, alias: str) -> str | None:
         """Resolve a room alias (``#name:server``) to its ``room_id``, or ``None`` if unknown."""
         # https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3directoryroomroomalias
-        # The alias (e.g. "#room:server") must be percent-encoded — notably "#" and ":".
+        # The alias (e.g. "#room:server") must be percent-encoded, notably "#" and ":".
         try:
             result = await self.get_json(f"v3/directory/room/{path_segment(alias)}")
         except ApiError as exc:
@@ -392,7 +392,7 @@ class ApiClientMatrix(BaseApiClient):
     ) -> dict[str, Any] | None:
         """Fetch a single state event's content, or ``None`` if it is not set (HTTP 404).
 
-        Targets the event directly (no full-state linear scan — the legacy §3 inefficiency).
+        Targets the event directly (no full-state linear scan, the legacy §3 inefficiency).
         """
         path = f"v3/rooms/{path_segment(room_id)}/state/{path_segment(event_type)}"
         if state_key:
@@ -536,13 +536,13 @@ class ApiClientMatrix(BaseApiClient):
         https://spec.matrix.org/latest/client-server-api/#transaction-identifiers
 
         ``msgtype`` is ``m.text`` for a plain message and ``m.notice`` for one the client should not
-        auto-reply to or notify on as loudly — the convention for bot-originated messages, used by
+        auto-reply to or notify on as loudly: the convention for bot-originated messages, used by
         the broadcast fan-out.
         https://spec.matrix.org/latest/client-server-api/#mnotice
 
         ``formatted_body`` is the rendered HTML of ``body`` (see :mod:`onbot.formatting`). Clients
         display it in place of ``body``, which stays as the fallback for those that do not render
-        HTML — so it must say the same thing, not more.
+        HTML, so it must say the same thing, not more.
         https://spec.matrix.org/latest/client-server-api/#mroommessage-msgtypes
 
         ``retry_rate_limited=False`` raises a 429 at once instead of waiting it out: the broadcast
@@ -612,7 +612,7 @@ class ApiClientMatrix(BaseApiClient):
 
         Long-polls server-side for up to ``timeout_ms``; pass the returned ``pos`` back to continue
         the stream. Subscribes to all rooms and asks for member state so the listener can react to
-        joins (ADR-0003). The wire shape is unstable (Phase 6 negotiation) — kept behind this method.
+        joins (ADR-0003). The wire shape is unstable (Phase 6 negotiation), kept behind this method.
 
         Raises :class:`SyncNotSupportedError` if version negotiation ran and the server does not
         advertise Simplified Sliding Sync, so the listener can fall back to the signal-only path.

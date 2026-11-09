@@ -53,6 +53,7 @@ from onbot.admin.admins import AdminResolver
 from onbot.admin.broadcast import BroadcastService
 from onbot.admin.control_room import ControlRoomHandler
 from onbot.admin.notifier import AdminRoomNotifier
+from onbot.admin.provisioner import AdminRoomProvisioner
 from onbot.auth.token_provider import (
     OAuth2ClientCredentialsTokenProvider,
     build_matrix_token_provider,
@@ -90,7 +91,6 @@ from onbot.onboarding.listener import OnboardingListener
 from onbot.onboarding.welcome import WelcomeService
 from onbot.reconciler.effectors import DryRunEffectors, DryRunSynapseAdmin, MatrixEffectors
 from onbot.reconciler.engine import ReconcilerEngine
-from onbot.rooms.admin import AdminRoomProvisioner
 from onbot.rooms.identity import RoomIdentityResolver
 from onbot.runtime import (
     SHUTDOWN_GRACE_SEC,

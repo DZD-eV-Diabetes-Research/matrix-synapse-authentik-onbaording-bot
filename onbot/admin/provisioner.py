@@ -10,7 +10,7 @@ Four decisions are baked into the room at creation, and each is load-bearing:
   has no business being reachable from other homeservers.
 * **Power levels that let members talk but not govern.** ``events_default: 0`` so admins can
   discuss; ``state_default``/``invite``/``kick``/``ban`` at 100 so only the bot changes the room
-  itself. These are the fence — the gate is the allowlist (:mod:`onbot.admin.admins`) checked on
+  itself. These are the fence; the gate is the allowlist (:mod:`onbot.admin.admins`) checked on
   every command, because a power level says what someone may do *in a room*, not whether they may
   address the whole server.
 * **Invited, never force-joined.** Admins are people who chose this job; users are employees who
@@ -94,7 +94,7 @@ def admin_room_power_levels() -> dict[str, Any]:
 
 
 def help_text_hash(text: str) -> str:
-    """Idempotency key for the pinned help — mirrors the welcome flow's per-message hashing."""
+    """Idempotency key for the pinned help; mirrors the welcome flow's per-message hashing."""
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
@@ -176,7 +176,7 @@ class AdminRoomProvisioner:
         because the two halves of being an admin must not drift apart: a user added to the Authentik
         group may *command* the bot as soon as the resolver's TTL lapses, and would otherwise have no
         way into the room to do it. The room is invite-only and ``invite`` sits at power level 100,
-        which only the bot holds — so nobody can let them in by hand, and a restart would be the only
+        which only the bot holds, so nobody can let them in by hand, and a restart would be the only
         remedy.
 
         Cheap enough for the tick: one membership lookup per admin, and anyone already joined or
@@ -383,7 +383,7 @@ class AdminRoomProvisioner:
         await self.client.set_room_topic(room_id, self.cfg.topic)
 
     async def _ensure_pinned_help(self, room_id: str) -> None:
-        """Post the command reference and pin it — but only when its text actually changed.
+        """Post the command reference and pin it, but only when its text actually changed.
 
         Without the hash the bot would leave another copy of the same help message in the room on
         every single restart.
