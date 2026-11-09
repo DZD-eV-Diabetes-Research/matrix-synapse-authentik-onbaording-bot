@@ -112,6 +112,9 @@ class RecordingEffectors(DryRunEffectors):
         self.power_levels: list[tuple[str, dict[str, Any]]] = []
         self.uploads: list[str] = []
         self.avatars: list[tuple[str, str]] = []
+        # What each uploaded mxc holds, and what each room wears (ONB-15, W5R-03).
+        self.mxc_digests: dict[str, str] = {}
+        self.worn: dict[str, str] = {}
         # (room, type) for an empty state key, (room, type, state key) otherwise
         self.state_store: dict[tuple[str, ...], dict[str, Any]] = {}
         self.senders: dict[tuple[str, ...], str] = {}
@@ -153,10 +156,17 @@ class RecordingEffectors(DryRunEffectors):
 
     async def upload_avatar(self, url: str) -> str:
         self.uploads.append(url)
-        return f"mxc://company.org/{len(self.uploads)}"
+        mxc = f"mxc://company.org/{len(self.uploads)}"
+        self.mxc_digests[mxc] = await self.avatar_digest(url)
+        return mxc
 
     async def set_room_avatar(self, room_id: str, mxc_uri: str) -> None:
         self.avatars.append((room_id, mxc_uri))
+        self.worn[room_id] = mxc_uri
+
+    async def room_wears(self, room_id: str, digest: str) -> bool:
+        mxc = self.worn.get(room_id) or (self.state_store.get((room_id, "m.room.avatar")) or {}).get("url")
+        return mxc is not None and self.mxc_digests.get(mxc) == digest
 
     @staticmethod
     def _key(room_id: str, event_type: str, state_key: str) -> tuple[str, ...]:

@@ -57,6 +57,10 @@ class MatrixEffectors(Protocol):
         """Fetch ``url`` and upload it to the media repo, returning its ``mxc://`` URI."""
         ...
 
+    async def room_wears(self, room_id: str, digest: str) -> bool:
+        """Whether the room's current ``m.room.avatar`` holds the image with SHA-256 ``digest``."""
+        ...
+
     async def get_room_state(
         self, room_id: str, event_type: str, state_key: str = ""
     ) -> dict[str, Any] | None: ...
@@ -150,6 +154,10 @@ class DryRunEffectors:
     async def upload_avatar(self, url: str) -> str:
         log.info("[dry-run] would upload avatar from %s", url)
         return f"mxc://dry-run/{uuid.uuid4().hex[:12]}"
+
+    async def room_wears(self, room_id: str, digest: str) -> bool:
+        live = self._live(room_id)
+        return False if live is None else await live.room_wears(room_id, digest)
 
     async def get_room_state(
         self, room_id: str, event_type: str, state_key: str = ""

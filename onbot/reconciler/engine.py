@@ -604,7 +604,9 @@ class ReconcilerEngine:
             users = self._recheck_group_scope(users, cfg.sync_only_users_of_groups_with_id)
         return users
 
-    def _recheck_group_scope(self, users: list[dict[str, Any]], group_pks: Sequence[str]) -> list[dict[str, Any]]:
+    def _recheck_group_scope(
+        self, users: list[dict[str, Any]], group_pks: Sequence[str]
+    ) -> list[dict[str, Any]]:
         """Keep the users whose own user object names a sync group (SEC-09); log the others as an error.
 
         ``groups_by_pk`` is only a narrowing hint: an Authentik that does not know the filter drops it
@@ -709,10 +711,13 @@ class ReconcilerEngine:
         but leaves the current icon in place (removing avatars is out of scope). ``fresh_state`` seeds
         the state event (its ``group_id``) when the room has none yet. ``marker`` is the marker's
         content when the caller has just read it (the upkeep step), saving a read.
+
+        The marker it writes is built from what the bot knows the room's marker to be, never from what
+        it reads in the room (W5R-01): see :meth:`_marker_basis`.
         """
         event_type = event_type_name(self.server_name, room_type)
         raw = marker if marker is not None else await self.effectors.get_room_state(room_id, event_type)
-        state = parse_room_state(room_type, raw) if raw else fresh_state
+        state = self._marker_basis(room_id, room_type, fresh_state, raw)
         if not desired:
             if state.avatar_source_url is None and state.avatar_sha256 is None:
                 return
@@ -728,8 +733,10 @@ class ReconcilerEngine:
         if desired == state.avatar_source_url:
             if digest == state.avatar_sha256:
                 return
-            if state.avatar_sha256 is None:
-                # Set by a version that recorded only the URL: take the picture as it is now.
+            if state.avatar_sha256 is None and await self.effectors.room_wears(room_id, digest):
+                # Set by a version that recorded only the URL, and the room still wears that picture:
+                # record its digest instead of setting it again. A picture that changed behind the URL
+                # before the upgrade is set below like any other change (W5R-03).
                 state.avatar_sha256 = digest
                 await self._put_marker(room_id, event_type, dump_room_state(state))
                 return
@@ -743,6 +750,25 @@ class ReconcilerEngine:
         state.avatar_source_url = desired
         state.avatar_sha256 = digest
         await self._put_marker(room_id, event_type, dump_room_state(state))
+
+    def _marker_basis(
+        self, room_id: str, room_type: OnbotRoomType, fresh_state: AnyRoomState, raw: dict[str, Any] | None
+    ) -> AnyRoomState:
+        """The marker the bot changes a field of and writes back (W5R-01).
+
+        What the bot knows it wrote into the room (:meth:`RoomIdentityResolver.known_marker`), else, in
+        a room this pass created, what is there (the bot's own ``initial_state``), else the marker the
+        room's role calls for (``fresh_state``). Never a marker read in an existing room: somebody above
+        the marker lock may have rewritten it, and writing it back would sign their content as the bot's.
+        """
+        known = self.rooms.known_marker(room_id)
+        content = known if known is not None else (raw if room_id in self._created_this_pass else None)
+        if content:
+            try:
+                return parse_room_state(room_type, content)
+            except ValidationError:
+                log.warning("the onbot marker of %s cannot be read; writing a fresh one", room_id)
+        return fresh_state.model_copy(deep=True)
 
     async def _converge_rooms(
         self,
@@ -992,11 +1018,14 @@ class ReconcilerEngine:
                 await self._repair_step(
                     problems, "space link", self._repair_space_link(room, space_id, suggested=suggested)
                 )
-        await self._repair_step(
-            problems,
-            "avatar",
-            self._converge_avatar(room.room_id, room_type, avatar_source_url, marker, marker=content),
-        )
+        if room.room_id in self._created_this_pass or content is not None:
+            # Not after a failed marker repair (W5R-01): the avatar step writes the marker too, and with
+            # a restore the server refuses it would set the picture again on every pass.
+            await self._repair_step(
+                problems,
+                "avatar",
+                self._converge_avatar(room.room_id, room_type, avatar_source_url, marker, marker=content),
+            )
         if problems:
             raise _RoomStepProblems(problems)
 
@@ -1039,7 +1068,13 @@ class ReconcilerEngine:
         return repair.content
 
     async def _put_marker(self, room_id: str, event_type: str, content: dict[str, Any]) -> None:
-        """Write a managed room's marker, and remember it as what the bot knows about the room."""
+        """Write a managed room's marker, and remember it as what the bot knows about the room.
+
+        Refuses a marker naming another role than the one the bot knows the room plays (W5R-01).
+        """
+        conflict = self.rooms.marker_conflict(room_id, content)
+        if conflict is not None:
+            raise RuntimeError(f"refusing to write the onbot marker of {room_id}: {conflict}")
         await self.effectors.put_room_state(room_id, event_type, content)
         self.rooms.remember_marker(room_id, content)
 
@@ -1822,7 +1857,7 @@ class ReconcilerEngine:
         global_admins = self.global_admins.mxids
         event_type = event_type_name(self.server_name, room_type)
         raw = await self.effectors.get_room_state(room_id, event_type)
-        state = parse_room_state(room_type, raw) if raw else fresh_state
+        state = self._marker_basis(room_id, room_type, fresh_state, raw)
         legacy_admins = frozenset(state.global_admins)
         record = await self._load_grant_record(room_id)
         recorded: dict[str, int | None] = {**dict.fromkeys(legacy_admins - record.keys()), **record}

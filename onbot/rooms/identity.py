@@ -399,10 +399,39 @@ class RoomIdentityResolver:
         return dict(identity.marker_content)
 
     def remember_marker(self, room_id: str, content: dict[str, Any]) -> None:
-        """Record ``content`` as what the bot wrote (or found written by itself) into a trusted room."""
+        """Record ``content`` as what the bot wrote (or found written by itself) into a trusted room.
+
+        Content naming another role than the room plays is not remembered (W5R-01).
+        """
         identity = self._cache.get(room_id)
-        if identity is not None and identity.trusted and content:
-            identity.marker_content = dict(content)
+        if identity is None or not identity.trusted or not content:
+            return
+        conflict = self.marker_conflict(room_id, content)
+        if conflict is not None:
+            log.error("room identity: not remembering the marker of %s: %s", room_id, conflict)
+            return
+        identity.marker_content = dict(content)
+
+    def marker_conflict(self, room_id: str, content: dict[str, Any]) -> str | None:
+        """Why ``content`` cannot be the marker of ``room_id``, a trusted room; ``None`` if it can.
+
+        A marker names the room's role (its type, its group, the space's or control room's alias). For
+        a room the bot knows, any content naming another role is somebody else's, however it got here.
+        """
+        identity = self._cache.get(room_id)
+        if identity is None or not identity.trusted or identity.key is None:
+            return None
+        key = identity.key
+        try:
+            parsed = parse_room_state(key.kind, content)
+        except ValidationError:
+            return f"it is not a valid onbot {key.kind.value} marker"
+        group_id = parsed.group_id if isinstance(parsed, GroupRoomState | VisitorLobbyRoomState) else None
+        name = parsed.configured_alias if isinstance(parsed, SpaceRoomState | AdminRoomState) else None
+        if group_id != key.group_id or (name is not None and key.name is not None and name != key.name):
+            claimed = RoomKey(key.kind, group_id, name).describe()
+            return f"it names the {claimed}, but the room is the {key.describe()}"
+        return None
 
     def register(self, room: MatrixRoom, key: RoomKey) -> None:
         """Record a room the bot just created for ``key`` (its marker came with ``createRoom``).

@@ -24,6 +24,7 @@ from onbot.onboarding.notice_board import notice_board_power_levels
 from onbot.onboarding.welcome import NoticeBoardUnreadable, WelcomeService, welcome_txn_id
 from onbot.reconciler.state import OnbotRoomType
 from onbot.rooms.identity import RoomIdentity, RoomKey
+from onbot.safe_fetch import FetchedImage
 
 BOT = "@bot:matrix.test"
 ALICE = "@alice:matrix.test"
@@ -919,6 +920,10 @@ class _Fetcher:
         if self.image is None:
             raise RuntimeError("avatar host down")
         return self.image, "image/png"
+
+    async def fetch_if_changed(self, url: str, **_: object) -> FetchedImage:
+        content, content_type = await self.fetch(url)
+        return FetchedImage(content, content_type)
 
     async def aclose(self) -> None:
         return None

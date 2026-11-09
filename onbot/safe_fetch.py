@@ -278,6 +278,16 @@ def _checked_url(raw: str | httpx.URL, policy: FetchPolicy) -> httpx.URL:
     return url
 
 
+@dataclass(frozen=True, slots=True)
+class FetchedImage:
+    """A downloaded image and the validators a later conditional request can send (ONB-15)."""
+
+    content: bytes
+    content_type: str
+    etag: str | None = None
+    last_modified: str | None = None
+
+
 class SafeImageFetcher:
     """Download one image under a :class:`FetchPolicy`. Owns its HTTP client; call :meth:`aclose`."""
 
@@ -299,26 +309,52 @@ class SafeImageFetcher:
         :class:`MediaFetchError` when the overall deadline passes, and the usual httpx errors for
         HTTP error statuses and network failures.
         """
+        image = await self.fetch_if_changed(url)
+        assert image is not None  # without validators the server has nothing to answer 304 to
+        return image.content, image.content_type
+
+    async def fetch_if_changed(
+        self, url: str, *, etag: str | None = None, last_modified: str | None = None
+    ) -> FetchedImage | None:
+        """Like :meth:`fetch`, as a conditional request; ``None`` when the server says "not modified".
+
+        ``etag`` and ``last_modified`` are the validators of an earlier answer (``If-None-Match`` and
+        ``If-Modified-Since``). A server that ignores them answers with the whole image, which the
+        caller compares by content. Every limit of :meth:`fetch` applies.
+        """
+        headers: dict[str, str] = {}
+        if etag:
+            headers["If-None-Match"] = etag
+        if last_modified:
+            headers["If-Modified-Since"] = last_modified
         try:
             async with asyncio.timeout(self.policy.timeout_sec):
-                return await self._fetch(url)
+                return await self._fetch(url, headers)
         except TimeoutError as exc:
             raise MediaFetchError(
                 f"downloading {url} took longer than {self.policy.timeout_sec:g}s (avatar_fetch.timeout_sec)"
             ) from exc
 
-    async def _fetch(self, url: str) -> tuple[bytes, str]:
+    async def _fetch(self, url: str, headers: dict[str, str]) -> FetchedImage | None:
         current = _checked_url(url, self.policy)
         for _hop in range(self.policy.max_redirects + 1):
-            async with self._http.stream("GET", current) as response:
+            async with self._http.stream("GET", current, headers=headers) as response:
                 if response.status_code in _REDIRECT_STATUSES:
                     location = response.headers.get("location")
                     if not location:
                         raise MediaFetchRejected(f"{current} redirected without a Location header")
                     current = _checked_url(current.join(location), self.policy)
                     continue
+                if response.status_code == 304 and headers:
+                    return None
                 response.raise_for_status()
-                return await self._read_image(current, response)
+                content, content_type = await self._read_image(current, response)
+                return FetchedImage(
+                    content,
+                    content_type,
+                    etag=response.headers.get("etag") or None,
+                    last_modified=response.headers.get("last-modified") or None,
+                )
         raise MediaFetchRejected(f"{url} redirected more than {self.policy.max_redirects} times")
 
     async def _read_image(self, url: httpx.URL, response: httpx.Response) -> tuple[bytes, str]:
