@@ -595,11 +595,11 @@ within.
   is `true`, Onbot only writes what it *would* do to the `onbot.lifecycle.audit` log and changes
   nothing. Set it to `false` to make offboarding act. Run with the default first and read the audit
   log before you flip it.
-- **Grace periods absorb accidents.** `deactivate_after_n_sec` (24 hours by default) is how long a
-  user stays disabled before being locked out. Despite its name nothing is deactivated then: under
-  MAS the user is locked and their sessions are ended, which a re-enable undoes. `delete_after_n_sec`
+- **Grace periods absorb accidents.** `lock_after_n_sec` (24 hours by default) is how long a
+  user stays disabled before being locked out: under MAS the user is locked and their sessions are
+  ended, which a re-enable undoes. `remove_after_n_sec`
   (365 days by default, or `null` to never erase) counts from the lock, so the account is erased
-  (deactivated for good) `deactivate_after_n_sec + delete_after_n_sec` after the user was first seen
+  (deactivated for good) `lock_after_n_sec + remove_after_n_sec` after the user was first seen
   disabled or deleted.
 - **What erasure removes is up to you.** `gdpr_erase_on_delete` (off by default) also GDPR-erases the
   account: the display name and avatar go, and the user's messages are hidden from people who join a
@@ -659,7 +659,7 @@ within.
   without overwriting anything. If the ledger is missing while MAS has locked users (the bot's
   account data was lost), Onbot logs one `ALERT`: it no longer knows which locks it set and will not
   lift them on a re-enable. A locked user who was deleted from Authentik while erasure is off
-  (`delete_after_n_sec: null`) is forgotten after 90 days; the account stays locked.
+  (`remove_after_n_sec: null`) is forgotten after 90 days; the account stays locked.
 - **A failing user does not hold up the rest.** If a step fails for one user (for example MAS does
   not know the username), the audit log says `FAILED`, the state does not advance, and Onbot retries
   that user with a growing delay (up to 6 hours) while everybody else is processed normally. Erasure

@@ -150,6 +150,18 @@ OAUTH2_REMOVED_MESSAGE = (
 )
 
 
+# The offboarding delays were renamed after what they trigger (D27, LIF-15): the first stage locks the
+# account, nothing is deactivated then; the second removes (erases) it.
+RENAMED_LIFECYCLE_DELAYS: dict[str, str] = {
+    "deactivate_after_n_sec": "lock_after_n_sec",
+    "delete_after_n_sec": "remove_after_n_sec",
+}
+RENAMED_DELAYS_MESSAGE = (
+    "renamed offboarding setting: {renamed}. Rename the key in the config file (or the "
+    "ONBOT_..._AFTER_N_SEC environment variable); the old name is no longer read"
+)
+
+
 class MasAdmin(_StrictModel):
     """MAS admin API credentials for lifecycle enforcement (ADR-0005/0006, §7 Q1).
 
@@ -540,6 +552,20 @@ class AuthentikServer(_StrictModel):
 class DeactivateDisabledAuthentikUsersInMatrix(_StrictModel):
     """Lifecycle settings (Phase 5: quarantined, dry-run/audit default; ADR-0005)."""
 
+    @model_validator(mode="before")
+    @classmethod
+    def _old_delay_names(cls, data: Any) -> Any:
+        """Name the new field for a renamed delay instead of the generic unknown-key error (D27).
+
+        A hard break on purpose: the old names are never read, so an old config is never
+        reinterpreted. Only the keys are looked at, never their values.
+        """
+        if isinstance(data, dict):
+            found = [f"{old} is now {new}" for old, new in RENAMED_LIFECYCLE_DELAYS.items() if old in data]
+            if found:
+                raise ValueError(RENAMED_DELAYS_MESSAGE.format(renamed="; ".join(found)))
+        return data
+
     enabled: Annotated[
         bool,
         Field(
@@ -564,37 +590,39 @@ class DeactivateDisabledAuthentikUsersInMatrix(_StrictModel):
             ),
         ),
     ] = True
-    deactivate_after_n_sec: Annotated[
+    lock_after_n_sec: Annotated[
         int,
         Field(
             title="Grace period before the lock",
             description=inspect.cleandoc(
                 """Seconds a user must stay disabled in (or deleted from) Authentik before their
-                Matrix account is locked. Despite the name nothing is deactivated at this stage: with
+                Matrix account is locked. Nothing is deactivated at this stage: with
                 `mas_admin` the MAS user is locked (no new logins) and its sessions are ended, without
                 it the user's Synapse devices are deleted. Reversible: re-enabling the Authentik
                 account unlocks it. Within this window a re-enable simply cancels the pending lock.
                 Tokens already in use stop working only once Synapse's token cache lapses (about two
-                minutes under MAS). The default is 24 hours."""
+                minutes under MAS). The default is 24 hours. Formerly `deactivate_after_n_sec`; a
+                config that still uses the old name is refused at startup."""
             ),
             examples=[86400, 3600],
             ge=0,
         ),
     ] = 60 * 60 * 24
-    delete_after_n_sec: Annotated[
+    remove_after_n_sec: Annotated[
         int | None,
         Field(
             title="Grace period before erasure",
             description=inspect.cleandoc(
                 """Seconds after the lock before the Matrix account is erased, that is deactivated
                 for good (irreversible). Counted from the lock, so erasure happens
-                `deactivate_after_n_sec + delete_after_n_sec` after the user was first seen disabled
+                `lock_after_n_sec + remove_after_n_sec` after the user was first seen disabled
                 or deleted. Whether the profile is GDPR-erased as well is
                 `gdpr_erase_on_delete`, whether uploaded media goes too is
                 `include_user_media_on_delete`. `null` disables erasure entirely and leaves accounts
                 locked. The default is 365 days. From
                 `destructive_action_guard.confirm_irreversible_actions_from` irreversible actions in
-                one pass on, the erasures wait for an administrator's `!confirm <id>`."""
+                one pass on, the erasures wait for an administrator's `!confirm <id>`. Formerly
+                `delete_after_n_sec`; a config that still uses the old name is refused at startup."""
             ),
             examples=[31536000, None],
             ge=0,
@@ -1318,7 +1346,7 @@ class DestructiveActionGuard(_StrictModel):
             title="Irreversible actions in one pass that need a confirmation",
             description=inspect.cleandoc(
                 """From how many irreversible actions in one pass on the bot asks first: erasing
-                accounts (offboarding's `delete_after_n_sec`) and deleting rooms
+                accounts (offboarding's `remove_after_n_sec`) and deleting rooms
                 (`delete_disabled_rooms`). A pass with this many or more pauses all of them and
                 reports them in the admin control room as a batch for an administrator to release with
                 `!confirm <id>`; fewer run on their own. Locking an account, kicking members and

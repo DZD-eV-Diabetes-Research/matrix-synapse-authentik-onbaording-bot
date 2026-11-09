@@ -300,8 +300,8 @@ class World:
         lc = sync_cfg.deactivate_disabled_authentik_users_in_matrix
         lc.enabled = True
         lc.dry_run = dry_run
-        lc.deactivate_after_n_sec = 0
-        lc.delete_after_n_sec = delete_after
+        lc.lock_after_n_sec = 0
+        lc.remove_after_n_sec = delete_after
         self.directory = Directory()
         self.directory.add("akadmin", path="goauthentik.io")  # a real Authentik is never empty
         self.synapse = Synapse()
@@ -702,7 +702,7 @@ async def test_dry_run_never_unlocks() -> None:
 
 async def test_live_mode_does_not_unlock_a_lock_onbot_never_set() -> None:
     w = World()
-    w.lc.deactivate_after_n_sec = DAY
+    w.lc.lock_after_n_sec = DAY
     pk = w.person("yara")
     w.directory.set_active(pk, False)
     await w.tick()  # marked only
@@ -1128,7 +1128,7 @@ async def test_a_step_that_became_due_after_the_plan_is_not_logged_as_waiting_fo
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     w = World(guard=True)
-    w.lc.deactivate_after_n_sec = 10
+    w.lc.lock_after_n_sec = 10
     for name in ("anna", "ben", "cleo"):
         w.person(name)
     pk = w.person("dino")

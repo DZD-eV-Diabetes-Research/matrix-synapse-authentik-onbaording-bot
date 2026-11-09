@@ -174,6 +174,19 @@ MAS token, which is why this is not the container healthcheck any more.
 docker exec onbot onbot healthcheck --deep
 ```
 
+## Upgrade notes
+
+Read the [changelog](../CHANGELOG.md) before every upgrade; entries marked "Check before upgrading"
+need a look at your configuration. The ones that stop the bot or cost a first start noticeably more:
+
+- **Offboarding delays renamed (after 0.0.11).** In
+  `sync_authentik_users_with_matrix_rooms.deactivate_disabled_authentik_users_in_matrix`,
+  `deactivate_after_n_sec` is now `lock_after_n_sec` and `delete_after_n_sec` is now
+  `remove_after_n_sec` (the first stage locks the account, the second removes it for good). The old
+  names are no longer read: a config or `ONBOT_...` environment variable that still uses one stops the
+  bot at startup with exit code 2 and a message naming the new key. Rename the keys in the same
+  deployment as the image update.
+
 ## Upgrading from the legacy bot
 
 The rewrite (0.0.1 and later) does not take over the per-user rooms of the legacy bot (the code in

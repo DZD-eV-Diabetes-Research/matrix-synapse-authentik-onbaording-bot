@@ -173,7 +173,7 @@ class World:
         lc = sync.deactivate_disabled_authentik_users_in_matrix
         lc.enabled = True
         lc.dry_run = False
-        lc.deactivate_after_n_sec = 0
+        lc.lock_after_n_sec = 0
         self.directory = Directory()
         self.synapse = Synapse()
         self.effectors = Effectors(self.synapse)

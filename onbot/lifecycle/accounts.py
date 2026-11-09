@@ -5,7 +5,7 @@ locked out and, optionally, erased. This is destructive and irreversible past a 
 is built around these safety principles:
 
 * **Cooldowns absorb accidents (G12.3).** Detection only *marks* a user; nothing destructive happens
-  until ``deactivate_after_n_sec`` has elapsed, and erasure waits a further ``delete_after_n_sec``
+  until ``lock_after_n_sec`` has elapsed, and erasure waits a further ``remove_after_n_sec``
   (counted from the lock).
 * **Fail closed (review S1).** Access is only ever given back on positive evidence: the bound
   Authentik user is present, active and in the sync scope. Dropping out of a query (deletion, a lost
@@ -23,9 +23,9 @@ is built around these safety principles:
   backs off, and the ledger is saved after every user, so a crash never repeats a completed
   irreversible step.
 
-**Two stages.** Stage one (``deactivate_after_n_sec``, despite the name) locks the user out: under
+**Two stages.** Stage one (``lock_after_n_sec``) locks the user out: under
 MAS (ADR-0006) a MAS lock, which blocks new logins reversibly, plus finishing every session so an unlock
-cannot revive them (LIF-07, ADR-0005). Stage two (``delete_after_n_sec``, counted from the lock)
+cannot revive them (LIF-07, ADR-0005). Stage two (``remove_after_n_sec``, counted from the lock)
 erases the account (G9.4), GDPR-erasing it when ``gdpr_erase_on_delete`` says so (D7), and optionally
 its uploaded media (G9.5).
 
@@ -122,13 +122,13 @@ def decide_account_action(
     marked_ts: float | None,
     disabled_ts: float | None,
     now: float,
-    deactivate_after_n_sec: float,
-    delete_after_n_sec: float | None,
+    lock_after_n_sec: float,
+    remove_after_n_sec: float | None,
 ) -> LifecycleAction:
     """Pure state machine: given a user's status and timestamps, decide the next action.
 
     ``marked_ts`` is when the user was first seen orphaned; ``disabled_ts`` is when onbot locked them.
-    ``delete_after_n_sec=None`` disables erasure entirely (a locked user simply stays so). Only an
+    ``remove_after_n_sec=None`` disables erasure entirely (a locked user simply stays so). Only an
     ``active`` status can lead to ``reenable``: absence of evidence never gives access back.
     """
     has_state = marked_ts is not None or disabled_ts is not None
@@ -140,10 +140,10 @@ def decide_account_action(
         return LifecycleAction.mark
     if disabled_ts is None:
         assert marked_ts is not None
-        if now - marked_ts >= deactivate_after_n_sec:
+        if now - marked_ts >= lock_after_n_sec:
             return LifecycleAction.logout
         return LifecycleAction.wait
-    if delete_after_n_sec is not None and now - disabled_ts >= delete_after_n_sec:
+    if remove_after_n_sec is not None and now - disabled_ts >= remove_after_n_sec:
         return LifecycleAction.erase
     return LifecycleAction.wait
 
@@ -835,7 +835,7 @@ class AccountLifecycleManager:
             cfg.enabled,
             cfg.dry_run,
             self._effector_name,
-            cfg.deactivate_after_n_sec,
+            cfg.lock_after_n_sec,
             self._erase_plan(),
             cfg.gdpr_erase_on_delete,
             cfg.include_user_media_on_delete,
@@ -932,8 +932,8 @@ class AccountLifecycleManager:
             marked_ts=entry.marked_for_disabling_timestamp if entry else None,
             disabled_ts=entry.disabled_user_timestamp if entry else None,
             now=now,
-            deactivate_after_n_sec=self.cfg.deactivate_after_n_sec,
-            delete_after_n_sec=self.cfg.delete_after_n_sec,
+            lock_after_n_sec=self.cfg.lock_after_n_sec,
+            remove_after_n_sec=self.cfg.remove_after_n_sec,
         )
         if action is LifecycleAction.erase and entry is not None and entry.deactivated_timestamp is not None:
             # The irreversible half ran in an earlier pass (confirmed, or below the guard's limit);
@@ -1164,7 +1164,7 @@ class AccountLifecycleManager:
         needed and is kept, however old.
         """
         return (
-            self.cfg.delete_after_n_sec is None
+            self.cfg.remove_after_n_sec is None
             and entry.disabled_user_timestamp is not None
             and entry.deactivated_timestamp is None
             and entry.frozen_reason is None
@@ -1232,9 +1232,9 @@ class AccountLifecycleManager:
         return LifecycleOutcome(mxid=mxid, action=action, dry_run=self.dry_run, failed=True, detail=error)
 
     def _erase_plan(self) -> str:
-        if self.cfg.delete_after_n_sec is None:
-            return "erase disabled (delete_after_n_sec is null)"
-        return f"erase in {self.cfg.delete_after_n_sec}s"
+        if self.cfg.remove_after_n_sec is None:
+            return "erase disabled (remove_after_n_sec is null)"
+        return f"erase in {self.cfg.remove_after_n_sec}s"
 
     async def _apply(
         self,
@@ -1255,9 +1255,7 @@ class AccountLifecycleManager:
             entry.marked_for_disabling_timestamp = now
             if classification.pk is not None:
                 entry.authentik_pk = classification.pk
-            audit.info(
-                "marked %s for offboarding (%s); lock in %ss", mxid, reason, self.cfg.deactivate_after_n_sec
-            )
+            audit.info("marked %s for offboarding (%s); lock in %ss", mxid, reason, self.cfg.lock_after_n_sec)
             return True
 
         if action is LifecycleAction.logout:

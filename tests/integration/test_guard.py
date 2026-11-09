@@ -91,7 +91,7 @@ async def test_a_narrowed_token_pauses_everything_until_an_admin_confirms(
     config.sync_matrix_rooms_based_on_authentik_groups.only_for_groupnames_starting_with = prefix
     config.sync_authentik_users_with_matrix_rooms.sync_only_users_with_authentik_attributes = scope
     life = config.sync_authentik_users_with_matrix_rooms.deactivate_disabled_authentik_users_in_matrix
-    life.enabled, life.dry_run, life.deactivate_after_n_sec, life.delete_after_n_sec = True, False, 0, None
+    life.enabled, life.dry_run, life.lock_after_n_sec, life.remove_after_n_sec = True, False, 0, None
     config.admin_room.enabled = True
     config.admin_room.alias = S.uniq("onbot-admin")
     config.admin_room.admin_user_ids = [admin.mxid]
@@ -202,7 +202,7 @@ async def test_three_erasures_wait_for_a_confirmation_in_the_admin_room(
     config.sync_matrix_rooms_based_on_authentik_groups.only_for_groupnames_starting_with = prefix
     config.sync_authentik_users_with_matrix_rooms.sync_only_users_with_authentik_attributes = scope
     life = config.sync_authentik_users_with_matrix_rooms.deactivate_disabled_authentik_users_in_matrix
-    life.enabled, life.dry_run, life.deactivate_after_n_sec, life.delete_after_n_sec = True, False, 0, 0
+    life.enabled, life.dry_run, life.lock_after_n_sec, life.remove_after_n_sec = True, False, 0, 0
     config.admin_room.enabled = True
     config.admin_room.alias = S.uniq("onbot-admin")
     config.admin_room.admin_user_ids = [admin.mxid]

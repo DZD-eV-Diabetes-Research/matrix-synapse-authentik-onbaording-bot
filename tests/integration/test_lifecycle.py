@@ -80,7 +80,7 @@ async def test_dry_run_does_not_revoke(make_config, authentik_admin: S.Authentik
     life = _lifecycle(config)
     life.enabled = True
     life.dry_run = True  # quarantine default
-    life.deactivate_after_n_sec = 0
+    life.lock_after_n_sec = 0
 
     await run_reconcile_once(config)  # mark
     await run_reconcile_once(config)  # would log out — but dry-run only audits
@@ -96,8 +96,8 @@ async def test_cooldown_then_session_revoked(make_config, authentik_admin: S.Aut
     life = _lifecycle(config)
     life.enabled = True
     life.dry_run = False  # explicit opt-in to destructive action (ADR-0005)
-    life.deactivate_after_n_sec = 0  # no cooldown wait in the test
-    life.delete_after_n_sec = None  # stop at logout; do not erase
+    life.lock_after_n_sec = 0  # no cooldown wait in the test
+    life.remove_after_n_sec = None  # stop at logout; do not erase
 
     await run_reconcile_once(config)  # first pass only marks (records the cooldown start)
     assert S.whoami_status(login.access_token) == 200
@@ -124,8 +124,8 @@ def _live_lifecycle(config, *, delete_after: int | None = None):
     life = _lifecycle(config)
     life.enabled = True
     life.dry_run = False
-    life.deactivate_after_n_sec = 0
-    life.delete_after_n_sec = delete_after
+    life.lock_after_n_sec = 0
+    life.remove_after_n_sec = delete_after
     return life  # gdpr_erase_on_delete stays at its default (false); its semantics have their own test
 
 
@@ -174,7 +174,7 @@ async def test_locked_user_deleted_in_authentik_stays_locked_and_is_erased(
     assert not await _deactivated(admin_client, login.mxid)
     assert S.whoami_status(login.access_token) == 401
 
-    life.delete_after_n_sec = 0  # the deleted user proceeds through the state machine
+    life.remove_after_n_sec = 0  # the deleted user proceeds through the state machine
     await run_reconcile_once(config)
     assert await _wait_deactivated(admin_client, login.mxid)
     assert S.whoami_status(login.access_token) == 401
@@ -389,7 +389,7 @@ async def test_locked_user_who_leaves_the_scope_is_frozen(
     await run_reconcile_once(config)
     mas = S.mas_user(username)
     assert mas["locked_at"] is not None
-    assert mas.get("deactivated_at") is None  # frozen: no erase despite delete_after_n_sec = 0
+    assert mas.get("deactivated_at") is None  # frozen: no erase despite remove_after_n_sec = 0
     assert not await _deactivated(admin_client, login.mxid)
 
 
@@ -429,6 +429,6 @@ async def test_known_user_disabled_and_moved_out_of_scope_is_offboarded(
     assert S.mas_user(username)["locked_at"] is not None
     assert S.wait_revoked(login.access_token)
 
-    life.delete_after_n_sec = 0
+    life.remove_after_n_sec = 0
     await run_reconcile_once(config)
     assert await _wait_deactivated(admin_client, login.mxid)

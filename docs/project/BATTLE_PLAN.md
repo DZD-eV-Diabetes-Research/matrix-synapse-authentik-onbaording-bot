@@ -253,8 +253,8 @@ desired-vs-actual result, behind dry-run. All three share `clients/` + `auth/`.
 
 ### Phase 5: Lifecycle, quarantined (AD-5)  ✅ done 2026-06-19
 - [x] `lifecycle/accounts.py`: a **pure state machine** (`decide_account_action`), detect →
-      `mark` (start cooldown, no destructive action) → `logout` after `deactivate_after_n_sec`
-      (revoke sessions, G9.2) → `erase` after `delete_after_n_sec` (deactivate + optional media,
+      `mark` (start cooldown, no destructive action) → `logout` after `lock_after_n_sec`
+      (revoke sessions, G9.2) → `erase` after `remove_after_n_sec` (deactivate + optional media,
       G9.4/G9.5) → `reenable` if the user returns first (G9.6). Effects isolated behind a
       `LifecycleEffectors` seam (`AdminApiLifecycleEffectors`) + a `LifecycleLedgerStore`
       (per-user bookkeeping as one versioned blob in the bot's Matrix **account data**: no DB,

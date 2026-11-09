@@ -37,8 +37,8 @@ async def test_q1_upstream_disable_propagation(make_config, authentik_admin: S.A
     life = config.sync_authentik_users_with_matrix_rooms.deactivate_disabled_authentik_users_in_matrix
     life.enabled = True
     life.dry_run = False
-    life.deactivate_after_n_sec = 0
-    life.delete_after_n_sec = None
+    life.lock_after_n_sec = 0
+    life.remove_after_n_sec = None
 
     await run_reconcile_once(config)  # mark
     await run_reconcile_once(config)  # logout — onbot enforces what MAS does not

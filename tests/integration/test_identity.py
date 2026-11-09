@@ -35,7 +35,7 @@ def _config(make_config: Any, prefix: str, group_pks: list[str], *, mas: bool = 
     life = sync.deactivate_disabled_authentik_users_in_matrix
     life.enabled = mas  # without mas_admin onbot refuses to lock on this MAS-backed homeserver
     life.dry_run = False
-    life.deactivate_after_n_sec = 0
+    life.lock_after_n_sec = 0
     config.welcome_new_users_messages = ["Welcome!"]
     return config
 
