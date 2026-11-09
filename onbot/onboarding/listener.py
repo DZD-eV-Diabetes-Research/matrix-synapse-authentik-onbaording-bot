@@ -256,7 +256,7 @@ class OnboardingListener:
         if not self._is_target(item):
             return  # no longer mapped since it was queued
         try:
-            await self.welcome.welcome_user(item)
+            applied = await self.welcome.welcome_user(item)
         except NoticeBoardUnreadable as exc:
             # Retrying cannot help and would repeat the error every pass; a restart checks again.
             log.error("cannot welcome %s: %s", item, exc)
@@ -274,5 +274,7 @@ class OnboardingListener:
             return
         if self._failing.pop(item, None) is not None:
             log.info("welcome flow for %s succeeded after earlier failures", item)
-        # The picture as of the end of the welcome, which fetched it if it was not known yet.
-        self._welcomed[item] = self.welcome.board_avatar_sha256()
+        # The picture the board got, not the one known at the end of the welcome: a re-fetch by a
+        # concurrent welcome may have seen a new picture meanwhile, and recording that one would hide
+        # the board from the next pass's look at the boards with an older picture (W8R-06).
+        self._welcomed[item] = applied

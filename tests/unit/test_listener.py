@@ -42,9 +42,10 @@ class _RecordingWelcome:
     def board_avatar_sha256(self) -> str | None:
         return self.board_avatar
 
-    async def welcome_user(self, mxid: str) -> None:
+    async def welcome_user(self, mxid: str) -> str | None:
         await asyncio.sleep(0)
         self.welcomed.append(mxid)
+        return self.board_avatar  # the board gets the picture known at the time
 
     async def prune_direct(self, accounts: Collection[str]) -> list[str]:
         self.pruned.append(frozenset(accounts))
@@ -455,10 +456,12 @@ async def test_boards_welcomed_with_the_picture_are_not_looked_at_again_when_it_
     """W7R-05: the first digest known cleared the whole cache, although the welcomes had fetched it."""
 
     class _FetchingWelcome(_RecordingWelcome):
-        async def welcome_user(self, mxid: str) -> None:
-            await super().welcome_user(mxid)
+        async def welcome_user(self, mxid: str) -> str | None:
+            applied = await super().welcome_user(mxid)
             if mxid == BOB:
                 self.board_avatar = "red"  # this welcome fetched the picture and set it on the board
+                return "red"
+            return applied
 
     welcome = _FetchingWelcome()  # nothing fetched before the first pass (a restart)
     listener, events = _listener(welcome, concurrency=1)
@@ -479,11 +482,11 @@ async def test_only_boards_welcomed_with_an_older_picture_are_looked_at_again() 
     class _BobFailsOnce(_RecordingWelcome):
         failed = False
 
-        async def welcome_user(self, mxid: str) -> None:
+        async def welcome_user(self, mxid: str) -> str | None:
             if mxid == BOB and not self.failed:
                 self.failed = True
                 raise RuntimeError("homeserver briefly unreachable")
-            await super().welcome_user(mxid)
+            return await super().welcome_user(mxid)
 
     welcome = _BobFailsOnce()
     welcome.board_avatar = "red"
@@ -500,6 +503,42 @@ async def test_only_boards_welcomed_with_an_older_picture_are_looked_at_again() 
     await _pass(events, ALICE, BOB)
     await listener.process_queued()
     assert welcome.welcomed == [ALICE, BOB, ALICE]  # BOB's board already wears it
+    await _pass(events, ALICE, BOB)
+    await listener.process_queued()
+    assert len(welcome.welcomed) == 3
+
+
+async def test_a_board_welcomed_while_a_concurrent_welcome_saw_a_new_picture_is_looked_at_again() -> None:
+    """W8R-06: the cache recorded the picture known at the end of a welcome, not the one the board
+    got. A re-fetch by a concurrent welcome in between hid the board with the old picture until a
+    restart."""
+
+    class _Racy(_RecordingWelcome):
+        def __init__(self) -> None:
+            super().__init__()
+            self.picture_changed = asyncio.Event()
+
+        async def welcome_user(self, mxid: str) -> str | None:
+            if mxid == ALICE:
+                applied = self.board_avatar  # her board gets the old picture
+                await self.picture_changed.wait()  # still sending her messages
+            else:
+                self.board_avatar = applied = "blue"  # BOB's welcome re-fetched it: a new picture
+                self.picture_changed.set()
+            self.welcomed.append(mxid)
+            return applied
+
+    welcome = _Racy()
+    welcome.board_avatar = "red"
+    listener, events = _listener(welcome, concurrency=2)
+    await _pass(events, ALICE, BOB)
+    await listener.process_queued()
+    assert sorted(welcome.welcomed) == [ALICE, BOB]
+
+    await _pass(events, ALICE, BOB)
+    await listener.process_queued()
+    assert sorted(welcome.welcomed) == [ALICE, ALICE, BOB]  # only ALICE's board needs the new one
+
     await _pass(events, ALICE, BOB)
     await listener.process_queued()
     assert len(welcome.welcomed) == 3
