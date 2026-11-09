@@ -596,11 +596,15 @@ async def _stop_loops(
     app.listener.request_stop()  # the user in hand is finished, the rest of the queue waits
     supervisor.request_stop()
     if app.control_room is not None:
-        # A broadcast in flight would hold the shutdown for as long as the rate limit allows.
+        # A broadcast in flight would hold the shutdown for as long as the rate limit allows. From
+        # here on the control room starts no new one, even for a command in the slice the pump is
+        # still finishing (W5R-04).
         await app.control_room.stop()
     # The discovery poll only reads Authentik; nothing is lost by cutting it off.
     tasks["discovery"].cancel()
     unfinished = await drain(set(tasks.values()), grace=grace, forced=shutdown.forced)
+    if app.control_room is not None:
+        await app.control_room.stop()  # whatever the drained slice started, before the clients close
     if unfinished:
         log.warning(
             "cancelling %s after the %.0fs shutdown grace period",

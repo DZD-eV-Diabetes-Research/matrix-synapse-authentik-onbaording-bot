@@ -105,6 +105,16 @@ BROADCAST_RUNNING = (
 )
 REPLY_FAILED = "The result of the last command could not be posted here ({error}); it is in the bot's log."
 
+# W5R-04: what an announcement cut off by a shutdown, or one sent during it, says.
+INTERRUPTED = (
+    "The announcement was interrupted by a shutdown of the bot after {done} of {total} rooms; the "
+    "others did not get it. Send it again after the restart if it still matters."
+)
+INTERRUPTED_NOTE_TIMEOUT_SEC = 5.0
+SHUTTING_DOWN = (
+    "The bot is shutting down, so this announcement was not sent. Send it again after the restart."
+)
+
 # ONB-11: the same text from the same admin within this many seconds of their previous `!announce` is
 # held until they confirm it, and a held one can be confirmed for this long.
 DUPLICATE_WINDOW_SEC = 60.0
@@ -177,6 +187,8 @@ class ControlRoomHandler:
         # The broadcast in flight, if any (one at a time), and how many rooms it goes to.
         self._broadcast_task: asyncio.Task[None] | None = None
         self._broadcast_rooms = 0
+        # Set by stop(): no new broadcast starts while the service shuts down (W5R-04).
+        self._stopping = False
         # ONB-11: each admin's last announcement (normalised text, when), and the held duplicates.
         self._clock = clock
         self._last_announcement: dict[str, tuple[str, float]] = {}
@@ -291,6 +303,14 @@ class ControlRoomHandler:
         self._start_broadcast(message)
 
     def _start_broadcast(self, message: str) -> None:
+        if self._stopping:
+            # The pump finishes the slice in hand after a stop; a broadcast started now would run
+            # into closing HTTP clients and nobody would cancel it (W5R-04).
+            log.warning("the bot is shutting down; an announcement was not sent")
+            self._broadcast_task = asyncio.create_task(
+                self._reply_safely(SHUTTING_DOWN), name="onbot-broadcast-refused"
+            )
+            return
         self._broadcast_rooms = 0
         self._broadcast_task = asyncio.create_task(self._run_broadcast(message), name="onbot-broadcast")
 
@@ -348,6 +368,12 @@ class ControlRoomHandler:
 
         try:
             result = await self.broadcast.broadcast(message, on_start=started)
+        except asyncio.CancelledError:
+            done, total = getattr(self.broadcast, "interrupted", None) or (0, self._broadcast_rooms)
+            with contextlib.suppress(Exception):
+                async with asyncio.timeout(INTERRUPTED_NOTE_TIMEOUT_SEC):
+                    await self._reply(INTERRUPTED.format(done=done, total=total))
+            raise
         except Exception as exc:
             log.exception("the broadcast failed")
             await self._reply_safely(f"The announcement failed: {exc}")
@@ -361,7 +387,11 @@ class ControlRoomHandler:
             await asyncio.shield(task)
 
     async def stop(self) -> None:
-        """Cancel a broadcast in flight (shutdown). The rooms not reached yet do not get it."""
+        """Cancel a broadcast in flight (shutdown). The rooms not reached yet do not get it.
+
+        From now on no new broadcast starts (W5R-04); safe to call again after the sync pump drained.
+        """
+        self._stopping = True
         task = self._broadcast_task
         if task is None or task.done():
             return

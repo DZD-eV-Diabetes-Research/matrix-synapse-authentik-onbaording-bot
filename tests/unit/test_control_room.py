@@ -687,3 +687,31 @@ async def test_a_held_announcement_expires() -> None:
     clock.now += control_room.DUPLICATE_CONFIRM_SEC
     await _run(handler, _message(f"!confirm {held}", event_id="$c"))
     assert broadcast.calls == ["hello"]
+
+
+# --- W5R-04: a shutdown starts no broadcast and says what it cut off --------------------------------
+
+
+async def test_an_announce_in_the_slice_finished_after_stop_is_not_sent() -> None:
+    client, broadcast = _FakeClient(), _FakeBroadcast()
+    handler = _handler(client, broadcast)
+    await handler.stop()  # the service is shutting down; the pump still finishes its slice
+
+    await _run(handler, _message("!announce too late"))
+
+    assert broadcast.calls == []
+    assert client.sends[-1][1] == control_room.SHUTTING_DOWN
+    await handler.stop()  # the second stop after the drain finds nothing left running
+    assert not handler.broadcast_running
+
+
+async def test_a_broadcast_cut_off_by_a_shutdown_says_how_far_it_got() -> None:
+    client, broadcast = _FakeClient(), _FakeBroadcast()
+    broadcast.release = asyncio.Event()
+    handler = _handler(client, broadcast)
+    await handler.handle_sync(_message("!announce first"))
+    await asyncio.sleep(0)
+
+    await asyncio.wait_for(handler.stop(), timeout=2)
+
+    assert "interrupted by a shutdown of the bot after 0 of 2 rooms" in client.sends[-1][1]
