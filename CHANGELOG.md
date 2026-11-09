@@ -13,6 +13,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-09
+
+The result of a full code review (November 2026). **Read the upgrade notes in
+[docs/deployment.md](docs/deployment.md#upgrade-notes) before upgrading:** the config has breaking
+changes (`synapse_server.oauth2` removed, the offboarding delays renamed to `lock_after_n_sec` and
+`remove_after_n_sec`, unknown keys rejected), group pks now match in any UUID form, and destructive
+actions above the guard limits wait for `!confirm <id>` in the admin room, which is on by default
+and needs at least one admin. Run `onbot reconcile-once --dry-run` once after the upgrade and check
+the planned actions before the first real pass.
+
 ### Added
 - **Docs (review W8R-08):** two configurations sharing one bot account are unsupported
   (`docs/deployment.md`).
@@ -650,7 +660,8 @@ ADR-0009). Operators coming from the legacy bot: read
   `storage_encryption_key` are gone. In this release unknown keys below the top level were ignored;
   since the review (S13) every unknown key is rejected, so remove both settings from old configs.
 
-[Unreleased]: https://github.com/DZD-eV-Diabetes-Research/matrix-synapse-authentik-onbaording-bot/compare/0.0.11...HEAD
+[Unreleased]: https://github.com/DZD-eV-Diabetes-Research/matrix-synapse-authentik-onbaording-bot/compare/0.1.0...HEAD
+[0.1.0]: https://github.com/DZD-eV-Diabetes-Research/matrix-synapse-authentik-onbaording-bot/compare/0.0.11...0.1.0
 [0.0.11]: https://github.com/DZD-eV-Diabetes-Research/matrix-synapse-authentik-onbaording-bot/compare/0.0.10...0.0.11
 [0.0.10]: https://github.com/DZD-eV-Diabetes-Research/matrix-synapse-authentik-onbaording-bot/compare/0.0.9...0.0.10
 [0.0.9]: https://github.com/DZD-eV-Diabetes-Research/matrix-synapse-authentik-onbaording-bot/compare/0.0.8...0.0.9
