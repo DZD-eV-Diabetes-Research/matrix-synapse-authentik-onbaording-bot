@@ -76,6 +76,9 @@ class _FakeClient:
         self.sends: list[str] = []
         self.memberships: dict[str, str] = {}
         self.topics: list[str] = []
+        # Who wrote a state event, when not the room's creator (somebody else, W6R-08).
+        self.senders: dict[tuple[str, str, str], str] = {}
+        self.alias_writes: list[tuple[str, str]] = []
         self._events = 0
         if existing_room is not None:
             self.creators[existing_room] = creator
@@ -107,6 +110,20 @@ class _FakeClient:
         self, room_id: str, event_type: str, content: dict[str, Any], state_key: str = ""
     ) -> None:
         self.state[(room_id, event_type, state_key)] = dict(content)
+        self.senders.pop((room_id, event_type, state_key), None)  # the bot wrote it
+
+    async def get_room_state_event_with_sender(
+        self, room_id: str, event_type: str, state_key: str = ""
+    ) -> dict[str, Any] | None:
+        key = (room_id, event_type, state_key)
+        if key not in self.state:
+            return None
+        sender = self.senders.get(key, self.creators.get(room_id, BOT))
+        return {"sender": sender, "content": dict(self.state[key]), "event_id": f"$state-{len(self.sends)}"}
+
+    async def set_room_alias(self, alias: str, room_id: str) -> None:
+        self.alias_writes.append((alias, room_id))
+        self.alias_target = room_id
 
     async def get_room_power_levels(self, room_id: str) -> dict[str, Any]:
         return dict(self.power.get(room_id, {"users": {}}))
@@ -139,7 +156,12 @@ class _FakeClient:
         ]
         # Every state event in this fake is written by the room's creator (the bot in its own rooms).
         events += [
-            {"type": t, "state_key": k, "sender": self.creators[room_id], "content": c}
+            {
+                "type": t,
+                "state_key": k,
+                "sender": self.senders.get((room, t, k), self.creators[room_id]),
+                "content": c,
+            }
             for (room, t, k), c in self.state.items()
             if room == room_id
         ]
@@ -410,7 +432,8 @@ async def test_a_banned_admin_is_never_invited() -> None:
     assert client.invited == []
 
 
-async def test_an_unreadable_record_invites_only_admins_who_were_never_in_the_room() -> None:
+async def test_a_record_edited_into_garbage_is_restored_and_still_counts() -> None:
+    """The record is the bot's own (W6R-08): an unreadable marker is restored from it, not obeyed."""
     client = _FakeClient(existing_room=ROOM)
     provisioner = _provisioner(client)
     await provisioner.ensure()
@@ -421,7 +444,8 @@ async def test_an_unreadable_record_invites_only_admins_who_were_never_in_the_ro
 
     await provisioner.on_reconcile(_reconcile())
 
-    assert client.invited == [ADMIN, newcomer]
+    assert client.invited == [ADMIN, newcomer]  # ADMIN once, at startup: they left, so not again
+    assert client.state[(ROOM, MARKER_TYPE, "")]["invited_admins"] == [ADMIN, newcomer]
 
 
 async def test_a_failed_invitation_does_not_abort_provisioning() -> None:
@@ -521,3 +545,95 @@ async def test_an_unencrypted_control_room_gets_no_warning() -> None:
     client = _FakeClient(existing_room=None)
     await _provisioner(client).ensure()
     assert ENCRYPTED_ROOM_NOTICE not in client.sends
+
+
+# --- W6R-08: the marker is the bot's, and the control room is repaired like the other rooms ---------
+
+MALLORY = "@mallory:matrix.test"
+
+
+async def _running(client: _FakeClient | None = None) -> tuple[_FakeClient, AdminRoomProvisioner]:
+    client = client or _FakeClient(existing_room=ROOM)
+    client.memberships = {ADMIN: "join"}
+    provisioner = _provisioner(client)
+    assert await provisioner.ensure() == ROOM
+    client.sends.clear()
+    return client, provisioner
+
+
+async def test_a_marker_somebody_else_rewrote_is_never_written_back_as_the_bots() -> None:
+    """Before W6R-08 the invite pass read the marker in the room and wrote it back: the bot signed
+    whatever a human above the lock had put there."""
+    client, provisioner = await _running()
+    known = dict(client.state[(ROOM, MARKER_TYPE, "")])
+    client.state[(ROOM, MARKER_TYPE, "")] = {
+        **known,
+        "help_text_hash": "theirs",
+        "invited_admins": [ADMIN, MALLORY],
+    }
+    client.senders[(ROOM, MARKER_TYPE, "")] = MALLORY
+    provisioner.admins._admins = frozenset({ADMIN, "@ops:matrix.test"})  # the invite pass writes
+
+    await provisioner.on_reconcile(_reconcile())
+
+    marker = client.state[(ROOM, MARKER_TYPE, "")]
+    assert (ROOM, MARKER_TYPE, "") not in client.senders  # written by the bot
+    assert marker["help_text_hash"] == known["help_text_hash"]
+    assert marker["invited_admins"] == [ADMIN, "@ops:matrix.test"]
+    assert any("rewritten by @mallory:matrix.test" in body for body in client.sends)
+
+
+async def test_a_removed_marker_is_restored_from_what_the_bot_knows_and_reported_once() -> None:
+    client, provisioner = await _running()
+    known = dict(client.state[(ROOM, MARKER_TYPE, "")])
+    client.state[(ROOM, MARKER_TYPE, "")] = {}
+    client.senders[(ROOM, MARKER_TYPE, "")] = MALLORY
+
+    await provisioner.on_reconcile(_reconcile())
+    await provisioner.on_reconcile(_reconcile())
+
+    assert client.state[(ROOM, MARKER_TYPE, "")] == known
+    assert (ROOM, MARKER_TYPE, "") not in client.senders
+    assert sum("marker was removed" in body for body in client.sends) == 1
+
+
+async def test_a_lowered_marker_lock_is_raised_again() -> None:
+    client, provisioner = await _running()
+    client.power[ROOM]["events"] = dict.fromkeys(marker_event_types("matrix.test"), 0)
+
+    await provisioner.on_reconcile(_reconcile())
+
+    assert all(
+        client.power[ROOM]["events"][t] == PRIVILEGED_LOCK_LEVEL for t in marker_event_types("matrix.test")
+    )
+    assert any("had been lowered" in body for body in client.sends)
+
+
+async def test_a_removed_alias_is_recreated_and_one_another_room_holds_is_reported() -> None:
+    client, provisioner = await _running()
+    client.alias_target = None
+    client.state.pop((ROOM, "m.room.canonical_alias", ""), None)
+
+    await provisioner.on_reconcile(_reconcile())
+
+    assert client.alias_writes == [(ALIAS, ROOM)]
+    assert client.state[(ROOM, "m.room.canonical_alias", "")] == {"alias": ALIAS}
+
+    client.alias_target = "!squatter:matrix.test"
+    await provisioner.on_reconcile(_reconcile())
+    await provisioner.on_reconcile(_reconcile())
+    assert client.alias_writes == [(ALIAS, ROOM)]
+    assert sum("belongs to room !squatter:matrix.test" in body for body in client.sends) == 1
+
+
+async def test_an_intact_control_room_costs_no_write() -> None:
+    client, provisioner = await _running()
+    client.state[(ROOM, "m.room.canonical_alias", "")] = {"alias": ALIAS}
+    before = {k: dict(v) for k, v in client.state.items()}
+    power = dict(client.power[ROOM])
+
+    await provisioner.on_reconcile(_reconcile())
+
+    assert client.state == before
+    assert client.power[ROOM] == power
+    assert client.alias_writes == [] and client.sends == []

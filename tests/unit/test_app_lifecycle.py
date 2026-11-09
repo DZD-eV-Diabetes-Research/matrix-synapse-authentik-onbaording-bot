@@ -560,6 +560,9 @@ async def test_reconcile_once_runs_every_startup_step_before_its_pass(
     async def invite(_self: AdminRoomProvisioner) -> None:
         calls.append("re-invite")
 
+    async def repair(_self: AdminRoomProvisioner) -> None:
+        calls.append("repair")
+
     async def start(self: ControlRoomHandler, room_id: str) -> None:
         self.room_id = room_id
 
@@ -570,6 +573,7 @@ async def test_reconcile_once_runs_every_startup_step_before_its_pass(
     monkeypatch.setattr(app_module, "ensure_bot_avatar", avatar)
     monkeypatch.setattr(AdminRoomProvisioner, "ensure", ensure)
     monkeypatch.setattr(AdminRoomProvisioner, "ensure_admins_invited", invite)
+    monkeypatch.setattr(AdminRoomProvisioner, "repair", repair)
     monkeypatch.setattr(ControlRoomHandler, "start", start)
     monkeypatch.setattr(app_module.ReconcilerEngine, "reconcile_once", one_pass)
     with respx.mock(assert_all_mocked=False, assert_all_called=False) as router:
@@ -580,7 +584,7 @@ async def test_reconcile_once_runs_every_startup_step_before_its_pass(
         await run_reconcile_once(config)
         called = _called_paths(router)
 
-    assert calls == ["avatar", "admin room", "pass", "re-invite"]
+    assert calls == ["avatar", "admin room", "pass", "repair", "re-invite"]
     assert called == {
         "GET /_matrix/client/versions",
         "GET /_matrix/client/v3/account/whoami",

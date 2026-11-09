@@ -22,6 +22,14 @@ is consulted once, to adopt a control room created by an older version, and befo
 one: when it belongs to a room that is not the bot's control room, that room is never taken over
 (the bot would otherwise post its help there, invite the admins into it and take commands from it).
 The control room then stays off, with an error naming the alias.
+
+**The marker is the bot's, never read back from the room** (W6R-08, D20). Besides its role it holds
+the pinned help's hash and the admins the bot invited. The bot changes those fields on the marker it
+knows (the one the identity scan trusted, written by the bot, or the one it wrote since), never on
+what a ``GET`` returns now: somebody at the bot's level may have rewritten it, and writing that back
+would sign their content as the bot's. Like the other managed rooms, the control room gets its
+marker, the marker's lock and its alias repaired at startup and after every reconcile pass; a
+change somebody else made is reported once in the log and in the room.
 """
 
 from __future__ import annotations
@@ -29,6 +37,8 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from typing import Any
+
+from pydantic import ValidationError
 
 from onbot.admin.admins import AdminResolver
 from onbot.admin.commands import help_text
@@ -38,6 +48,7 @@ from onbot.config import OnbotConfig
 from onbot.events import Event
 from onbot.logging import get_logger
 from onbot.models import MatrixRoom
+from onbot.reconciler.repair import CANONICAL_ALIAS_EVENT_TYPE, marker_repair
 from onbot.reconciler.state import (
     AdminRoomState,
     OnbotRoomType,
@@ -46,11 +57,12 @@ from onbot.reconciler.state import (
     parse_room_state,
 )
 from onbot.rooms.identity import RoomIdentityResolver, RoomKey
-from onbot.rooms.provision import ManagedRoomSpec, create_managed_room
+from onbot.rooms.provision import ManagedRoomSpec, create_managed_room, lock_markers, markers_locked
 
 log = get_logger(__name__)
 
 PINNED_EVENTS_TYPE = "m.room.pinned_events"
+CREATE_EVENT_TYPE = "m.room.create"
 NOTICE_MSGTYPE = "m.notice"
 
 BOT_LEVEL = 100
@@ -106,18 +118,30 @@ class AdminRoomProvisioner:
         # Bound by ensure(); until then the invite pass has no room to invite anybody into.
         self.room_id: str | None = None
         self._state_event_type = event_type_name(self.server_name, OnbotRoomType.admin_room)
-        # The marker is read, changed and written whole by the invite pass and the pinned help, which
-        # may run at once (a reconcile finishing during startup).
+        # The marker is changed and written whole by the invite pass, the pinned help and the repair,
+        # which may run at once (a reconcile finishing during startup).
         self._state_lock = asyncio.Lock()
+        # The marker as the bot last wrote it or the identity scan trusted it (W6R-08); set by ensure().
+        self._marker: dict[str, Any] | None = None
+        self._room_version: str | None = None
+        # Repairs already reported, so a change is reported once, not after every pass.
+        self._reported: set[str] = set()
 
     async def ensure(self) -> str | None:
         """Return the control room's id, creating it if needed. ``None`` when the feature is off."""
         if not self.cfg.enabled:
             return None
-        room_id = await self._find_or_create()
-        if room_id is None:
+        found = await self._find_or_create()
+        if found is None:
             return None
+        room_id, created = found
         self.room_id = room_id
+        # What the bot knows its marker to be: the trusted one the scan found, or the one createRoom
+        # wrote. Never what the room says now (W6R-08).
+        known = None if created else self.rooms.known_marker(room_id)
+        self._marker = known or dump_room_state(AdminRoomState(configured_alias=self.cfg.alias))
+        if not created:
+            await self.repair()
         await self._check_unencrypted(room_id)
         await self.ensure_admins_invited()
         await self._ensure_topic(room_id)
@@ -162,32 +186,22 @@ class AdminRoomProvisioner:
         (ONB-12): the record (``invited_admins`` in the room's marker) names everybody the bot invited
         or found in the room while they were admins. Dropping out of the admin set clears the entry,
         so somebody made an admin again is invited again. A banned admin is never invited. When the
-        record cannot be read, only admins who were never in the room are invited.
+        record is the bot's own (see the module docstring), so a hand-edited marker changes nothing here.
         """
         room_id = self.room_id
         if room_id is None:
             return
         admins = sorted(await self.admins.admins())
         async with self._state_lock:
-            try:
-                state: AdminRoomState | None = await self._load_state(room_id)
-            except Exception:
-                log.warning(
-                    "cannot read the admin control room's marker; inviting only admins who were never "
-                    "in the room",
-                    exc_info=True,
-                )
-                state = None
-            known = set(state.invited_admins) if state is not None else None
-            record = (known or set()) & set(admins)
+            state = self._load_state()
+            known = set(state.invited_admins)
+            record = known & set(admins)
             for mxid in admins:
                 if await self._invite_if_due(room_id, mxid, known):
                     record.add(mxid)
-            if state is not None and record != known:
+            if record != known:
                 state.invited_admins = sorted(record)
-                await self.client.put_room_state_event(
-                    room_id, self._state_event_type, dump_room_state(state)
-                )
+                await self._write_state(room_id, state)
 
     async def _invite_if_due(self, room_id: str, mxid: str, known: set[str] | None) -> bool:
         """Invite ``mxid`` unless they are in the room, banned, or left after an invitation.
@@ -218,11 +232,107 @@ class AdminRoomProvisioner:
         return True
 
     async def on_reconcile(self, _event: Event) -> None:
-        """Bus handler: re-run the invite pass once the reconciler has finished a tick."""
+        """Bus handler: repair the room and re-run the invite pass once the reconciler finished a tick."""
+        await self.repair()
         await self.ensure_admins_invited()
 
-    async def _find_or_create(self) -> str | None:
-        """The control room's id: found by its marker, adopted once by alias, or created.
+    # --- repair (S7 for the control room, W6R-08) -------------------------------------------------
+
+    async def repair(self) -> None:
+        """Restore the marker, its lock and the alias where somebody changed them.
+
+        Reads first and writes only on a difference, like the reconciler's room upkeep. Each repair
+        stands on its own: one the server refuses is logged, and the others still run.
+        """
+        room_id = self.room_id
+        if room_id is None or self._marker is None:
+            return  # not bound by ensure() yet: nothing known to restore from
+        for what, work in (
+            ("marker", self._repair_marker),
+            ("marker lock", self._repair_lock),
+            ("alias", self._repair_alias),
+        ):
+            try:
+                await work(room_id)
+            except Exception:
+                log.warning(
+                    "the admin control room's %s repair failed; retried after the next pass",
+                    what,
+                    exc_info=True,
+                )
+
+    async def _repair_marker(self, room_id: str) -> None:
+        async with self._state_lock:
+            event = await self.client.get_room_state_event_with_sender(room_id, self._state_event_type)
+            repair = marker_repair(
+                event,
+                bot_id=self.config.synapse_server.bot_user_id,
+                expected=AdminRoomState(configured_alias=self.cfg.alias),
+                known=self._marker,
+            )
+            if repair is None:
+                return
+            await self._write_state(room_id, self._parse(repair.content))
+        message = f"the admin control room {room_id}: {repair.reason}; the bot restored it"
+        if repair.tampered:
+            await self._report_once(f"marker|{(event or {}).get('event_id') or 'missing'}", message + ".")
+        else:
+            log.info("%s", message)
+
+    async def _repair_lock(self, room_id: str) -> None:
+        bot_id = self.config.synapse_server.bot_user_id
+        room_version = await self._version(room_id)
+        power = await self.client.get_room_power_levels(room_id)
+        if markers_locked(power, self.server_name, bot_id, room_version=room_version):
+            return
+        await lock_markers(self.client, room_id, self.server_name, bot_id=bot_id, room_version=room_version)
+        await self._report_once(
+            f"lock|{sorted((power.get('events') or {}).items())}",
+            f"the admin control room {room_id}: the power level required to change its onbot marker had "
+            "been lowered; the bot raised it again.",
+        )
+
+    async def _repair_alias(self, room_id: str) -> None:
+        """Recreate a removed alias when it is free, and the main address when the room has none."""
+        target = await self.client.resolve_room_alias(self.alias)
+        if target is None:
+            await self.client.set_room_alias(self.alias, room_id)
+            log.info("restored the alias %s of the admin control room %s", self.alias, room_id)
+        elif target != room_id:
+            await self._report_once(
+                f"alias|{target}",
+                f"the alias {self.alias} of the admin control room {room_id} belongs to room {target}. The "
+                "bot leaves it there; the control room keeps working without it.",
+            )
+            return
+        current = await self.client.get_room_state_event(room_id, CANONICAL_ALIAS_EVENT_TYPE) or {}
+        if not current.get("alias"):
+            await self.client.put_room_state_event(
+                room_id, CANONICAL_ALIAS_EVENT_TYPE, {**current, "alias": self.alias}
+            )
+            log.info("restored the main address %s of the admin control room %s", self.alias, room_id)
+
+    async def _version(self, room_id: str) -> str | None:
+        if self._room_version is None:
+            create = await self.client.get_room_state_event(room_id, CREATE_EVENT_TYPE) or {}
+            self._room_version = str(create.get("room_version") or "1")
+        return self._room_version
+
+    async def _report_once(self, key: str, text: str) -> None:
+        """Log ``text`` at WARNING and post it in the control room, once per process for ``key``."""
+        if key in self._reported:
+            return
+        self._reported.add(key)
+        log.warning("rooms: %s", text)
+        assert self.room_id is not None
+        try:
+            await self.client.send_text_message(self.room_id, f"Rooms: {text}", msgtype=NOTICE_MSGTYPE)
+        except Exception:
+            log.warning("could not post the repair report in the admin control room", exc_info=True)
+
+    async def _find_or_create(self) -> tuple[str, bool] | None:
+        """The control room's id and whether it was created now: found by its marker, adopted once by
+        alias, or created.
 
         ``None`` (and an error in the log) when the alias belongs to a room that is not the bot's control
         room, or two rooms claim to be it: that needs an admin. A problem that may clear by itself (bot
@@ -236,10 +346,10 @@ class AdminRoomProvisioner:
             log.error("the admin control room %s stays off: %s", self.alias, resolution.problem)
             return None
         if resolution.room is not None:
-            return resolution.room.room_id
+            return resolution.room.room_id, False
         room_id = await self._create()
         self.rooms.register(MatrixRoom(room_id=room_id, canonical_alias=self.alias), key)
-        return room_id
+        return room_id, True
 
     async def _create(self) -> str:
         # Created empty and populated below, one invite at a time. An admin sourced from an Authentik
@@ -281,7 +391,7 @@ class AdminRoomProvisioner:
         text = help_text()
         digest = help_text_hash(text)
         async with self._state_lock:
-            state = await self._load_state(room_id)
+            state = self._load_state()
             if state.help_text_hash == digest:
                 return
 
@@ -289,7 +399,7 @@ class AdminRoomProvisioner:
             await self._pin(room_id, event_id, replacing=state.help_event_id)
             state.help_text_hash = digest
             state.help_event_id = event_id
-            await self.client.put_room_state_event(room_id, self._state_event_type, dump_room_state(state))
+            await self._write_state(room_id, state)
         log.info("posted and pinned the admin help message in %s", room_id)
 
     async def _pin(self, room_id: str, event_id: str, *, replacing: str | None) -> None:
@@ -300,10 +410,26 @@ class AdminRoomProvisioner:
         pinned.append(event_id)
         await self.client.put_room_state_event(room_id, PINNED_EVENTS_TYPE, {"pinned": pinned})
 
-    async def _load_state(self, room_id: str) -> AdminRoomState:
-        content = await self.client.get_room_state_event(room_id, self._state_event_type)
-        if content is None:
-            return AdminRoomState(configured_alias=self.cfg.alias)
-        parsed = parse_room_state(OnbotRoomType.admin_room, content)
-        assert isinstance(parsed, AdminRoomState)
-        return parsed
+    def _load_state(self) -> AdminRoomState:
+        """The marker the bot knows (W6R-08), never one read in the room; fresh if there is none."""
+        return self._parse(self._marker)
+
+    def _parse(self, content: dict[str, Any] | None) -> AdminRoomState:
+        if content:
+            try:
+                parsed = parse_room_state(OnbotRoomType.admin_room, content)
+            except ValidationError:
+                log.warning(
+                    "the admin control room's marker as the bot knows it cannot be read; using a fresh one"
+                )
+            else:
+                if isinstance(parsed, AdminRoomState):
+                    return parsed
+        return AdminRoomState(configured_alias=self.cfg.alias)
+
+    async def _write_state(self, room_id: str, state: AdminRoomState) -> None:
+        """Write the marker and remember it as the bot's own."""
+        content = dump_room_state(state)
+        await self.client.put_room_state_event(room_id, self._state_event_type, content)
+        self._marker = content
+        self.rooms.remember_marker(room_id, content)
