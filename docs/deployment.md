@@ -75,6 +75,15 @@ services:
 
 See [docs/configuration.md](configuration.md) for the full env-var scheme.
 
+## One configuration per bot account
+
+Run one Onbot configuration per bot account. Two configurations that share the bot account and sync
+the same Authentik group (two deployments with different space aliases, or a staging configuration
+pointed at the production homeserver) are not supported. Each one links the shared group room into
+its own space and, whenever it has to write that link again, removes the links the bot wrote to any
+other space, so the room moves back and forth between the two spaces. The two also disagree about
+members, power levels and teardown. Give a second deployment its own bot account and its own groups.
+
 ## CLI commands
 
 The image runs `onbot run` by default. You can override the command to run any of these:
