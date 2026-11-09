@@ -75,6 +75,15 @@ services:
 
 See [docs/configuration.md](configuration.md) for the full env-var scheme.
 
+## One configuration per bot account
+
+Run one Onbot configuration per bot account. Two configurations that share the bot account and sync
+the same Authentik group (two deployments with different space aliases, or a staging configuration
+pointed at the production homeserver) are not supported. Each one links the shared group room into
+its own space and, whenever it has to write that link again, removes the links the bot wrote to any
+other space, so the room moves back and forth between the two spaces. The two also disagree about
+members, power levels and teardown. Give a second deployment its own bot account and its own groups.
+
 ## CLI commands
 
 The image runs `onbot run` by default. You can override the command to run any of these:
@@ -186,6 +195,13 @@ need a look at your configuration. The ones that stop the bot or cost a first st
   names are no longer read: a config or `ONBOT_...` environment variable that still uses one stops the
   bot at startup with exit code 2 and a message naming the new key. Rename the keys in the same
   deployment as the image update.
+- **New default topics (after 0.0.11).** The default topics of the admin control room
+  (`admin_room.topic`) and of the visitor lobbies (`visitor_lobby_topic_template`) no longer contain
+  a dash. Onbot keeps both topics in step with the configuration, so on the first pass after the
+  upgrade it rewrites them once in every existing control room and lobby that uses the default. To
+  keep the old wording, set the old text in the configuration. The notice board topic
+  (`onboarding_room_topic`) changed too, but it is only used for new boards; existing boards keep
+  theirs.
 - **The first start after upgrading from 0.0.11 or older does some work once.** Every onbot marker
   written by an older version is rewritten once (logged at INFO as "the onbot marker was
   incomplete; the bot restored it"): older markers miss fields or still carry the Authentik URL

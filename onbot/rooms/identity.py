@@ -56,6 +56,7 @@ from typing import Any, Protocol
 
 from pydantic import ValidationError
 
+from onbot.admin.broadcast import describe_error
 from onbot.clients.base import ApiError
 from onbot.logging import get_logger
 from onbot.models import MatrixRoom
@@ -425,7 +426,9 @@ class RoomIdentityResolver:
         try:
             boards = await self._direct_rooms()
         except Exception as exc:
-            raise NoticeBoardsUnreadable(str(exc) or type(exc).__name__) from exc
+            # The short, bounded cause (status and errcode): the message ends up in the `!room adopt`
+            # reply, and an ApiError's own text carries the URL and the whole payload (W8R-07).
+            raise NoticeBoardsUnreadable(describe_error(exc)) from exc
         return room_id in boards
 
     async def identify(self, room_id: str) -> RoomIdentity | None:

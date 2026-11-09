@@ -186,15 +186,23 @@ class DiscoveryPoller:
         settings = self.config.sync_matrix_rooms_based_on_authentik_groups
         if not settings.enabled:
             return []
-        return await self.authentik.list_groups(filter_by_attribute=settings.only_groups_with_attributes)
+        # Membership comes from the users' `groups_obj`; the member objects are not needed (W8R-05).
+        return await self.authentik.list_groups(
+            filter_by_attribute=settings.only_groups_with_attributes, include_users=False
+        )
 
     async def _list_power_level_groups(self) -> list[dict[str, Any]]:
-        """Every group that grants a power level, mapped to a room or not (the engine's query)."""
+        """Every group that grants a power level, mapped to a room or not (the engine's query).
+
+        Authentik cannot filter by the attribute, so this lists every group; without the member
+        objects (only their pks are fingerprinted), on every poll (W8R-05).
+        """
         settings = self.config.sync_matrix_rooms_based_on_authentik_groups
         if not settings.enabled or not self.config.sync_authentik_users_with_matrix_rooms.enabled:
             return []
         return await self.authentik.list_groups(
-            filter_has_non_empty_attributes=[settings.authentik_group_attr_for_matrix_power_level]
+            filter_has_non_empty_attributes=[settings.authentik_group_attr_for_matrix_power_level],
+            include_users=False,
         )
 
     async def _look_up_global_admins(self) -> dict[str, list[dict[str, Any]]]:

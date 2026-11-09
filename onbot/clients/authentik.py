@@ -88,18 +88,25 @@ class ApiClientAuthentik(BaseApiClient):
         filter_has_attributes: Sequence[str] | None = None,
         filter_has_non_empty_attributes: Sequence[str] | None = None,
         include_inactive_users_obj: bool = False,
+        include_users: bool = True,
     ) -> list[dict[str, Any]]:
         """List groups (https://<authentik>/api/v3/#get-/core/groups/), following all pages.
 
         ``filter_has_attributes`` / ``filter_has_non_empty_attributes`` are client-side filters on
         dotted attribute paths (Authentik's query API can't express them). Inactive users are
         stripped from each group's ``users_obj`` unless ``include_inactive_users_obj``.
+
+        ``include_users=False`` asks Authentik to leave out ``users_obj`` (the embedded user objects of
+        every member); ``users``, the members' pks, stays. A caller that only needs the pks saves most
+        of the payload with it (W8R-05). An Authentik that does not know the parameter sends
+        ``users_obj`` anyway, which is harmless.
         """
         params = {
             "members_by_username": filter_members_by_username,
             "members_by_pk": filter_members_by_pk,
             "attributes": (json.dumps(filter_by_attribute) if filter_by_attribute else None),
             "is_superuser": filter_is_superuser,
+            "include_users": None if include_users else "false",
             "page_size": _DEFAULT_PAGE_SIZE,
         }
         groups: list[dict[str, Any]] = await self.paginate_collect(
@@ -137,5 +144,6 @@ class ApiClientAuthentik(BaseApiClient):
 
     @staticmethod
     def _remove_inactive_users_from_group(group: dict[str, Any]) -> None:
-        if "users_obj" in group:
+        # `users_obj` is null when the listing asked for no user objects (`include_users=false`).
+        if group.get("users_obj") is not None:
             group["users_obj"] = [u for u in group["users_obj"] if u.get("is_active") is True]

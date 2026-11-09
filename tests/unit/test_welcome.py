@@ -972,13 +972,29 @@ async def test_an_unchanged_avatar_is_not_set_again() -> None:
 
 async def test_a_board_created_while_the_avatar_host_was_down_gets_it_later() -> None:
     client = _AvatarClient()
-    await _avatar_service(client, None).welcome_user(ALICE)
+    assert await _avatar_service(client, None).welcome_user(ALICE) is None  # no picture on the board
     assert client.avatar_writes == []
     assert _direct_state(client, "!dm-1:matrix.test")["setup_complete"] is True
 
-    await _avatar_service(client, b"logo").welcome_user(ALICE)
+    applied = await _avatar_service(client, b"logo").welcome_user(ALICE)
 
     assert client.avatar_writes == [("!dm-1:matrix.test", "mxc://matrix.test/m1")]
+    assert applied == hashlib.sha256(b"logo").hexdigest()  # what the board wears (W8R-06)
+
+
+async def test_welcome_reports_the_picture_the_board_wears_not_the_one_known_at_its_end() -> None:
+    """W8R-06: the listener records what the welcome returns. When the avatar step fails, the board
+    keeps the picture it had, although the bot avatar's content is known by then."""
+
+    class _NoAvatarWrites(_AvatarClient):
+        async def set_room_avatar(self, room_id: str, mxc_uri: str) -> None:
+            raise RuntimeError("refused")
+
+    client = _NoAvatarWrites()
+    service = _avatar_service(client, b"logo")
+
+    assert await service.welcome_user(ALICE) is None
+    assert service.board_avatar_sha256() == hashlib.sha256(b"logo").hexdigest()
 
 
 async def test_an_older_board_that_wears_the_picture_only_gets_the_record() -> None:

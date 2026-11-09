@@ -358,6 +358,72 @@ async def test_a_stale_link_into_an_earlier_space_the_bot_left_is_not_a_room_pro
     assert all(not r.problems for r in engine.last_pass_report.rooms)
 
 
+def _linked_into_the_old_space(effectors: RecordingEffectors) -> None:
+    """ROOM1 as the old space left it, and not yet in the current one."""
+    _seed_converged(effectors)
+    del effectors.state_store[(SPACE, CHILD, ROOM1)]
+    del effectors.state_store[(ROOM1, PARENT, SPACE)]
+    effectors.state_store[(ROOM1, PARENT, OLD_SPACE)] = {"canonical": True, "via": ["company.org"]}
+    effectors.state_store[(OLD_SPACE, CHILD, ROOM1)] = {"suggested": False, "via": ["company.org"]}
+
+
+class _FlakyOldSpace(RecordingEffectors):
+    """The first write that removes a link between ROOM1 and the old space fails with a 502."""
+
+    fail_on: tuple[str, str, str] = (ROOM1, PARENT, OLD_SPACE)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.fail = True
+
+    async def put_room_state(
+        self, room_id: str, event_type: str, content: dict[str, Any], state_key: str = ""
+    ) -> None:
+        if self.fail and (room_id, event_type, state_key) == self.fail_on and content == {}:
+            self.fail = False
+            raise ApiError("PUT", "/state", 502, {"errcode": "M_UNKNOWN"})
+        await super().put_room_state(room_id, event_type, content, state_key)
+
+
+@pytest.mark.parametrize("fail_on", [(ROOM1, PARENT, OLD_SPACE), (OLD_SPACE, CHILD, ROOM1)])
+async def test_a_failed_removal_of_a_link_to_an_earlier_space_is_retried(
+    fail_on: tuple[str, str, str],
+) -> None:
+    """W8R-03: the cleanup ran only in the pass that wrote the current parent link, so one failed
+    write left the old links for good."""
+    effectors = _FlakyOldSpace()
+    effectors.fail_on = fail_on
+    _linked_into_the_old_space(effectors)
+    engine, _admin, effectors, _attention = _engine(SharedStateAdmin(effectors), effectors)
+
+    await engine.reconcile_once()
+    (problem,) = [r for r in engine.last_pass_report.rooms if r.room_id == ROOM1]
+    assert problem.problems == ["space link repair failed: HTTP 502 M_UNKNOWN"]
+
+    await engine.reconcile_once()
+
+    assert effectors.state_store[(ROOM1, PARENT, OLD_SPACE)] == {}
+    assert effectors.state_store[(OLD_SPACE, CHILD, ROOM1)] == {}
+    assert all(not r.problems for r in engine.last_pass_report.rooms)
+    writes = len(effectors.state_writes)
+    await engine.reconcile_once()
+    assert len(effectors.state_writes) == writes  # done: no more cleanup
+
+
+async def test_a_child_link_a_human_wrote_into_the_earlier_space_stays() -> None:
+    """W8R-04: the old space's child link was removed whoever wrote it."""
+    effectors = RecordingEffectors()
+    _linked_into_the_old_space(effectors)
+    effectors.state_store[(OLD_SPACE, CHILD, ROOM1)] = {"suggested": True, "via": ["company.org"]}
+    effectors.senders[(OLD_SPACE, CHILD, ROOM1)] = MODERATOR  # added to the old space by hand
+    engine, _admin, effectors, _attention = _engine(SharedStateAdmin(effectors), effectors)
+
+    await engine.reconcile_once()
+
+    assert effectors.state_store[(ROOM1, PARENT, OLD_SPACE)] == {}  # the bot's own parent link goes
+    assert effectors.state_store[(OLD_SPACE, CHILD, ROOM1)] == {"suggested": True, "via": ["company.org"]}
+
+
 # --- REC-09: marker and lock -----------------------------------------------------------------------
 
 
@@ -732,6 +798,88 @@ async def test_withdrawing_the_grants_of_a_switched_off_lobby_goes_through_the_g
     await engine.reconcile_once()
 
     assert effectors.lobby_users == {CAROL: 100}
+
+
+def _carol_switched_off(
+    admin: SwitchedOffLobbyAdmin | None = None, config: OnbotConfig | None = None
+) -> tuple[ReconcilerEngine, Any, _CarolAdminInLobby, list[Event]]:
+    effectors = _CarolAdminInLobby()
+    effectors.state_store[(LOBBY, JOIN_RULES)] = RESTRICTED
+    _seed_converged(effectors, LOBBY, suggested=True)
+    engine, admin, _effectors, attention = _engine(
+        admin or SwitchedOffLobbyAdmin(), effectors, config=config or OnbotConfig.model_validate(_BASE)
+    )
+    return engine, admin, effectors, attention
+
+
+async def test_a_switched_off_lobby_a_server_admin_blocked_is_a_hold() -> None:
+    """W8R-01 (D23): the block check only ran for wanted lobbies, so a switched-off lobby under a
+    legal hold was closed and lost the levels the bot granted there."""
+    admin = SwitchedOffLobbyAdmin()
+    admin.blocks[LOBBY] = HUMAN_ADMIN
+    engine, admin, effectors, attention = _carol_switched_off(admin)
+
+    await engine.reconcile_once()
+    await engine.reconcile_once()
+
+    assert effectors.state_store[(LOBBY, JOIN_RULES)] == RESTRICTED
+    assert effectors.state_store[(SPACE, CHILD, LOBBY)]["via"] == ["company.org"]
+    assert effectors.lobby_users == {CAROL: 100}
+    assert admin.blocked_changes == []
+    (report,) = [e.payload["text"] for e in attention if LOBBY in e.payload["text"]]  # once
+    assert "blocked it, not the bot" in report and HUMAN_ADMIN in report and "D23" in report
+    assert all(r.room_id != LOBBY for r in engine.last_pass_report.rooms)  # a hold, not a failure
+
+    del admin.blocks[LOBBY]  # the hold ends
+    await engine.reconcile_once()
+
+    assert effectors.state_store[(LOBBY, JOIN_RULES)] == {"join_rule": "invite"}
+    assert CAROL not in effectors.lobby_users
+
+
+async def test_a_switched_off_lobby_blocked_by_the_bot_is_still_closed() -> None:
+    admin = SwitchedOffLobbyAdmin()
+    admin.blocks[LOBBY] = BOT
+    engine, admin, effectors, _attention = _carol_switched_off(admin)
+
+    await engine.reconcile_once()
+
+    assert effectors.state_store[(LOBBY, JOIN_RULES)] == {"join_rule": "invite"}
+    assert CAROL not in effectors.lobby_users
+
+
+class _FlakyLobbyBlockAdmin(SwitchedOffLobbyAdmin):
+    async def get_room_block(self, room_id: str) -> RoomBlock:
+        if room_id == LOBBY:
+            raise ApiError("GET", f"/rooms/{room_id}/block", 500)
+        return await super().get_room_block(room_id)
+
+
+async def test_a_switched_off_lobby_whose_block_cannot_be_read_is_left_alone_this_pass() -> None:
+    """W8R-01 with W4R-04 semantics: an unreadable block may be a server admin's."""
+    engine, _admin, effectors, _attention = _carol_switched_off(_FlakyLobbyBlockAdmin())
+
+    await engine.reconcile_once()
+
+    assert effectors.state_store[(LOBBY, JOIN_RULES)] == RESTRICTED
+    assert effectors.state_store[(SPACE, CHILD, LOBBY)]["via"] == ["company.org"]
+    assert effectors.lobby_users == {CAROL: 100}
+    (problem,) = [r for r in engine.last_pass_report.rooms if r.room_id == LOBBY]
+    assert problem.problems == ["block check failed: HTTP 500"]
+
+
+async def test_a_switched_off_lobby_keeps_its_levels_while_user_sync_is_off() -> None:
+    """W8R-02 (D28): with user sync off the bot leaves every room's power levels alone; the
+    switched-off lobby's withdrawal ignored that. The lobby is still closed."""
+    sync = {**(_BASE.get("sync_authentik_users_with_matrix_rooms") or {}), "enabled": False}
+    config = OnbotConfig.model_validate({**_BASE, "sync_authentik_users_with_matrix_rooms": sync})
+    engine, _admin, effectors, _attention = _carol_switched_off(config=config)
+
+    await engine.reconcile_once()
+
+    assert effectors.state_store[(LOBBY, JOIN_RULES)] == {"join_rule": "invite"}
+    assert effectors.lobby_users == {CAROL: 100}
+    assert effectors.account_data[(LOBBY, GRANTS)]["users"] == {CAROL: 100}
 
 
 async def test_a_lobby_the_bot_closed_opens_again_when_switched_back_on() -> None:
@@ -1389,6 +1537,24 @@ async def test_room_adopt_fails_closed_when_m_direct_cannot_be_read() -> None:
 
     assert "cannot read its list of notice boards" in reply and "Nothing was changed" in reply, reply
     assert len(effectors.state_writes) == writes
+    # W8R-07: the bounded cause, not the ApiError's text with its URL and the raw payload.
+    assert "(m.direct: HTTP 502)" in reply, reply
+    assert "https://" not in reply and "bad gateway" not in reply, reply
+
+
+async def test_room_adopt_quotes_a_long_m_direct_error_bounded() -> None:
+    async def huge_error() -> list[str]:
+        raise ApiError("GET", "/account_data/m.direct", 500, {"errcode": "M_UNKNOWN", "error": "x" * 5000})
+
+    effectors = RecordingEffectors()
+    _seed_converged(effectors)
+    effectors.state_store[(ROOM1, GROUP_MARKER)] = {}
+    engine = _adopt_engine(effectors, huge_error)
+
+    reply = await engine.adopt_room("g1", ROOM1, by=HUMAN_ADMIN)
+
+    assert "(m.direct: HTTP 500 M_UNKNOWN: " in reply, reply
+    assert len(reply) < 600, len(reply)
 
 
 async def test_a_room_scan_reads_every_bot_room_when_m_direct_cannot_be_read() -> None:

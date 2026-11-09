@@ -201,15 +201,21 @@ class WelcomeService:
             return None
         return self.media.known_digest(url)
 
-    async def welcome_user(self, mxid: str) -> None:
-        """Ensure ``mxid`` has a DM with all configured welcome messages delivered (idempotent)."""
+    async def welcome_user(self, mxid: str) -> str | None:
+        """Ensure ``mxid`` has a DM with all configured welcome messages delivered (idempotent).
+
+        Returns the image hash of the picture the notice board wears now, as this welcome recorded
+        it (``None``: no picture), so the listener knows which boards a new bot avatar has to reach
+        (W8R-06). It can differ from :meth:`board_avatar_sha256` at the end of the welcome when the
+        picture behind the URL changed meanwhile.
+        """
         messages = self.config.welcome_new_users_messages or []
         if not messages:
-            return
+            return None
         async with self._locks.setdefault(mxid, asyncio.Lock()):
-            await self._welcome_user(mxid, messages)
+            return await self._welcome_user(mxid, messages)
 
-    async def _welcome_user(self, mxid: str, messages: list[str | WelcomeMessage]) -> None:
+    async def _welcome_user(self, mxid: str, messages: list[str | WelcomeMessage]) -> str | None:
         room_id, created = await self._ensure_direct_room(mxid)
         if created:
             state = DirectRoomState(user_id=mxid, setup_complete=False)
@@ -234,8 +240,7 @@ class WelcomeService:
                 )
                 await self._forget_direct_room(mxid, room_id)
                 # Again from the top: the next room on record, if any, or a new one.
-                await self._welcome_user(mxid, messages)
-                return
+                return await self._welcome_user(mxid, messages)
             await self._maybe_reinvite(room_id, mxid, state)
             if state.setup_complete and await self._converge_avatar(room_id, state):
                 await self._persist(room_id, state)
@@ -279,6 +284,7 @@ class WelcomeService:
                 sent,
                 len(state.welcome_messages_sent),
             )
+        return state.avatar_sha256
 
     def _fill_placeholders(self, message: str, mxid: str) -> str | None:
         """Fill ``message``'s placeholders for ``mxid``; ``None`` if it needs a space there is none of.

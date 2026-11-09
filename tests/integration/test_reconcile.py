@@ -4,9 +4,12 @@ power levels, and the parent space (GOALS G2/G3/G6/G8). Each test drives the rea
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from onbot.app import run_reconcile_once
+from onbot.clients.authentik import ApiClientAuthentik
 from onbot.clients.matrix import ApiClientMatrix
 from onbot.clients.synapse_admin import ApiClientSynapseAdmin
 from onbot.reconciler.rooms import compute_room_attributes
@@ -78,3 +81,29 @@ async def test_parent_space_creation_and_membership(
     assert space_id is not None
     members = await admin_client.list_room_members(space_id)
     assert login.mxid in members
+
+
+async def test_a_group_listing_without_user_objects_still_names_the_members(
+    make_config, authentik_admin: S.AuthentikAdmin, authentik_client: ApiClientAuthentik
+) -> None:
+    """W8R-05: the discovery poll lists groups with `include_users=false`. It fingerprints the
+    members' pks (`users`), so the real Authentik must keep those while it drops `users_obj`."""
+    attr = (
+        make_config().sync_matrix_rooms_based_on_authentik_groups.authentik_group_attr_for_matrix_power_level
+    )
+    group = authentik_admin.create_group(f"{S.uniq('dpl')}-mods", attributes={attr: 50})
+    user = authentik_admin.create_user(S.uniq("dplmember"), password=S.DEFAULT_PASSWORD)
+
+    async def listed() -> dict[str, Any]:
+        groups = await authentik_client.list_groups(
+            filter_has_non_empty_attributes=[attr], include_users=False
+        )
+        (found,) = [g for g in groups if g["pk"] == group["pk"]]
+        return found
+
+    assert not (await listed()).get("users")
+    authentik_admin.add_user_to_group(group["pk"], user["pk"])
+
+    found = await listed()
+    assert found["users"] == [user["pk"]]
+    assert not found.get("users_obj")

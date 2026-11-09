@@ -97,10 +97,13 @@ arrangement, so a visitor is never confused about where they have landed, and it
 - **Switching a lobby off closes it.** When a group no longer wants a lobby (the group attribute set
   to `false`, or `visitor_lobby_enabled` turned off), Onbot sets the lobby's join rule to invite-only
   and takes it out of the space. Nobody is kicked; the people in it can stay and talk. The power
-  levels Onbot granted there (the global room admins) are withdrawn. Closing and each withdrawal count
+  levels Onbot granted there (the global room admins) are withdrawn, unless user sync is switched off
+  (then Onbot leaves power levels alone everywhere). Closing and each withdrawal count
   as removals for the [guard](#guard-against-mass-removals), so many lobbies closing at once wait for
   a confirmation. Turn the lobby on again and Onbot reopens it, puts it back into the space and seats
-  the global room admins again.
+  the global room admins again. A lobby a server admin blocked is a hold: Onbot neither closes it nor
+  withdraws levels there while the block exists, reports it once, and closes it once the block is
+  lifted.
 - **A lobby somebody closed by hand stays closed.** If a room admin of the lobby changes its join rule
   to invite-only (or knock, or private), Onbot leaves it that way, logs a warning and reports it once
   in the admin control room. To hand the lobby back to Onbot, an admin types
@@ -180,8 +183,9 @@ in, so your identity directory and your chat rooms need not be the same list.
   on a difference, that each of its rooms is still linked into the space (and, for a lobby, suggested
   there), still carries its marker as Onbot wrote it, and that the marker is still protected. A room
   whose creation was cut off halfway, a room from before the space existed, or the rooms of a space
-  that was recreated are linked in again (the links Onbot wrote to the old space are removed, a
-  link a human added to another space stays). A marker somebody at Onbot's own level removed or rewrote,
+  that was recreated are linked in again (the links Onbot wrote to the old space are removed, also on
+  a later pass when the first attempt fails; a link a human added, to another space or into the old
+  one, stays). A marker somebody at Onbot's own level removed or rewrote,
   or whose protection they lowered, is restored from what Onbot last wrote there itself, and
   reported once; Onbot never takes over what such a marker claims. Each repair stands on its own: one
   the server refuses is reported, and the others still run. This works while Onbot runs: a marker
