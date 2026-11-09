@@ -4,9 +4,18 @@ from __future__ import annotations
 
 import asyncio
 
+import httpx
 import pytest
 
-from onbot.admin.broadcast import BroadcastFailure, BroadcastResult, BroadcastService, RecipientsUnknown
+from onbot.admin.broadcast import (
+    BroadcastFailure,
+    BroadcastResult,
+    BroadcastService,
+    RecipientsUnknown,
+    describe_error,
+)
+from onbot.clients.base import ApiError
+from onbot.clients.matrix import ApiClientMatrix
 from onbot.config import AdminRoom, AuthentikServer, OnbotConfig, SynapseServer
 
 BOT = "@bot:matrix.test"
@@ -41,6 +50,7 @@ class _FakeClient:
         # room -> the target user's membership there; "join" when not listed.
         self._memberships = memberships or {}
         self.sends: list[tuple[str, str, str]] = []
+        self.kwargs: list[dict[str, object]] = []
         self.in_flight = 0
         self.max_in_flight = 0
 
@@ -52,7 +62,10 @@ class _FakeClient:
     async def get_membership(self, room_id: str, user_id: str) -> str | None:
         return self._memberships.get(room_id, "join")
 
-    async def send_text_message(self, room_id: str, body: str, *, msgtype: str = "m.text") -> str:
+    async def send_text_message(
+        self, room_id: str, body: str, *, msgtype: str = "m.text", **kwargs: object
+    ) -> str:
+        self.kwargs.append(kwargs)
         self.in_flight += 1
         self.max_in_flight = max(self.max_in_flight, self.in_flight)
         try:
@@ -133,7 +146,8 @@ async def test_send_concurrency_is_bounded() -> None:
 
 
 async def test_no_direct_rooms_is_a_no_op_not_an_error() -> None:
-    result = await _service(_FakeClient({})).broadcast("hello")
+    # Users are mapped, but none of them has a notice board yet.
+    result = await _service(_FakeClient({}), mapped={"@a:matrix.test"}).broadcast("hello")
 
     assert result.sent_count == 0
     assert result.failed_count == 0
@@ -199,3 +213,230 @@ async def test_a_room_the_user_left_is_skipped_and_counted_apart() -> None:
     assert sorted(result.sent) == ["!ra:x", "!rc:x"]
     assert result.not_member == [("!rb:x", "@b:matrix.test")]
     assert result.summary() == "sent to 2 rooms, 0 failed, 1 skipped (the user left their notice board)"
+
+
+async def test_an_empty_mapped_set_refuses_the_broadcast() -> None:
+    """W4R-05: an Authentik answer without users (outage, token scope, filter typo) maps nobody.
+
+    That is not "everybody received it": it is refused like an unknown set, so the CLI exits 1 and
+    !announce says why instead of reporting "sent to 0 rooms, 0 failed".
+    """
+    client = _FakeClient({"@a:matrix.test": ["!ra:x"]})
+
+    result = await _service(client, mapped=set()).broadcast("hello")
+
+    assert client.sends == []
+    assert result.refused is not None
+    assert "no users are mapped" in result.summary()
+
+
+# --- ONB-10: announcements are rendered like the welcome messages ------------------------------
+
+
+async def test_a_markdown_announcement_carries_the_rendered_html() -> None:
+    client = _FakeClient({"@a:matrix.test": ["!ra:x"]})
+    text = "**Maintenance** tonight, see [status](https://status.example.org)"
+
+    await _service(client).broadcast(text)
+
+    assert client.sends[0][1] == text  # the source stays in body, as Element sends it
+    formatted = client.kwargs[0]["formatted_body"]
+    assert isinstance(formatted, str)
+    assert "<strong>Maintenance</strong>" in formatted
+    assert '<a href="https://status.example.org">status</a>' in formatted
+
+
+async def test_a_plain_announcement_stays_a_plain_message() -> None:
+    client = _FakeClient({"@a:matrix.test": ["!ra:x"]})
+
+    await _service(client).broadcast("Maintenance at 22:00 UTC")
+
+    assert client.kwargs[0]["formatted_body"] is None
+
+
+# --- ONB-04: the result stays postable however many rooms fail -----------------------------------
+
+
+def _api_error(room: str, status: int = 429, errcode: str = "M_LIMIT_EXCEEDED") -> ApiError:
+    url = f"https://matrix.test/_matrix/client/v3/rooms/{room}/send/m.room.message/{'0' * 32}"
+    payload = {"errcode": errcode, "error": "Too Many Requests", "retry_after_ms": 5000}
+    return ApiError("PUT", url, status, payload)
+
+
+def test_the_summary_of_a_large_partial_failure_stays_far_below_the_event_size_limit() -> None:
+    failures = [
+        BroadcastFailure(
+            f"!room{i}:matrix.test", f"@user{i}:matrix.test", describe_error(_api_error(f"!r{i}"))
+        )
+        for i in range(300)
+    ]
+    forbidden = describe_error(_api_error("!gone", 403, "M_FORBIDDEN"))
+    failures.append(BroadcastFailure("!gone:matrix.test", "@gone:matrix.test", forbidden))
+    result = BroadcastResult(sent=["!ok:x"] * 200, failures=failures)
+
+    summary = result.summary()
+
+    # Synapse refuses events above 65536 bytes; the reply must not come anywhere near that.
+    assert len(summary.encode()) < 4000
+    assert summary.startswith("sent to 200 rooms, 301 failed")
+    assert "Failed: 300 rate limited (HTTP 429), 1 HTTP 403 M_FORBIDDEN: Too Many Requests" in summary
+    assert "... and 281 more (every room is in the bot's log)" in summary
+    # Neither the request URL nor the transaction id ends up in the reply.
+    assert "/_matrix/client" not in summary
+
+
+def test_errors_are_described_without_the_request_url() -> None:
+    assert describe_error(_api_error("!r", 404, "M_NOT_FOUND")) == "HTTP 404 M_NOT_FOUND: Too Many Requests"
+    assert describe_error(RuntimeError("boom")) == "RuntimeError: boom"
+    assert describe_error(TimeoutError()) == "TimeoutError"
+
+
+# --- ONB-03: paced by the server's rate-limit answers --------------------------------------------
+
+
+class _TokenBucketHomeserver:
+    """Synapse's per-user message limiter (``rc_message``) over a fake clock, behind a real client.
+
+    A send costs one token; tokens refill at ``rate`` per second up to ``burst``. A send without a
+    token gets 429 with ``retry_after_ms`` until the next one, as Synapse answers.
+    """
+
+    def __init__(
+        self, direct: dict[str, list[str]], *, rate: float, burst: int, refuse_all: bool = False
+    ) -> None:
+        self.direct = direct
+        self.rate = rate
+        self.burst = burst
+        self.refuse_all = refuse_all
+        self.now = 0.0
+        self.tokens = float(burst)
+        self.updated = 0.0
+        self.delivered: dict[str, list[str]] = {}  # room -> txn ids that created an event
+        self.txns_seen: dict[str, set[str]] = {}  # room -> every txn id a send used
+
+    def clock(self) -> float:
+        return self.now
+
+    async def sleep(self, seconds: float) -> None:
+        self.now += seconds
+
+    def _refill(self) -> None:
+        self.tokens = min(self.burst, self.tokens + (self.now - self.updated) * self.rate)
+        self.updated = self.now
+
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if "/account_data/m.direct" in path:
+            return httpx.Response(200, json=self.direct)
+        if "/state/m.room.member/" in path:
+            return httpx.Response(200, json={"membership": "join"})
+        if "/send/m.room.message/" in path:
+            room = path.split("/rooms/")[1].split("/")[0]
+            txn = path.rsplit("/", 1)[1]
+            self.txns_seen.setdefault(room, set()).add(txn)
+            self._refill()
+            if self.refuse_all or self.tokens < 1:
+                wait_ms = 600_000 if self.refuse_all else int((1 - self.tokens) / self.rate * 1000) + 1
+                body = {
+                    "errcode": "M_LIMIT_EXCEEDED",
+                    "error": "Too Many Requests",
+                    "retry_after_ms": wait_ms,
+                }
+                return httpx.Response(429, json=body)
+            self.tokens -= 1
+            txns = self.delivered.setdefault(room, [])
+            if txn not in txns:
+                txns.append(txn)
+            return httpx.Response(200, json={"event_id": f"$e-{room}-{txn[-6:]}"})
+        return httpx.Response(404, json={"errcode": "M_UNRECOGNIZED"})
+
+
+def _paced_service(
+    server: _TokenBucketHomeserver, **kwargs: object
+) -> tuple[BroadcastService, ApiClientMatrix]:
+    client = ApiClientMatrix(
+        server_url="https://matrix.test",
+        access_token="tok",
+        server_name="matrix.test",
+        client=httpx.AsyncClient(transport=httpx.MockTransport(server.handle)),
+        sleep=server.sleep,
+    )
+
+    async def mapped() -> set[str]:
+        return set(server.direct)
+
+    service = BroadcastService(
+        client,
+        _config(),
+        recipients=mapped,
+        clock=server.clock,
+        sleep=server.sleep,
+        **kwargs,  # type: ignore[arg-type]
+    )
+    return service, client
+
+
+async def test_a_throttled_broadcast_reaches_every_room_at_the_servers_pace() -> None:
+    """ONB-03: Synapse's default rc_message (0.2/s, burst 10) and 30 rooms.
+
+    Before the fix each send waited out its own 429s in the shared HTTP retry (4 attempts) while the
+    other workers drained the same bucket, and most rooms after the burst failed.
+    """
+    direct = {f"@u{i:02d}:matrix.test": [f"!r{i:02d}:matrix.test"] for i in range(30)}
+    server = _TokenBucketHomeserver(direct, rate=0.2, burst=10)
+    service, client = _paced_service(server)
+    service.rate_limit_lifted = False
+    try:
+        result = await service.broadcast("Maintenance tonight")
+    finally:
+        await client.aclose()
+
+    assert result.failures == []
+    assert result.sent_count == 30
+    assert sorted(server.delivered) == sorted(room for rooms in direct.values() for room in rooms)
+    # Every attempt at a room used the same transaction id, so a repeat could not post it twice.
+    assert all(len(txns) == 1 for txns in server.txns_seen.values())
+    # 20 messages after the burst, one token every 5 s: about 100 s of the server's time.
+    assert 95 <= server.now <= 130
+    assert result.rate_limited >= 1
+    summary = result.summary()
+    assert "rate-limited the bot" in summary
+    assert "send rate limit is not lifted" in summary
+
+
+async def test_a_broadcast_that_never_gets_through_gives_up_after_the_stall_limit() -> None:
+    direct = {f"@u{i}:matrix.test": [f"!r{i}:matrix.test"] for i in range(3)}
+    server = _TokenBucketHomeserver(direct, rate=0.2, burst=1, refuse_all=True)
+    service, client = _paced_service(server, stall_limit_sec=300)
+    try:
+        result = await service.broadcast("hello")
+    finally:
+        await client.aclose()
+
+    assert result.sent_count == 0
+    assert result.failed_count == 3
+    assert all("gave up" in failure.error for failure in result.failures)
+    # The limit plus at most one capped wait: the server's ten minutes are not waited out per room.
+    assert 300 <= server.now <= 300 + 60 + 1
+
+
+async def test_slow_failures_without_a_rate_limit_never_count_as_a_stall() -> None:
+    """Only a throttled broadcast gives up; slow, failing rooms are just failures."""
+    now = [0.0]
+
+    class _Slow(_FakeClient):
+        async def send_text_message(self, room_id: str, body: str, **kwargs: object) -> str:
+            now[0] += 200  # each send takes long (the client's own retries of a 5xx, say)
+            if room_id != "!r2:x":
+                raise RuntimeError("HTTP 500")
+            return "$e"
+
+    client = _Slow({f"@u{i}:matrix.test": [f"!r{i}:x"] for i in range(3)})
+
+    async def sleep(seconds: float) -> None:
+        now[0] += seconds
+
+    result = await _service(client, concurrency=1, clock=lambda: now[0], sleep=sleep).broadcast("hi")
+
+    assert result.sent == ["!r2:x"]
+    assert [f.error for f in result.failures] == ["RuntimeError: HTTP 500", "RuntimeError: HTTP 500"]

@@ -461,3 +461,27 @@ async def test_a_refused_kick_is_raised_without_a_membership_check() -> None:
         await client.aclose()
     assert kick.call_count == 1
     assert not member.called
+
+
+@respx.mock
+async def test_a_send_that_paces_itself_gets_the_429_at_once() -> None:
+    """ONB-03: the broadcast waits for the server itself, so the client must not wait it out first."""
+    route = respx.put(url__startswith=f"{HS}/_matrix/client/v3/rooms/").mock(
+        side_effect=[
+            httpx.Response(429, json={"errcode": "M_LIMIT_EXCEEDED", "retry_after_ms": 4000}),
+            httpx.Response(200, json={"event_id": "$e"}),
+        ]
+    )
+    sleeps = _Sleeps()
+    client = _matrix(sleeps)
+    try:
+        with pytest.raises(ApiError) as caught:
+            await client.send_text_message("!r:matrix.test", "hi", retry_rate_limited=False)
+        assert caught.value.status_code == 429
+        assert caught.value.retry_after == 4.0
+        assert route.call_count == 1
+        assert sleeps.waits == []
+        # Every other caller keeps the retry.
+        assert await client.send_text_message("!r:matrix.test", "hi") == "$e"
+    finally:
+        await client.aclose()

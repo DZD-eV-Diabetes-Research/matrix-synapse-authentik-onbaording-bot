@@ -356,8 +356,9 @@ joinable at all.
   holds the alias, Onbot does not use it and the room stage stops with an error instead. Turn creation off to build and curate the space
   yourself, in which case Onbot only adds rooms to it; if the space is then missing entirely, Onbot
   refuses to start rather than scatter rooms.
-- **Its name, topic and icon are configurable.** The icon is downloaded and re-applied only when its
-  source URL changes, so it also updates an already existing space.
+- **Its name, topic and icon are configurable.** The icon is downloaded once per start and
+  re-applied only when its source URL or the picture behind it changed, so it also updates an
+  already existing space.
 - **Space membership is add-only** — Onbot never kicks anyone out of the space, only out of
   individual rooms.
 - Onboarding notice-board rooms can optionally be gathered here too
@@ -523,9 +524,10 @@ without anyone editing rooms by hand.
   topic comes from `matrix_topic_from_authentik_attribute` with an optional `topic_prefix`, and an
   unset source simply leaves the topic blank.
 - **The icon is a URL held on the group.** `room_avatar_url_attribute` names a key inside the group's
-  custom attributes that holds an HTTP(S) image URL; Onbot downloads and re-uploads it, and only when
-  the URL changes, so it also updates rooms that already exist. (The parent space has its own icon
-  setting.) A group's [visitor lobby](#visitor-lobby) wears the same icon as its group room, from the
+  custom attributes that holds an HTTP(S) image URL; Onbot downloads it once per start and re-uploads
+  it only when the URL or the picture behind it changed (it records a hash of the image), so a new
+  logo at the same address reaches rooms that already exist after the next restart. (The parent space
+  has its own icon setting.) A group's [visitor lobby](#visitor-lobby) wears the same icon as its group room, from the
   same attribute: there is nothing extra to configure.
 - **Keeping in step is a switch.** `keep_updating_matrix_attributes_from_authentik` (on by default)
   re-applies the name and topic every reconcile, to the group room and its lobby alike, overwriting
@@ -693,7 +695,9 @@ to a shell.
 - **Authorisation is an allowlist, never a room power level.** The allowlist is the union of
   `admin_user_ids` (full Matrix IDs listed by hand — the break-glass floor that keeps working even
   when Authentik is unreachable) and the members of the Authentik groups in
-  `authentik_group_pks_granting_bot_admin`. When the union is empty at runtime (the admin group lost
+  `authentik_group_pks_granting_bot_admin`. Group membership is checked on each user Authentik
+  returns, not only through Authentik's group filter, so a server that ignored the filter cannot
+  make everybody an admin. When the union is empty at runtime (the admin group lost
   its last member) nobody may command the bot, even someone who is somehow in the room.
 - **Authentik superusers are deliberately *not* bot admins**, and there is no option to make them so:
   a capability that pages everyone must not widen because somebody was granted an unrelated role
@@ -706,14 +710,36 @@ to a shell.
   another of its rooms), Onbot never posts, invites or takes commands there: the control room stays
   off, with an error in the log naming the alias. The room is unencrypted and unfederated, so the bot
   can read it and it cannot be commanded from off-server.
-- **Broadcasts are fail-soft.** They go out as quiet `m.notice` messages, rate-limited across the
-  fan-out, and one unreachable room is reported rather than allowed to silence the announcement for
-  everyone else. The `onbot broadcast` CLI command does the same job without a room.
+- **Broadcasts are fail-soft.** They go out as quiet `m.notice` messages, and one unreachable room is
+  reported rather than allowed to silence the announcement for everyone else. Markdown is rendered
+  like in the welcome messages (`**bold**`, links). The `onbot broadcast` CLI command does the same
+  job without a room.
+- **Broadcasts follow the homeserver's rate limit.** Onbot lifts Synapse's send limit for the bot at
+  startup; `!status` says whether that worked. When it did not (no admin rights, the admin API not
+  reachable), the homeserver answers with "too many requests" and the broadcast slows down to the pace
+  it allows instead of failing: one message at a time, as long as the server asks to wait. A few
+  hundred users can then take many minutes (Synapse's default is one message per 5 seconds after a
+  burst of 10). Only when nothing gets through for 5 minutes does it give up on the rest. The result
+  says how often it was slowed down.
+- **`!announce` answers twice.** First "Sending the announcement to N rooms", then the result when the
+  last room is done; the control room keeps taking commands meanwhile. One announcement runs at a
+  time: a second `!announce` before the result is refused, not queued, so send it again afterwards.
+  The result names at most 20 failed rooms and counts the rest by cause; every room is in the log.
+- **Edits are not commands.** Correcting a typo in an `!announce` you already sent does nothing (the
+  announcement went out as first written); Onbot says so in the room. Send a new `!announce` if
+  needed.
+- **Admins who leave stay out.** An admin who declines the invitation or leaves the room is not
+  invited again on the next reconcile. To get back in, they need to drop out of the admin list (or
+  group) and be added again, which brings a new invitation. Admins who left before this behaviour
+  existed get one more invitation after the upgrade.
 - **Broadcasts reach mapped users who are still in their notice board.** Only users the reconciler
   maps (the same set that gets welcomed) are announced to, so an account that is not in Authentik
   never receives one, even when an older Onbot gave it a notice board. `!announce` uses the set of
   the last pass and is refused until the first pass has mapped anybody; `onbot broadcast` reads
-  Authentik and the identity record itself (read-only), so it needs Authentik reachable. A user who
+  Authentik and the identity record itself (read-only), so it needs Authentik reachable. When
+  Authentik returns nobody in the sync scope (an outage, an API token that cannot see the users, a
+  typo in a scope filter), the broadcast is refused too ("no users are mapped", exit code 1) rather
+  than reported as "sent to 0 rooms". A user who
   left their notice board is skipped and counted apart ("1 skipped"), so the "sent to" count is the
   number of users who can read the message. Notice boards of deactivated (erased) accounts and of
   accounts on other homeservers are dropped from the bot's `m.direct` on the next pass.

@@ -525,6 +525,7 @@ class ApiClientMatrix(BaseApiClient):
         msgtype: str = "m.text",
         formatted_body: str | None = None,
         txn_id: str | None = None,
+        retry_rate_limited: bool = True,
     ) -> str:
         """Send a textual message; returns the event id.
 
@@ -543,15 +544,20 @@ class ApiClientMatrix(BaseApiClient):
         display it in place of ``body``, which stays as the fallback for those that do not render
         HTML — so it must say the same thing, not more.
         https://spec.matrix.org/latest/client-server-api/#mroommessage-msgtypes
+
+        ``retry_rate_limited=False`` raises a 429 at once instead of waiting it out: the broadcast
+        paces its fan-out by the server's answers itself (ONB-03).
         """
         txn = txn_id or uuid.uuid4().hex
         content: dict[str, Any] = {"msgtype": msgtype, "body": body}
         if formatted_body is not None:
             content["format"] = "org.matrix.custom.html"
             content["formatted_body"] = formatted_body
-        result = await self.put_json(
+        result = await self.request_json(
+            "PUT",
             f"v3/rooms/{path_segment(room_id)}/send/m.room.message/{path_segment(txn)}",
             json_body=content,
+            retry_rate_limited=retry_rate_limited,
         )
         event_id: str = result["event_id"]
         return event_id
@@ -708,6 +714,9 @@ class CSApiEffectors:
 
     async def set_room_avatar(self, room_id: str, mxc_uri: str) -> None:
         await self.client.set_room_avatar(room_id, mxc_uri)
+
+    async def avatar_digest(self, url: str) -> str:
+        return (await self._media.image(url)).sha256
 
     async def upload_avatar(self, url: str) -> str:
         return await self._media.upload_from_url(url)

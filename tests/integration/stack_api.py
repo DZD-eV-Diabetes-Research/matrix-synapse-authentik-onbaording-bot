@@ -430,6 +430,20 @@ def send_message_status(access_token: str, room_id: str, body: str) -> int:
     ).status_code
 
 
+def send_message(access_token: str, room_id: str, content: dict[str, Any]) -> str:
+    """Send an ``m.room.message`` with arbitrary ``content`` as the token's owner; returns its event id."""
+    r = httpx.put(
+        f"{SYNAPSE_URL}/_matrix/client/v3/rooms/{quote(room_id, safe='')}/send/m.room.message/"
+        f"{secrets.token_hex(8)}",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json=content,
+        timeout=15.0,
+    )
+    r.raise_for_status()
+    event_id: str = r.json()["event_id"]
+    return event_id
+
+
 def ban_user(access_token: str, room_id: str, user_id: str) -> None:
     """Ban ``user_id`` from ``room_id`` as the token's owner (a room moderator in the scenarios)."""
     r = httpx.post(

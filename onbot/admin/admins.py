@@ -13,6 +13,11 @@ so this module is written to fail *closed* in every direction it can fail:
   rather than to whichever account the mapping attribute happens to name.
   (``matrix_user_ignore_list`` is *not* applied — those are exactly the Matrix-only accounts that
   ``admin_user_ids`` exists to name.)
+* **Authentik's filter is a hint, not the gate** (SEC-09). The admin groups are asked for with
+  ``groups_by_pk``, but a server that does not recognise a filter drops it and answers with every
+  user (see :meth:`~onbot.clients.authentik.ApiClientAuthentik.list_users`). Every returned user is
+  therefore re-checked here: only one whose own ``groups`` name an admin group (and who is not
+  disabled) counts. Anybody else in the answer is dropped and logged as an error.
 * **Authentik being down never opens the gate, and never slams it either.** A failed refresh keeps
   the previous set: falling back to the empty set would be a self-inflicted outage of the control
   room, and falling back to anything wider would be the other kind of disaster. Before the first
@@ -66,6 +71,28 @@ def resolve_admin_mxids(
             continue
         mxids.add(mxid)
     return frozenset(mxids)
+
+
+def _group_pks_of(user: dict[str, Any]) -> set[str]:
+    """The group pks an Authentik user object names: ``groups`` (pks), else ``groups_obj``."""
+    pks: set[str] = set()
+    groups = user.get("groups")
+    if isinstance(groups, list):
+        pks.update(str(pk) for pk in groups if isinstance(pk, str | int))
+    groups_obj = user.get("groups_obj")
+    if isinstance(groups_obj, list):
+        pks.update(str(g["pk"]) for g in groups_obj if isinstance(g, dict) and "pk" in g)
+    return pks
+
+
+def members_of(users: Iterable[dict[str, Any]], group_pks: Iterable[str]) -> list[dict[str, Any]]:
+    """The ``users`` that are active members of one of ``group_pks``, by their own user object (SEC-09).
+
+    The server-side ``groups_by_pk`` filter only narrows the answer; it is not trusted to have done
+    so. A user object that names none of the groups, or names none at all, is not a member.
+    """
+    wanted = {str(pk) for pk in group_pks}
+    return [u for u in users if u.get("is_active") is not False and _group_pks_of(u) & wanted]
 
 
 def _directory_freshness_sec(config: OnbotConfig) -> int:
@@ -138,6 +165,18 @@ class AdminResolver:
                 exc_info=True,
             )
             return self._admins
+        verified = members_of(members, self.group_pks)
+        if len(verified) != len(members):
+            strays = sorted(str(u.get("username", u.get("pk"))) for u in members if u not in verified)
+            log.error(
+                "Authentik answered the bot-admin group query with %d user(s) who are not active members "
+                "of %s according to their own user object (%s). Did the server ignore the groups_by_pk "
+                "filter? Not granting them bot admin.",
+                len(strays),
+                ", ".join(self.group_pks),
+                ", ".join(strays[:10]) + (", ..." if len(strays) > 10 else ""),
+            )
+        members = verified
         resolution: Resolution | None = None
         if self.identity is not None:
             try:

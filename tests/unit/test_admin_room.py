@@ -46,7 +46,7 @@ class _FakeAuthentik:
         self.usernames = usernames
 
     async def list_users(self, **kwargs: Any) -> list[dict[str, Any]]:
-        return [{"pk": name, "username": name} for name in self.usernames]
+        return [{"pk": name, "username": name, "groups": [GROUP]} for name in self.usernames]
 
 
 class _FakeClient:
@@ -153,6 +153,7 @@ class _FakeClient:
 
     async def invite_user(self, room_id: str, user_id: str) -> None:
         self.invited.append(user_id)
+        self.memberships[user_id] = "invite"
 
     async def set_room_topic(self, room_id: str, topic: str) -> None:
         self.topics.append(topic)
@@ -338,6 +339,89 @@ async def test_the_invite_pass_is_a_no_op_before_the_room_is_bound() -> None:
     await _provisioner(client).ensure_admins_invited()
 
     assert client.invited == []
+
+
+def _reconcile() -> Event:
+    return Event(signal=Signal.reconcile_completed, payload={})
+
+
+async def test_an_admin_who_left_the_room_is_not_invited_again_on_every_tick() -> None:
+    """ONB-12: before the fix every reconcile sent a new invitation (and notification)."""
+    client = _FakeClient(existing_room=ROOM)
+    provisioner = _provisioner(client)
+    await provisioner.ensure()
+    assert client.invited == [ADMIN]
+
+    client.memberships[ADMIN] = "leave"  # declined, or joined and left
+    await provisioner.on_reconcile(_reconcile())
+    await provisioner.on_reconcile(_reconcile())
+
+    assert client.invited == [ADMIN]
+
+
+async def test_the_record_survives_a_restart() -> None:
+    client = _FakeClient(existing_room=ROOM)
+    await _provisioner(client).ensure()
+    client.memberships[ADMIN] = "leave"
+
+    await _provisioner(client).ensure()  # a new process reads the record from the room
+
+    assert client.invited == [ADMIN]
+
+
+async def test_an_admin_found_in_the_room_who_leaves_later_is_not_invited_back() -> None:
+    client = _FakeClient(existing_room=ROOM)
+    client.memberships = {ADMIN: "join"}
+    provisioner = _provisioner(client)
+    await provisioner.ensure()
+
+    client.memberships[ADMIN] = "leave"
+    await provisioner.on_reconcile(_reconcile())
+
+    assert client.invited == []
+
+
+async def test_an_admin_made_admin_again_is_invited_again() -> None:
+    client = _FakeClient(existing_room=ROOM)
+    config = _config(admin_user_ids=[], authentik_group_pks_granting_bot_admin=[GROUP])
+    authentik = _FakeAuthentik("alice")
+    resolver = AdminResolver(authentik, config, ttl_sec=0)  # type: ignore[arg-type]
+    provisioner = AdminRoomProvisioner(client, config, resolver, _rooms(client))  # type: ignore[arg-type]
+    alice = "@alice:matrix.test"
+    await provisioner.ensure()
+    client.memberships[alice] = "leave"
+
+    authentik.usernames = ()  # removed from the admin group...
+    await provisioner.on_reconcile(_reconcile())
+    authentik.usernames = ("alice",)  # ...and added again
+    await provisioner.on_reconcile(_reconcile())
+
+    assert client.invited == [alice, alice]
+
+
+async def test_a_banned_admin_is_never_invited() -> None:
+    client = _FakeClient(existing_room=ROOM)
+    client.memberships = {ADMIN: "ban"}
+    provisioner = _provisioner(client)
+
+    await provisioner.ensure()
+    await provisioner.on_reconcile(_reconcile())
+
+    assert client.invited == []
+
+
+async def test_an_unreadable_record_invites_only_admins_who_were_never_in_the_room() -> None:
+    client = _FakeClient(existing_room=ROOM)
+    provisioner = _provisioner(client)
+    await provisioner.ensure()
+    newcomer = "@ops:matrix.test"
+    provisioner.admins._admins = frozenset({ADMIN, newcomer})  # a second admin, never in the room
+    client.memberships[ADMIN] = "leave"
+    client.state[(ROOM, MARKER_TYPE, "")] = {"room_type": "admin_room", "invited_admins": "garbage"}
+
+    await provisioner.on_reconcile(_reconcile())
+
+    assert client.invited == [ADMIN, newcomer]
 
 
 async def test_a_failed_invitation_does_not_abort_provisioning() -> None:

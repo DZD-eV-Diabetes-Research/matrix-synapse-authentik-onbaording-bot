@@ -835,3 +835,111 @@ async def test_a_notice_board_encrypted_by_the_homeserver_is_reported_once(
     assert len(errors) == 1 and errors[0].levelname == "ERROR"
     assert len(client.sent) == 2  # the welcome still goes out
     assert client.create_calls[0]["encrypted"] is False
+
+
+# --- ONB-15: notice boards follow the bot avatar's content --------------------------------------
+
+AVATAR_URL = "https://cdn.test/bot.png"
+
+
+class _AvatarClient(FakeMatrixClient):
+    """Adds the media repository and keeps ``m.room.avatar`` as room state."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.media: dict[str, bytes] = {}
+        self.avatar_writes: list[tuple[str, str]] = []
+
+    async def upload_media(self, content: bytes, *, content_type: str, filename: str | None = None) -> str:
+        mxc = f"mxc://matrix.test/m{len(self.media) + 1}"
+        self.media[mxc] = content
+        return mxc
+
+    async def download_media(self, mxc_uri: str) -> bytes:
+        return self.media[mxc_uri]
+
+    async def set_room_avatar(self, room_id: str, mxc_uri: str) -> None:
+        await super().set_room_avatar(room_id, mxc_uri)
+        self.avatar_writes.append((room_id, mxc_uri))
+        self.room_state[(room_id, "m.room.avatar")] = {"url": mxc_uri}
+
+
+class _Fetcher:
+    """The avatar host: serves ``image``, or fails while ``image`` is ``None``."""
+
+    def __init__(self, image: bytes | None) -> None:
+        self.image = image
+
+    async def fetch(self, url: str) -> tuple[bytes, str]:
+        assert url == AVATAR_URL
+        if self.image is None:
+            raise RuntimeError("avatar host down")
+        return self.image, "image/png"
+
+    async def aclose(self) -> None:
+        return None
+
+
+def _avatar_service(client: _AvatarClient, image: bytes | None) -> WelcomeService:
+    """A fresh process: a new service with a new uploader, so the image is fetched again."""
+    from onbot.media import MediaUploader
+
+    config = _config(["hi"])
+    config.synapse_server.bot_avatar_url = AVATAR_URL
+    media = MediaUploader(client, fetcher=_Fetcher(image))  # type: ignore[arg-type]
+    return WelcomeService(client, config, media=media)  # type: ignore[arg-type]
+
+
+async def test_a_new_notice_board_wears_the_bot_avatar_and_records_its_content() -> None:
+    client = _AvatarClient()
+
+    await _avatar_service(client, b"logo").welcome_user(ALICE)
+
+    assert client.avatar_writes == [("!dm-1:matrix.test", "mxc://matrix.test/m1")]
+    assert _direct_state(client, "!dm-1:matrix.test")["avatar_sha256"] == hashlib.sha256(b"logo").hexdigest()
+
+
+async def test_a_new_bot_avatar_reaches_existing_notice_boards_on_the_next_start() -> None:
+    """Before the fix a notice board got its picture once, at creation, and never again."""
+    client = _AvatarClient()
+    await _avatar_service(client, b"logo").welcome_user(ALICE)
+
+    await _avatar_service(client, b"rebranded logo").welcome_user(ALICE)  # same URL, new image
+
+    assert [mxc for _, mxc in client.avatar_writes] == ["mxc://matrix.test/m1", "mxc://matrix.test/m2"]
+    assert client.media["mxc://matrix.test/m2"] == b"rebranded logo"
+    state = _direct_state(client, "!dm-1:matrix.test")
+    assert state["avatar_sha256"] == hashlib.sha256(b"rebranded logo").hexdigest()
+
+
+async def test_an_unchanged_avatar_is_not_set_again() -> None:
+    client = _AvatarClient()
+    await _avatar_service(client, b"logo").welcome_user(ALICE)
+
+    await _avatar_service(client, b"logo").welcome_user(ALICE)
+
+    assert len(client.avatar_writes) == 1
+
+
+async def test_a_board_created_while_the_avatar_host_was_down_gets_it_later() -> None:
+    client = _AvatarClient()
+    await _avatar_service(client, None).welcome_user(ALICE)
+    assert client.avatar_writes == []
+    assert _direct_state(client, "!dm-1:matrix.test")["setup_complete"] is True
+
+    await _avatar_service(client, b"logo").welcome_user(ALICE)
+
+    assert client.avatar_writes == [("!dm-1:matrix.test", "mxc://matrix.test/m1")]
+
+
+async def test_an_older_board_that_wears_the_picture_only_gets_the_record() -> None:
+    client = _AvatarClient()
+    await _avatar_service(client, b"logo").welcome_user(ALICE)
+    key = ("!dm-1:matrix.test", "test.matrix.onbot.direct_room")
+    client.room_state[key] = {**client.room_state[key], "avatar_sha256": None}  # as an older version left it
+    client.avatar_writes.clear()
+
+    await _avatar_service(client, b"logo").welcome_user(ALICE)
+
+    assert client.avatar_writes == []
+    assert client.room_state[key]["avatar_sha256"] == hashlib.sha256(b"logo").hexdigest()

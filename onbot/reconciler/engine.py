@@ -637,28 +637,50 @@ class ReconcilerEngine:
     ) -> None:
         """Set/update a room or space icon (``m.room.avatar``) from a source URL (G6.8).
 
-        Re-uploads only when the configured URL differs from the one recorded in the room's onbot
-        state event (``avatar_source_url``), so a stable URL costs one state read per tick and no
-        upload. Applies to already-existing rooms too, not just freshly created ones. Best-effort:
-        a fetch/upload failure is logged and retried next tick. Clearing the source URL stops future
-        updates but leaves the current icon in place (removing avatars is out of scope). ``fresh_state``
-        seeds the state event (its ``group_id``) when the room has none yet. ``marker`` is the
-        marker's content when the caller has just read it (the upkeep step), saving a read.
+        Keyed by the source URL *and* the image's content (ONB-15): the room's onbot state event
+        records ``avatar_source_url`` and ``avatar_sha256``, and the avatar is set again when either
+        differs, so a picture replaced behind an unchanged URL reaches the room too. The image is
+        fetched once per process (:class:`~onbot.media.MediaUploader`), so a stable avatar costs one
+        state read per tick and no upload. A marker from before the digest was recorded adopts the
+        current content without setting the avatar again. Applies to already-existing rooms too, not
+        just freshly created ones. Best-effort: a fetch/upload failure is logged and retried on a later
+        tick, and the room keeps its picture meanwhile. Clearing the source URL stops future updates
+        but leaves the current icon in place (removing avatars is out of scope). ``fresh_state`` seeds
+        the state event (its ``group_id``) when the room has none yet. ``marker`` is the marker's
+        content when the caller has just read it (the upkeep step), saving a read.
         """
         event_type = event_type_name(self.server_name, room_type)
         raw = marker if marker is not None else await self.effectors.get_room_state(room_id, event_type)
         state = parse_room_state(room_type, raw) if raw else fresh_state
-        if desired == state.avatar_source_url:
-            return
-        if desired:
-            try:
-                mxc = await self.effectors.upload_avatar(desired)
-                await self.effectors.set_room_avatar(room_id, mxc)
-            except Exception:
-                log.exception("failed to set avatar of %s from %s", room_id, desired)
+        if not desired:
+            if state.avatar_source_url is None and state.avatar_sha256 is None:
                 return
-            log.info("set avatar of %s from %s", room_id, desired)
+            state.avatar_source_url = None
+            state.avatar_sha256 = None
+            await self.effectors.put_room_state(room_id, event_type, dump_room_state(state))
+            return
+        try:
+            digest = await self.effectors.avatar_digest(desired)
+        except Exception as exc:
+            log.warning("could not fetch the avatar of %s from %s: %s", room_id, desired, exc)
+            return
+        if desired == state.avatar_source_url:
+            if digest == state.avatar_sha256:
+                return
+            if state.avatar_sha256 is None:
+                # Set by a version that recorded only the URL: take the picture as it is now.
+                state.avatar_sha256 = digest
+                await self.effectors.put_room_state(room_id, event_type, dump_room_state(state))
+                return
+        try:
+            mxc = await self.effectors.upload_avatar(desired)
+            await self.effectors.set_room_avatar(room_id, mxc)
+        except Exception:
+            log.exception("failed to set avatar of %s from %s", room_id, desired)
+            return
+        log.info("set avatar of %s from %s", room_id, desired)
         state.avatar_source_url = desired
+        state.avatar_sha256 = digest
         await self.effectors.put_room_state(room_id, event_type, dump_room_state(state))
 
     async def _converge_rooms(

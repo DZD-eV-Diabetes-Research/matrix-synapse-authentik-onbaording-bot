@@ -16,6 +16,9 @@ Retry policy (review findings RUN-05, RUN-06, RUN-10):
   already did the work, so resending could create a second room or turn a done kick into an error.
   Such a failure is raised; the caller decides (see ``ApiClientMatrix.create_room`` for a call that
   checks what happened before it gives up).
+* **Rate limits** (429) are retried like the rest, unless the call passes
+  ``retry_rate_limited=False``: the broadcast does, because it paces its whole fan-out by the
+  server's answers instead of letting every send wait on its own (ONB-03).
 * **Waits** follow the server when it says how long (``retry_after_ms`` in a Matrix error body, the
   ``Retry-After`` header), capped at :data:`MAX_RETRY_AFTER_SEC`; otherwise exponential backoff.
 * **Auth:** a token the provider cannot supply for a transient reason (MAS restarting, MAS
@@ -183,6 +186,11 @@ def should_retry(exc: BaseException, *, idempotent: bool) -> bool:
     return False
 
 
+def is_rate_limited(exc: BaseException) -> bool:
+    """Whether ``exc`` is the server's rate limiter answering (HTTP 429)."""
+    return isinstance(exc, ApiError) and exc.status_code == 429
+
+
 def _retry_wait(retry_state: RetryCallState) -> float:
     """Wait as long as the server asked (capped), else back off exponentially (0.5 s, 1 s, 2 s, ...)."""
     outcome = retry_state.outcome
@@ -284,14 +292,22 @@ class BaseApiClient:
             return path
         return f"{self._base_url}{path.lstrip('/')}"
 
-    async def _with_retry(self, do: Callable[[], Awaitable[Any]], *, idempotent: bool) -> Any:
+    async def _with_retry(
+        self, do: Callable[[], Awaitable[Any]], *, idempotent: bool, retry_rate_limited: bool = True
+    ) -> Any:
         kwargs: dict[str, Any] = {}
         if self._sleep is not None:
             kwargs["sleep"] = self._sleep
+
+        def retry(exc: BaseException) -> bool:
+            if not retry_rate_limited and is_rate_limited(exc):
+                return False
+            return should_retry(exc, idempotent=idempotent)
+
         async for attempt in AsyncRetrying(
             stop=stop_after_attempt(self._max_retry_attempts),
             wait=_retry_wait,
-            retry=retry_if_exception(lambda exc: should_retry(exc, idempotent=idempotent)),
+            retry=retry_if_exception(retry),
             reraise=True,
             **kwargs,
         ):
@@ -310,12 +326,14 @@ class BaseApiClient:
         headers: Mapping[str, str] | None = None,
         timeout: float | None = None,
         idempotent: bool | None = None,
+        retry_rate_limited: bool = True,
     ) -> httpx.Response:
         """The one request path: auth, error mapping and the retry policy. Returns a 2xx response.
 
         ``idempotent`` defaults to the HTTP semantics of ``method``. Pass ``True`` for a POST that is
         safe to repeat (a read such as the sync long-poll, or an upsert). ``timeout`` overrides the
-        client's default for this call only.
+        client's default for this call only. ``retry_rate_limited=False`` raises a 429 at once, for a
+        caller that paces itself by the server's answers.
         """
         method = method.upper()
         url = self._build_url(path)
@@ -354,7 +372,9 @@ class BaseApiClient:
                 )
             return response
 
-        response: httpx.Response = await self._with_retry(_do, idempotent=idempotent)
+        response: httpx.Response = await self._with_retry(
+            _do, idempotent=idempotent, retry_rate_limited=retry_rate_limited
+        )
         return response
 
     async def request_json(
@@ -366,10 +386,17 @@ class BaseApiClient:
         json_body: Any = None,
         timeout: float | None = None,
         idempotent: bool | None = None,
+        retry_rate_limited: bool = True,
     ) -> Any:
         """Perform a request with retries, returning decoded JSON (``None`` for empty bodies)."""
         response = await self._send(
-            method, path, params=params, json_body=json_body, timeout=timeout, idempotent=idempotent
+            method,
+            path,
+            params=params,
+            json_body=json_body,
+            timeout=timeout,
+            idempotent=idempotent,
+            retry_rate_limited=retry_rate_limited,
         )
         if not response.content:
             return None

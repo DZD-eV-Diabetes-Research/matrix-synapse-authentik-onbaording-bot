@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Awaitable, Callable
 from typing import Any
 
+from onbot.admin import control_room
 from onbot.admin.admins import AdminResolver
 from onbot.admin.broadcast import BroadcastResult
 from onbot.admin.control_room import ControlRoomHandler
@@ -46,7 +49,7 @@ class _FakeAuthentik:
     async def list_users(self, **kwargs: Any) -> list[dict[str, Any]]:
         if self.fail:
             raise RuntimeError("authentik is down")
-        return [{"pk": name, "username": name} for name in self.usernames]
+        return [{"pk": name, "username": name, "groups": [GROUP]} for name in self.usernames]
 
 
 class _FakeClient:
@@ -69,10 +72,20 @@ class _FakeBroadcast:
     def __init__(self) -> None:
         self.calls: list[str] = []
         self.rooms = {"!a:x": "@a:x", "!b:x": "@b:x"}
+        self.rate_limit_lifted: bool | None = True
+        # Set to hold a broadcast in flight until the test releases it.
+        self.release: asyncio.Event | None = None
+        self.result: BroadcastResult | None = None
 
-    async def broadcast(self, message: str) -> BroadcastResult:
+    async def broadcast(
+        self, message: str, *, on_start: Callable[[int], Awaitable[None]] | None = None
+    ) -> BroadcastResult:
         self.calls.append(message)
-        return BroadcastResult(sent=list(self.rooms))
+        if on_start is not None:
+            await on_start(len(self.rooms))
+        if self.release is not None:
+            await self.release.wait()
+        return self.result or BroadcastResult(sent=list(self.rooms))
 
     async def target_rooms(self) -> dict[str, str]:
         return dict(self.rooms)
@@ -110,6 +123,7 @@ def _message(
     ts: int = NOW_MS + 1,
     msgtype: str = "m.text",
     room_id: str = ROOM,
+    extra_content: dict[str, Any] | None = None,
 ) -> SyncResult:
     return SyncResult(
         pos="s1",
@@ -122,7 +136,7 @@ def _message(
                         "event_id": event_id,
                         "sender": sender,
                         "origin_server_ts": ts,
-                        "content": {"msgtype": msgtype, "body": body},
+                        "content": {"msgtype": msgtype, "body": body, **(extra_content or {})},
                     }
                 ],
             )
@@ -131,8 +145,10 @@ def _message(
 
 
 async def _run(handler: ControlRoomHandler, *results: SyncResult) -> None:
+    """Feed the slices and wait for a broadcast they started, which runs beside the stream."""
     for result in results:
         await handler.handle_sync(result)
+        await handler.wait_for_broadcast()
 
 
 # --- authorisation ---------------------------------------------------------
@@ -144,7 +160,8 @@ async def test_an_allowlisted_admin_can_announce() -> None:
     await _run(_handler(client, broadcast), _message("!announce Maintenance at 22:00"))
 
     assert broadcast.calls == ["Maintenance at 22:00"]
-    assert "sent to 2 rooms, 0 failed" in client.sends[0][1]
+    assert client.sends[0][1] == "Sending the announcement to 2 rooms; the result follows here."
+    assert "sent to 2 rooms, 0 failed" in client.sends[1][1]
 
 
 async def test_a_member_who_is_not_on_the_allowlist_is_refused() -> None:
@@ -409,3 +426,184 @@ async def test_lobby_reopen_is_refused_for_somebody_off_the_allowlist() -> None:
     await _run(_handler(client, broadcast, engine=engine), _message("!lobby reopen g1", sender=STRANGER))
 
     assert engine.reopened == []
+
+
+# --- ONB-11, SEC-12: edits are never commands -----------------------------------------------------
+
+
+def _edit(
+    new_body: str, *, fallback: str | None = None, sender: str = ADMIN, event_id: str = "$edit"
+) -> SyncResult:
+    """An edit of ``$cmd1``: ``fallback`` is the plain ``body`` (Element prefixes it with ``* ``)."""
+    return _message(
+        fallback if fallback is not None else new_body,
+        sender=sender,
+        event_id=event_id,
+        extra_content={
+            "m.new_content": {"msgtype": "m.text", "body": new_body},
+            "m.relates_to": {"rel_type": "m.replace", "event_id": "$cmd1"},
+        },
+    )
+
+
+async def test_an_edit_without_the_fallback_prefix_does_not_announce_again() -> None:
+    """ONB-11: a client that sends the edit's body without ``* `` must not page everybody twice."""
+    client, broadcast = _FakeClient(), _FakeBroadcast()
+    handler = _handler(client, broadcast)
+
+    await _run(handler, _message("!announce Maintenance at 22:00"), _edit("!announce Maintenance at 23:00"))
+
+    assert broadcast.calls == ["Maintenance at 22:00"]
+    assert "Edits are not commands" in client.sends[-1][1]
+
+
+async def test_an_element_edit_of_a_command_is_answered_not_ignored_silently() -> None:
+    client, broadcast = _FakeClient(), _FakeBroadcast()
+
+    await _run(
+        _handler(client, broadcast),
+        _edit("!announce Maintenance at 23:00", fallback="* !announce Maintenance at 23:00"),
+    )
+
+    assert broadcast.calls == []
+    assert [body for _, body in client.sends] == [control_room.EDIT_IS_NO_COMMAND]
+
+
+async def test_an_edit_is_answered_once_even_when_the_slice_is_replayed() -> None:
+    client, broadcast = _FakeClient(), _FakeBroadcast()
+    handler = _handler(client, broadcast)
+    edit = _edit("!status")
+
+    await _run(handler, edit, edit)
+
+    assert len(client.sends) == 1
+
+
+async def test_an_edit_by_somebody_off_the_allowlist_gets_no_answer() -> None:
+    client, broadcast = _FakeClient(), _FakeBroadcast()
+
+    await _run(_handler(client, broadcast), _edit("!announce hi", sender=STRANGER))
+
+    assert broadcast.calls == []
+    assert client.sends == []
+    assert client.account_data == {}
+
+
+async def test_an_edit_that_is_no_command_is_plain_conversation() -> None:
+    client, broadcast = _FakeClient(), _FakeBroadcast()
+
+    await _run(_handler(client, broadcast), _edit("we should announce it tomorrow"))
+
+    assert client.sends == []
+
+
+# --- SEC-12: only admins' commands enter the persisted replay buffer ------------------------------
+
+
+async def test_commands_of_non_admins_are_not_recorded() -> None:
+    client, broadcast = _FakeClient(), _FakeBroadcast()
+    handler = _handler(client, broadcast)
+
+    await _run(handler, _message("!announce hi", sender=STRANGER, event_id="$s"))
+
+    assert handler._cursor_type not in client.account_data  # no write, no slot taken
+
+
+async def test_a_member_who_is_not_an_admin_cannot_flush_the_replay_buffer() -> None:
+    client, broadcast = _FakeClient(), _FakeBroadcast()
+    handler = _handler(client, broadcast, remembered_events=2)
+
+    await _run(handler, _message("!announce once", event_id="$admin"))
+    await _run(handler, *(_message("!status", sender=STRANGER, event_id=f"$s{i}") for i in range(5)))
+
+    assert client.account_data[handler._cursor_type]["event_ids"] == ["$admin"]
+    # A restart replaying the admin's command still finds it in the buffer.
+    restarted = _handler(client, broadcast, remembered_events=2)
+    await restarted.start(ROOM)
+    await _run(restarted, _message("!announce once", event_id="$admin"))
+    assert broadcast.calls == ["once"]
+
+
+async def test_a_replayed_slice_does_not_refuse_a_non_admin_twice() -> None:
+    client, broadcast = _FakeClient(), _FakeBroadcast()
+    handler = _handler(client, broadcast)
+    slice_ = _message("!announce hi", sender=STRANGER)
+
+    await _run(handler, slice_, slice_)
+
+    assert len(client.sends) == 1
+
+
+# --- ONB-03: the broadcast runs beside the sync stream -------------------------------------------
+
+
+async def test_a_running_broadcast_does_not_block_the_room_and_a_second_one_is_refused() -> None:
+    client, broadcast = _FakeClient(), _FakeBroadcast()
+    broadcast.release = asyncio.Event()
+    handler = _handler(client, broadcast)
+
+    await handler.handle_sync(_message("!announce first", event_id="$a"))
+    await asyncio.sleep(0)  # the fan-out starts and acknowledges
+    assert handler.broadcast_running
+    await handler.handle_sync(_message("!announce second", event_id="$b"))
+    await handler.handle_sync(_message("!status", event_id="$c"))
+
+    assert broadcast.calls == ["first"]
+    replies = [body for _, body in client.sends]
+    assert replies[0] == "Sending the announcement to 2 rooms; the result follows here."
+    assert "still being sent to 2 rooms" in replies[1] and "this one was not sent" in replies[1]
+    assert "an announcement is being sent to 2 rooms" in replies[2]
+
+    broadcast.release.set()
+    await handler.wait_for_broadcast()
+    assert "sent to 2 rooms, 0 failed" in client.sends[-1][1]
+    assert not handler.broadcast_running
+
+
+async def test_stop_cancels_a_broadcast_in_flight() -> None:
+    client, broadcast = _FakeClient(), _FakeBroadcast()
+    broadcast.release = asyncio.Event()
+    handler = _handler(client, broadcast)
+    await handler.handle_sync(_message("!announce first"))
+    await asyncio.sleep(0)
+
+    await asyncio.wait_for(handler.stop(), timeout=2)
+
+    assert not handler.broadcast_running
+    assert not any("sent to" in body for _, body in client.sends)
+
+
+class _SizeLimitedClient(_FakeClient):
+    """Refuses a reply above a size limit, as Synapse refuses an event above 65536 bytes."""
+
+    async def send_text_message(self, room_id: str, body: str, *, msgtype: str = "m.text") -> str:
+        if len(body) > 200:
+            raise RuntimeError("M_TOO_LARGE")
+        return await super().send_text_message(room_id, body, msgtype=msgtype)
+
+
+async def test_a_result_that_cannot_be_posted_is_replaced_by_a_short_note() -> None:
+    """ONB-04: silence after !announce reads as "did not work" and gets the command typed again."""
+    from onbot.admin.broadcast import BroadcastFailure
+
+    client, broadcast = _SizeLimitedClient(), _FakeBroadcast()
+    broadcast.result = BroadcastResult(
+        failures=[BroadcastFailure(f"!r{i}:x", f"@u{i}:x", "HTTP 500") for i in range(10)]
+    )
+
+    await _run(_handler(client, broadcast), _message("!announce hello"))
+
+    assert "could not be posted here (RuntimeError: M_TOO_LARGE)" in client.sends[-1][1]
+
+
+async def test_status_says_whether_the_send_rate_limit_is_lifted() -> None:
+    client, broadcast = _FakeClient(), _FakeBroadcast()
+    handler = _handler(client, broadcast)
+
+    broadcast.rate_limit_lifted = False
+    await _run(handler, _message("!status", event_id="$a"))
+    broadcast.rate_limit_lifted = True
+    await _run(handler, _message("!status", event_id="$b"))
+
+    assert "send rate limit: NOT lifted" in client.sends[0][1]
+    assert "send rate limit: lifted for the bot" in client.sends[1][1]

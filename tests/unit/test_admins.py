@@ -43,7 +43,8 @@ def _config(
 
 
 def _user(username: str, **extra: Any) -> dict[str, Any]:
-    return {"pk": username, "username": username, **extra}
+    """An active Authentik user in the admin group, as ``/core/users/`` returns it."""
+    return {"pk": username, "username": username, "is_active": True, "groups": [GROUP], **extra}
 
 
 class _FakeAuthentik:
@@ -218,3 +219,35 @@ async def test_the_set_is_never_wider_than_what_authentik_last_said(failing_firs
     admins = await resolver.admins()
 
     assert admins == (frozenset() if failing_first else frozenset({"@alice:matrix.test"}))
+
+
+# --- SEC-09: the server-side group filter is re-checked locally -----------------------------------
+
+
+async def test_users_outside_the_admin_groups_are_dropped_even_when_authentik_returns_them() -> None:
+    """An Authentik that ignores ``groups_by_pk`` answers with every user; none of them is an admin."""
+    authentik = _FakeAuthentik(
+        _user("alice"),
+        _user("mallory", groups=["some-other-group"]),
+        _user("eve", groups=[]),
+        {"pk": "trudy", "username": "trudy", "is_active": True},  # no group information at all
+    )
+    resolver = _resolver(authentik, _config(group_pks=[GROUP]))
+
+    assert await resolver.admins() == frozenset({ADMIN, "@alice:matrix.test"})
+
+
+async def test_a_disabled_user_is_dropped_even_when_authentik_returns_it() -> None:
+    authentik = _FakeAuthentik(_user("alice"), _user("bob", is_active=False))
+    resolver = _resolver(authentik, _config(group_pks=[GROUP]))
+
+    assert await resolver.admins() == frozenset({ADMIN, "@alice:matrix.test"})
+
+
+async def test_membership_is_also_read_from_groups_obj() -> None:
+    authentik = _FakeAuthentik(
+        {"pk": "alice", "username": "alice", "is_active": True, "groups_obj": [{"pk": GROUP, "name": "a"}]}
+    )
+    resolver = _resolver(authentik, _config(group_pks=[GROUP]))
+
+    assert await resolver.admins() == frozenset({ADMIN, "@alice:matrix.test"})

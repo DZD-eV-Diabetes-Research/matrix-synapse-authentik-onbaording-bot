@@ -13,7 +13,7 @@ import pytest
 import respx
 
 from onbot.avatar import bot_avatar_account_data_type, ensure_bot_avatar
-from onbot.media import MediaUploader
+from onbot.media import MediaUploader, content_digest
 
 AVATAR_URL = "https://cdn.test/face.png"
 BOT = "@bot:company.org"
@@ -79,18 +79,72 @@ async def _run(client: FakeClient, source_url: str | None = AVATAR_URL) -> Media
 class TestEnsureBotAvatar:
     @respx.mock
     async def test_unchanged_avatar_writes_nothing(self) -> None:
-        """The restart case: record and profile agree, so no fetch, no upload, no profile write."""
+        """The restart case: record, content and profile agree, so one fetch and no writes at all."""
         remote = _remote()
         client = FakeClient(avatar="mxc://company.org/old", media={"mxc://company.org/old": IMAGE})
-        client.account_data[(BOT, DATA_TYPE)] = {"source_url": AVATAR_URL, "mxc": "mxc://company.org/old"}
+        client.account_data[(BOT, DATA_TYPE)] = {
+            "source_url": AVATAR_URL,
+            "sha256": content_digest(IMAGE),
+            "mxc": "mxc://company.org/old",
+        }
+        before = dict(client.account_data)
 
         uploader = await _run(client)
 
         assert client.profile_writes == []
         assert client.uploads == []
-        assert remote.call_count == 0
-        # The mxc is still handed to anything else wearing the same source URL.
+        assert client.account_data == before
+        assert remote.call_count == 1  # once per process, to notice a new picture behind the URL
+        # The mxc is still handed to anything else wearing the same picture.
         assert await uploader.upload_from_url(AVATAR_URL) == "mxc://company.org/old"
+        assert remote.call_count == 1
+
+    @respx.mock
+    async def test_a_new_picture_behind_an_unchanged_url_reaches_the_profile(self) -> None:
+        """ONB-15: before the fix a matching URL in the record meant no fetch, so a rebrand never
+        reached the bot's profile, not even after restarts."""
+        _remote()  # serves IMAGE now
+        client = FakeClient(avatar="mxc://company.org/old", media={"mxc://company.org/old": b"old logo"})
+        client.account_data[(BOT, DATA_TYPE)] = {
+            "source_url": AVATAR_URL,
+            "sha256": content_digest(b"old logo"),
+            "mxc": "mxc://company.org/old",
+        }
+
+        await _run(client)
+
+        assert client.uploads == [IMAGE]
+        assert client.profile_writes == [client.avatar]
+        assert client.account_data[(BOT, DATA_TYPE)]["sha256"] == content_digest(IMAGE)
+
+    @respx.mock
+    async def test_a_record_without_a_digest_is_completed_without_touching_the_profile(self) -> None:
+        """The record of an older version names the URL only; equal bytes adopt it quietly."""
+        _remote()
+        client = FakeClient(avatar="mxc://company.org/old", media={"mxc://company.org/old": IMAGE})
+        client.account_data[(BOT, DATA_TYPE)] = {"source_url": AVATAR_URL, "mxc": "mxc://company.org/old"}
+
+        await _run(client)
+
+        assert client.profile_writes == []
+        assert client.uploads == []
+        assert client.account_data[(BOT, DATA_TYPE)]["sha256"] == content_digest(IMAGE)
+
+    @respx.mock
+    async def test_an_unreachable_source_keeps_the_recorded_avatar_without_failing(self) -> None:
+        """A host that is down must not keep the startup step failing when the profile is set."""
+        respx.get(AVATAR_URL).mock(return_value=httpx.Response(503))
+        client = FakeClient(avatar="mxc://company.org/old", media={"mxc://company.org/old": IMAGE})
+        client.account_data[(BOT, DATA_TYPE)] = {
+            "source_url": AVATAR_URL,
+            "sha256": content_digest(IMAGE),
+            "mxc": "mxc://company.org/old",
+        }
+
+        await _run(client)  # does not raise
+
+        assert client.profile_writes == []
+        assert client.uploads == []
 
     @respx.mock
     async def test_matching_bytes_are_adopted_without_touching_the_profile(self) -> None:
@@ -117,6 +171,7 @@ class TestEnsureBotAvatar:
         assert client.account_data[(BOT, DATA_TYPE)] == {
             "schema_version": 1,
             "source_url": AVATAR_URL,
+            "sha256": content_digest(IMAGE),
             "mxc": client.avatar,
         }
 

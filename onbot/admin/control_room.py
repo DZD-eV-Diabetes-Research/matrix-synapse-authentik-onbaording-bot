@@ -15,7 +15,22 @@ on the server on every single restart of the bot. Two independent guards, delibe
 
 An event is marked seen and the cursor persisted **before** the command runs, not after. If the bot
 dies mid-``!announce`` the announcement is lost rather than half-sent-and-then-repeated: for a
-command that pages the entire company, at-most-once is the failure mode you want.
+command that pages the entire company, at-most-once is the failure mode you want. Only commands from
+allowlisted admins are recorded (SEC-12): a member who is not an admin cannot flood the bounded
+buffer and push the real commands out of it.
+
+**Edits are never commands** (ONB-11, SEC-12). An edit (``m.relates_to.rel_type: m.replace``) is a new
+event with a new id, so the replay guard does not stop it, and its ``body`` is only a fallback whose
+``* `` prefix is a client convention. A client that leaves the prefix out would turn an admin's typo
+fix into a second company-wide ``!announce``. Edits are ignored; an admin whose edit holds a command
+is told once to send a new message instead.
+
+**A broadcast runs beside the sync stream, not inside it** (ONB-03). Under the homeserver's rate
+limit a large ``!announce`` takes as long as the server's pace allows, which can be many minutes.
+The command is acknowledged with the number of rooms, the fan-out runs as a task of its own, and its
+result is posted when it ends; meanwhile the other commands keep working. One broadcast runs at a
+time: a second ``!announce`` while one is going is refused, not queued. The result reply is bounded
+in size (ONB-04); if posting it fails anyway, a short note takes its place.
 
 **Authorisation is the allowlist, never the power level.** The room's power levels let any member
 speak — that is the point of a discussion room. If someone gets themselves into it, their power
@@ -28,13 +43,15 @@ that group must lose their commands within a TTL, not on the next restart of the
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import time
 from collections import deque
 from typing import Any
 
 from onbot import __version__
 from onbot.admin.admins import AdminResolver
-from onbot.admin.broadcast import BroadcastService, RecipientsUnknown
+from onbot.admin.broadcast import BroadcastService, RecipientsUnknown, describe_error
 from onbot.admin.commands import (
     ANNOUNCE,
     CONFIRM,
@@ -66,6 +83,34 @@ CURSOR_STATE_NAME = "admin_cursor"
 # is several restarts' worth of headroom while staying small enough for one account-data blob.
 MAX_REMEMBERED_EVENTS = 200
 
+# https://spec.matrix.org/latest/client-server-api/#event-replacements
+REPLACE_REL_TYPE = "m.replace"
+EDIT_FALLBACK_PREFIX = "* "
+EDIT_IS_NO_COMMAND = (
+    "Edits are not commands, so the bot did not act on yours. Send the corrected command as a new "
+    "message (an announcement that already went out stays as it is)."
+)
+BROADCAST_RUNNING = (
+    "An announcement is still being sent to {rooms} rooms. Wait for its result here before sending "
+    "another; this one was not sent."
+)
+REPLY_FAILED = "The result of the last command could not be posted here ({error}); it is in the bot's log."
+
+
+def is_edit(content: dict[str, Any]) -> bool:
+    """Whether a message's content replaces an earlier message (an edit)."""
+    relates_to = content.get("m.relates_to")
+    return isinstance(relates_to, dict) and relates_to.get("rel_type") == REPLACE_REL_TYPE
+
+
+def edited_body(content: dict[str, Any]) -> str:
+    """The text an edit sets: ``m.new_content.body``, else the fallback ``body`` without ``* ``."""
+    new_content = content.get("m.new_content")
+    if isinstance(new_content, dict) and isinstance(new_content.get("body"), str):
+        return str(new_content["body"])
+    body = str(content.get("body") or "")
+    return body.removeprefix(EDIT_FALLBACK_PREFIX)
+
 
 class ControlRoomHandler:
     """Consume ``m.room.message`` events in the control room and act on the commands among them."""
@@ -92,7 +137,13 @@ class ControlRoomHandler:
         self.room_id: str | None = None
         self._started_at_ms = started_at_ms if started_at_ms is not None else int(time.time() * 1000)
         self._seen: deque[str] = deque(maxlen=remembered_events)
+        # Events of non-admins already answered, in this process only (a replayed slice must not
+        # answer them twice). Kept apart from ``_seen`` so they cannot evict a real command (SEC-12).
+        self._answered: deque[str] = deque(maxlen=remembered_events)
         self._cursor_type = event_type_name(config.synapse_server.server_name, CURSOR_STATE_NAME)
+        # The broadcast in flight, if any (one at a time), and how many rooms it goes to.
+        self._broadcast_task: asyncio.Task[None] | None = None
+        self._broadcast_rooms = 0
 
     async def start(self, room_id: str) -> None:
         """Bind to the provisioned control room and restore the handled-event cursor."""
@@ -121,22 +172,31 @@ class ControlRoomHandler:
         if self._is_replay(event):
             return
 
-        command = parse_command(str(content.get("body") or ""))
+        edit = is_edit(content)
+        command = parse_command(edited_body(content) if edit else str(content.get("body") or ""))
         if command is None:
             return  # ordinary conversation; the room is for people too
 
         event_id = str(event.get("event_id") or "")
-        if event_id:
-            await self._remember(event_id)
-
         # Resolved now, not at construction: an admin removed from the Authentik group loses their
         # commands here, one TTL later at worst. They keep their seat in the room and can still read
-        # it — kicking them is a separate decision, deliberately not taken here.
+        # it; kicking them is a separate decision, deliberately not taken here.
         if sender not in await self.admins.admins():
+            if edit:
+                return  # an edit is no command for anybody; nothing to refuse
+            if event_id:
+                self._answered.append(event_id)
             log.warning("refused %r from non-admin %s in the control room", command.name, sender)
             await self._reply(f"{sender} is not on the bot's admin allowlist.")
             return
 
+        # Recorded only now, after the allowlist (SEC-12), and before acting (at most once).
+        if event_id:
+            await self._remember(event_id)
+        if edit:
+            log.info("ignored an edit by %s that holds the command %r", sender, command.name)
+            await self._reply(EDIT_IS_NO_COMMAND)
+            return
         await self._dispatch(command, sender)
 
     def _is_replay(self, event: dict[str, Any]) -> bool:
@@ -145,7 +205,7 @@ class ControlRoomHandler:
         if isinstance(timestamp, int | float) and timestamp < self._started_at_ms:
             return True
         event_id = event.get("event_id")
-        return bool(event_id) and event_id in self._seen
+        return bool(event_id) and (event_id in self._seen or event_id in self._answered)
 
     async def _remember(self, event_id: str) -> None:
         """Record and persist before acting, so a crash loses the command rather than repeats it."""
@@ -180,8 +240,58 @@ class ControlRoomHandler:
         if not message:
             await self._reply("Nothing to announce. Usage: !announce <message>")
             return
-        result = await self.broadcast.broadcast(message)
-        await self._reply(result.summary())
+        if self.broadcast_running:
+            await self._reply(BROADCAST_RUNNING.format(rooms=self._broadcast_rooms))
+            return
+        self._broadcast_rooms = 0
+        self._broadcast_task = asyncio.create_task(self._run_broadcast(message), name="onbot-broadcast")
+
+    @property
+    def broadcast_running(self) -> bool:
+        return self._broadcast_task is not None and not self._broadcast_task.done()
+
+    async def _run_broadcast(self, message: str) -> None:
+        """The fan-out of one ``!announce``, beside the sync stream; posts its result at the end."""
+
+        async def started(rooms: int) -> None:
+            self._broadcast_rooms = rooms
+            await self._reply(f"Sending the announcement to {rooms} rooms; the result follows here.")
+
+        try:
+            result = await self.broadcast.broadcast(message, on_start=started)
+        except Exception as exc:
+            log.exception("the broadcast failed")
+            await self._reply_safely(f"The announcement failed: {exc}")
+            return
+        await self._reply_safely(result.summary())
+
+    async def wait_for_broadcast(self) -> None:
+        """Wait until the broadcast in flight (if any) has ended and posted its result."""
+        task = self._broadcast_task
+        if task is not None:
+            await asyncio.shield(task)
+
+    async def stop(self) -> None:
+        """Cancel a broadcast in flight (shutdown). The rooms not reached yet do not get it."""
+        task = self._broadcast_task
+        if task is None or task.done():
+            return
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    async def _reply_safely(self, text: str) -> None:
+        """Post ``text``; if that fails, post a short note instead, so the admin is not left guessing."""
+        try:
+            await self._reply(text)
+            return
+        except Exception as exc:
+            log.warning("could not post a reply in the control room; the reply was:\n%s", text, exc_info=True)
+            error = describe_error(exc)
+        try:
+            await self._reply(REPLY_FAILED.format(error=error))
+        except Exception:
+            log.warning("could not post the short note either", exc_info=True)
 
     async def _pending(self) -> str:
         if self.guard is None:
@@ -247,7 +357,9 @@ class ControlRoomHandler:
             self.engine.trigger()  # run it now, not a whole tick later
 
     async def _status(self) -> str:
-        status = await self._status_line()
+        status = await self._status_line() + "; " + self._rate_limit_status()
+        if self.broadcast_running:
+            status += f"; an announcement is being sent to {self._broadcast_rooms} rooms"
         if self.guard is not None:
             try:
                 waiting = len(await self.guard.open_batches())
@@ -271,6 +383,18 @@ class ControlRoomHandler:
         else:
             last = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(self.engine.last_reconcile_at))
         return f"onbot {__version__} — last reconcile: {last} — managed rooms: {managed}"
+
+    def _rate_limit_status(self) -> str:
+        """Whether the bot's send rate limit is lifted, which decides how fast a broadcast is (ONB-03)."""
+        lifted = getattr(self.broadcast, "rate_limit_lifted", None)
+        if lifted is True:
+            return "send rate limit: lifted for the bot"
+        if lifted is False:
+            return (
+                "send rate limit: NOT lifted (the Synapse override failed, see the log), so broadcasts go "
+                "out at the homeserver's pace"
+            )
+        return "send rate limit: override not applied yet"
 
     async def _reply(self, text: str) -> None:
         assert self.room_id is not None

@@ -42,6 +42,9 @@ class _OnbotRoomState(BaseModel):
     # ignored on read, so the next rewrite of a marker drops it.
     schema_version: int = SCHEMA_VERSION
     avatar_source_url: str | None = None
+    # SHA-256 of the image the avatar was set from (ONB-15): a picture replaced behind an unchanged
+    # URL is noticed by its content. `None` in markers from before it was recorded.
+    avatar_sha256: str | None = None
     # The `global_room_admins` the bot last seated at PL 100 in this room. Recorded because the
     # power-level pass can only withdraw a level it knows it granted: a global admin is usually not a
     # member of the room's Authentik group, so once their name leaves the config there is nothing
@@ -114,6 +117,11 @@ class AdminRoomState(_OnbotRoomState):
     configured_alias: str | None = None
     help_text_hash: str | None = None
     help_event_id: str | None = None
+    # The admins the bot invited (or found in the room) while they were admins (ONB-12). Somebody on
+    # this list who left or declined stays out: they are not invited again on every reconcile. An
+    # admin who drops out of the admin set is removed from it, so being made an admin again brings a
+    # fresh invitation.
+    invited_admins: list[str] = Field(default_factory=list)
 
 
 class GrantedPowerLevels(BaseModel):

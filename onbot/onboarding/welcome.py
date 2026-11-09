@@ -52,7 +52,7 @@ from onbot.clients.synapse_admin import ApiClientSynapseAdmin
 from onbot.config import OnbotConfig, WelcomeMessage
 from onbot.formatting import placeholders_in, render_markdown, substitute
 from onbot.logging import get_logger
-from onbot.media import MediaUploader
+from onbot.media import MediaUploader, content_digest
 from onbot.onboarding.notice_board import notice_board_power_levels, power_level_drift
 from onbot.reconciler.state import (
     DirectRoomState,
@@ -223,6 +223,8 @@ class WelcomeService:
                 return
             else:
                 await self._maybe_reinvite(room_id, mxid, state)
+                if state.setup_complete and await self._converge_avatar(room_id, state):
+                    await self._persist(room_id, state)
         if not state.setup_complete:
             await self._finish_setup(room_id, mxid, state)
 
@@ -290,7 +292,7 @@ class WelcomeService:
         only have been invited to.
         """
         await self._maybe_place_in_space(room_id)
-        await self._maybe_set_avatar(room_id)
+        await self._converge_avatar(room_id, state, new_room=True)
         if state.force_joined_at is None and await self._force_join(room_id, mxid):
             state.force_joined_at = int(datetime.now(UTC).timestamp())
         state.setup_complete = True
@@ -432,15 +434,51 @@ class WelcomeService:
         log.info("force-joined %s into their onboarding room %s", mxid, room_id)
         return True
 
-    async def _maybe_set_avatar(self, room_id: str) -> None:
-        """Give the notice board the bot's own avatar, so it is recognisable in the room list."""
+    async def _converge_avatar(self, room_id: str, state: DirectRoomState, *, new_room: bool = False) -> bool:
+        """Give the notice board the bot's own avatar, so it is recognisable in the room list.
+
+        Keyed by the image's content (ONB-15): the board records ``avatar_sha256``, and a board whose
+        picture differs from the bot avatar's current content gets the new one, whether the URL or
+        the image behind it changed, or the board was created while the image could not be fetched.
+        Runs at most once per process and user (with the welcome). A board from before the digest was
+        recorded that already wears the picture only gets the record. Returns whether ``state``
+        changed; best-effort, a failure leaves the board as it is.
+        """
         url = self.config.synapse_server.bot_avatar_url
         if not url or self.media is None:
-            return
+            return False
         try:
-            await self.client.set_room_avatar(room_id, await self.media.upload_from_url(url))
+            image = await self.media.image(url)
+        except Exception as exc:
+            log.debug("no avatar for the notice board %s: %s", room_id, exc)  # logged by the media layer
+            return False
+        if state.avatar_sha256 == image.sha256:
+            return False
+        try:
+            if new_room or state.avatar_sha256 is not None or not await self._wears(room_id, image.sha256):
+                await self.client.set_room_avatar(room_id, await self.media.mxc_for(image))
+                log.info("set the avatar of the notice board %s from %s", room_id, url)
         except Exception:
             log.exception("failed to set avatar of onboarding room %s from %s", room_id, url)
+            return False
+        state.avatar_source_url = url
+        state.avatar_sha256 = image.sha256
+        return True
+
+    async def _wears(self, room_id: str, digest: str) -> bool:
+        """Whether the room's current avatar has the content ``digest`` (an older board, ONB-15)."""
+        assert self.media is not None
+        content = await self.client.get_room_state_event(room_id, "m.room.avatar") or {}
+        mxc = content.get("url")
+        if not isinstance(mxc, str) or not mxc:
+            return False
+        if self.media.known_mxc(digest) == mxc:
+            return True
+        try:
+            return content_digest(await self.client.download_media(mxc)) == digest
+        except Exception:
+            log.debug("could not read the avatar %s of %s", mxc, room_id, exc_info=True)
+            return False
 
     async def _heal_power_levels(self, room_id: str) -> None:
         """Re-apply the notice-board power levels to an existing room if somebody changed them.
