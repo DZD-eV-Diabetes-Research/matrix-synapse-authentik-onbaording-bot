@@ -303,15 +303,15 @@ onboarding_room_name: Announcements
 # ## onboarding_room_topic - Welcome room topic ###
 # Type:        str
 # Required:    False
-# Default:     "Notices from the onboarding bot. This room is read-only \u2014 you cannot write here."
+# Default:     "Notices from the onboarding bot. This room is read-only, so you cannot write here."
 # Env-var:     'ONBOT_ONBOARDING_ROOM_TOPIC'
 # Description: Matrix topic (tagline) of the 1:1 welcome room. A good place to say where a user
 #              should turn with questions, since they cannot ask them in this room: it is read-only.
 #              Only read when a room is created.
 # Example:
 #  >onboarding_room_topic: Notices from the onboarding bot. You cannot write here.
-onboarding_room_topic: Notices from the onboarding bot. This room is read-only —
-  you cannot write here.
+onboarding_room_topic: Notices from the onboarding bot. This room is read-only,
+  so you cannot write here.
 
 # ## force_join_onboarding_room - Force users into the welcome room ###
 # Type:        bool
@@ -383,13 +383,13 @@ admin_room:
   # YAML-path:   admin_room.topic
   # Type:        str
   # Required:    False
-  # Default:     "Onbot control room \u2014 say !help for the available commands."
+  # Default:     "Onbot control room. Say !help for the available commands."
   # Env-var:     'ONBOT_ADMIN_ROOM__TOPIC'
   # Description: Matrix topic (tagline) of the control room. The bot keeps this in sync with the
   #              commands it supports, so a one-line reminder is visible without scrolling.
   # Example:
   #  >topic: Bot control room. !help for commands.
-  topic: Onbot control room — say !help for the available commands.
+  topic: Onbot control room. Say !help for the available commands.
 
   # ## admin_user_ids - Administrators allowed to command the bot ###
   # YAML-path:   admin_room.admin_user_ids
@@ -1117,16 +1117,16 @@ matrix_room_default_settings:
   # YAML-path:   matrix_room_default_settings.visitor_lobby_topic_template
   # Type:        str
   # Required:    False
-  # Default:     "Open lobby for {name} \u2014 anyone in the space may join. The group's working room is private."
+  # Default:     "Open lobby for {name}: anyone in the space may join. The group's working room is private."
   # Env-var:     'ONBOT_MATRIX_ROOM_DEFAULT_SETTINGS__VISITOR_LOBBY_TOPIC_TEMPLATE'
   # Description: Topic set on the lobby, with `{name}` replaced by the group room's name. State the
   #              arrangement in the one place every visitor looks, so a visitor who reads it never
   #              wonders why the room is quiet or which room to post in.
   # Example:
-  #  >visitor_lobby_topic_template: "Open lobby for {name} \u2014 anyone in the space may\
-  #  >  \ join. The group's working room is private."
-  visitor_lobby_topic_template: Open lobby for {name} — anyone in the space may
-    join. The group's working room is private.
+  #  >visitor_lobby_topic_template: 'Open lobby for {name}: anyone in the space may join.
+  #  >  The group''s working room is private.'
+  visitor_lobby_topic_template: "Open lobby for {name}: anyone in the space may join.
+    The group's working room is private."
 
   # ## visitor_lobby_end2end_encryption_enabled - Encrypt the lobby ###
   # YAML-path:   matrix_room_default_settings.visitor_lobby_end2end_encryption_enabled

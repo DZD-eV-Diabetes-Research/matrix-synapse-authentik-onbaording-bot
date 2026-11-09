@@ -20,7 +20,7 @@ Local `main` is ahead of `origin/main` (the maintainer pushes; last push was the
 | between | S16, CI1 | history scrub (force-pushed by the maintainer), shorter CI (D17) | first GitHub CI run green |
 | 2 | S11, S3, S4, W2F, W2R | HTTP layer, guard layers 1 and 2 with `!confirm <id>`, offboarding completeness (D7), D19 fixups (MAS 1.28 and Synapse 1.164 in the test stack, admin room on by default), wave 2 review fixups | 1130 passed |
 | 3 | S5, S6, S9, W3R | guard layer 3, room identity by creator plus locked marker (D20), user identity across renames (D8, D21), wave 3 review fixups | 1277 passed (before W3R; W3R's own full run on its branch: 1295 passed) |
-| 4 and 5 | S8, S7, S12, W4R, S18, W6R, S14 (merged), W8R (running) | onboarding correctness, room repair, broadcast and admin room, wave 4 review fixups | after S7 and S8: 1385 passed (a47c0f1); after S12 and W4R: 1454 passed (5deb135); S18 branch, code equal to main at b0aec61: 1502 passed; after W6R and S14 part 1 (3ffd05c, 2 workers): 1543 passed; S14 part 2 branch, code equal to main at c5bd4cb: 1569 passed |
+| 4 and 5 | S8, S7, S12, W4R, S18, W6R, S14, W8R (merged) | onboarding correctness, room repair, broadcast and admin room, wave 4 review fixups | after S7 and S8: 1385 passed (a47c0f1); after S12 and W4R: 1454 passed (5deb135); S18 branch, code equal to main at b0aec61: 1502 passed; after W6R and S14 part 1 (3ffd05c, 2 workers): 1543 passed; S14 part 2 branch, code equal to main at c5bd4cb: 1569 passed; W8R branch, code equal to main: 1585 passed |
 
 Status per session: the table in `SESSIONS.md`. Release notes: `CHANGELOG.md` (Unreleased) has a line
 for every merged session.
@@ -87,12 +87,15 @@ contract on main 1480 passed. Includes the D27 rename (breaking). Cold review of
 (a switched-off lobby blocked by someone else loses its levels, D23) and 7 low, written up as W8R.
 D26 to D28 record the confirmations.
 
-Running: W8R (last fixups) in its own worktree, branch `review/w8r-fixups` from f56681e, stack
-instance 1.
+W8R merged (code identical to its branch at 8b68c8e): full run on the branch with 2 workers 1585
+passed in 11:32 (2 config docs drift tests failing there by design, green on main after
+regeneration); unit and contract on main 1494 passed.
 
-Then: merge W8R, regenerate config docs (default topics change), a last cold review of W8R only if
-its diff is not trivial. Then the review run is complete; what remains is in "Maintainer to-dos" and
-S17 (deferred, not before the next release).
+The review run is complete apart from an optional last cold review of W8R. What remains: the
+maintainer to-dos below (including the deployment template changes prepared uncommitted in the local
+clone of `infra-node-conf-com` on 2026-11-09: `oauth2` removed, D27 rename, topics, container
+hardening, `ONBOT_IMAGE` placeholder), S17 (deferred, not before the next release), REC-16 and the
+REC-17 proposal (in the S14 part 2 report, summarised in `SESSIONS.md` if picked up later).
 
 If this session stops before they finish: check `git branch` and `git worktree list` for
 `review/w8r-*`, review it against its brief and merge per "How merging works"; otherwise start W8R from

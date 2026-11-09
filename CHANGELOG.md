@@ -14,6 +14,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Docs (review W8R-08):** two configurations sharing one bot account are unsupported
+  (`docs/deployment.md`).
 - **Docs (review S14):** deployment examples pin a version and show container hardening (SUP-18); a
   section on upgrading from the legacy bot (ONB-05, D5); changelog sections for the published releases
   0.0.1 to 0.0.11.
@@ -54,6 +56,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   would make, offboarding included, without changing anything or saving state.
 
 ### Changed
+- **Default topics without dashes (review W8R, D28). Check before upgrading.** The default topics of
+  the control room, visitor lobbies and notice boards changed. Existing control rooms and lobbies on
+  the default get the new topic once on the first pass (notice boards use the topic only at
+  creation). Set the old text in the config to keep it.
+- **A switched-off visitor lobby that somebody else blocked is a hold (review W8R-01, D23):** the bot
+  neither closes it nor withdraws its levels while the block exists, reports it once and closes it
+  after the block is lifted; when the block status cannot be read, the lobby waits for the next pass.
+- **The levels the bot granted in a switched-off lobby are withdrawn only while user sync is on and
+  identities are readable (review W8R-02, D28),** like every other level change.
 - **Breaking: the offboarding delays are renamed (review S14, D27). Check before upgrading.**
   `deactivate_disabled_authentik_users_in_matrix.deactivate_after_n_sec` is now `lock_after_n_sec` and
   `delete_after_n_sec` is now `remove_after_n_sec`. A config or `ONBOT_*` variable that still uses an
@@ -262,6 +273,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   isolated stack so several checkouts can run the integration suite at the same time.
 
 ### Fixed
+- **A failed removal of a room's links to an earlier space is retried on later passes (review
+  W8R-03),** and only an `m.space.child` the bot wrote into the old space is removed (review W8R-04).
+- **The discovery poll asks Authentik for groups without the embedded member objects (review
+  W8R-05).**
+- **A notice board welcomed while a concurrent welcome saw a new bot avatar gets the new picture on
+  the next pass (review W8R-06),** not after a restart.
+- **`!room adopt` quotes an unreadable `m.direct` as a short, bounded cause (review W8R-07)** instead of
+  the raw API error.
 - **A room whose space was recreated loses the parent link the bot wrote to the old space (review S14,
   S7 leftover)** and is taken out of the old space where the bot still can.
 - **A guard state read error no longer leaves `!announce`, `!status` or `!pending` unanswered (review

@@ -618,7 +618,7 @@ Only read when a room is created.
 |---|---|
 | Type | str |
 | Required | No |
-| Default | `"Notices from the onboarding bot. This room is read-only \u2014 you cannot write here."` |
+| Default | `"Notices from the onboarding bot. This room is read-only, so you cannot write here."` |
 | Environment variable | `ONBOT_ONBOARDING_ROOM_TOPIC` |
 
 **Examples:**
@@ -752,7 +752,7 @@ commands it supports, so a one-line reminder is visible without scrolling.
 |---|---|
 | Type | str |
 | Required | No |
-| Default | `"Onbot control room \u2014 say !help for the available commands."` |
+| Default | `"Onbot control room. Say !help for the available commands."` |
 | Environment variable | `ONBOT_ADMIN_ROOM__TOPIC` |
 
 **Examples:**
@@ -1978,14 +1978,14 @@ wonders why the room is quiet or which room to post in.
 |---|---|
 | Type | str |
 | Required | No |
-| Default | `"Open lobby for {name} \u2014 anyone in the space may join. The group's working room is private."` |
+| Default | `"Open lobby for {name}: anyone in the space may join. The group's working room is private."` |
 | Environment variable | `ONBOT_MATRIX_ROOM_DEFAULT_SETTINGS__VISITOR_LOBBY_TOPIC_TEMPLATE` |
 
 **Examples:**
 
 ```yaml
-visitor_lobby_topic_template: "Open lobby for {name} \u2014 anyone in the space may\
-  \ join. The group's working room is private."
+visitor_lobby_topic_template: 'Open lobby for {name}: anyone in the space may join.
+  The group''s working room is private.'
 ```
 
 ---
@@ -2452,14 +2452,14 @@ wonders why the room is quiet or which room to post in.
 |---|---|
 | Type | str |
 | Required | No |
-| Default | `"Open lobby for {name} \u2014 anyone in the space may join. The group's working room is private."` |
+| Default | `"Open lobby for {name}: anyone in the space may join. The group's working room is private."` |
 | Environment variable | `ONBOT_PER_AUTHENTIK_GROUP_PK_MATRIX_ROOM_SETTINGS[*]__VISITOR_LOBBY_TOPIC_TEMPLATE` |
 
 **Examples:**
 
 ```yaml
-visitor_lobby_topic_template: "Open lobby for {name} \u2014 anyone in the space may\
-  \ join. The group's working room is private."
+visitor_lobby_topic_template: 'Open lobby for {name}: anyone in the space may join.
+  The group''s working room is private.'
 ```
 
 ---
