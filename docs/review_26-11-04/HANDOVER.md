@@ -20,7 +20,7 @@ Local `main` is ahead of `origin/main` (the maintainer pushes; last push was the
 | between | S16, CI1 | history scrub (force-pushed by the maintainer), shorter CI (D17) | first GitHub CI run green |
 | 2 | S11, S3, S4, W2F, W2R | HTTP layer, guard layers 1 and 2 with `!confirm <id>`, offboarding completeness (D7), D19 fixups (MAS 1.28 and Synapse 1.164 in the test stack, admin room on by default), wave 2 review fixups | 1130 passed |
 | 3 | S5, S6, S9, W3R | guard layer 3, room identity by creator plus locked marker (D20), user identity across renames (D8, D21), wave 3 review fixups | 1277 passed (before W3R; W3R's own full run on its branch: 1295 passed) |
-| 4 | S8, S7 (merged), S12 (not started) | onboarding correctness, room repair | 1384 passed, 1 failed, fixed (see "Wave 4") |
+| 4 | S8, S7 (merged), S12 (not started) | onboarding correctness, room repair | 1384 passed, 1 failed, fixed (see "Wave 4"); rerun at a47c0f1: 1385 passed |
 
 Status per session: the table in `SESSIONS.md`. Release notes: `CHANGELOG.md` (Unreleased) has a line
 for every merged session.
@@ -54,14 +54,12 @@ blocks a release from a safety point of view.
 
 ## Next steps (session of 2026-11-09, in progress)
 
-Done this session: cold review of wave 4 (8 findings, no critical; report in the session
+Done this session: full integration run on main at a47c0f1 (1385 passed, 19 minutes), cold review of wave 4 (8 findings, no critical; report in the session
 scratchpad `review-w4/REPORT.md`, summarised as the W4R brief in `SESSIONS.md`), decisions D22 and
 D23.
 
 Running in parallel:
 
-- Full integration run on main at a47c0f1 (instance 0), log `itest-main-a47c0f1.log` in the session
-  scratchpad.
 - S12 in its own worktree, branch `review/s12-broadcast-admin` from cf5c582, stack instance 1. It
   also got W4R-05 (empty mapped set must refuse the broadcast).
 - W4R in its own worktree, branch `review/w4r-fixups` from 5c3c561, stack instance 2.
