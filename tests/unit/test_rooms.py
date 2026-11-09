@@ -192,6 +192,30 @@ def test_per_group_override_matches_the_group_uuid_in_any_form() -> None:
     assert resolve_room_settings("2220a6e1-124f-309b-be96-c8be5fb09eab", cfg).name_prefix != "[Public] "
 
 
+# --- W6R-01: every group pk the configuration names matches in any form of the UUID --------------
+
+HEX = "1120a6e1124f309bbe96c8be5fb09eab"  # the form the config reference shows as the example
+HYPHENATED = "1120a6e1-124f-309b-be96-c8be5fb09eab"  # the form Authentik answers with
+
+
+def test_the_ignore_list_in_the_documented_hex_form_ignores_the_group() -> None:
+    """Before W6R-01 the ignored group still got a room, and its members were invited."""
+    groups = [{"pk": HYPHENATED, "name": "hr-confidential"}, {"pk": "g2", "name": "team"}]
+    for form in (HEX, HEX.upper(), HYPHENATED.upper()):
+        cfg = _config(authentik_group_id_ignore_list=[form])
+        assert [g["pk"] for g in filter_synced_groups(groups, cfg)] == ["g2"], form
+
+
+def test_the_parent_filter_in_hex_form_matches_the_children() -> None:
+    cfg = _config(sync_matrix_rooms_based_on_authentik_groups={"only_for_children_of_groups_with_uid": [HEX]})
+    groups = [
+        {"pk": "c1", "name": "child", "parent": HYPHENATED},
+        {"pk": "c2", "name": "orphan", "parent": None},
+        {"pk": "c3", "name": "elsewhere", "parent": "2220a6e1-124f-309b-be96-c8be5fb09eab"},
+    ]
+    assert [g["pk"] for g in filter_synced_groups(groups, cfg)] == ["c1"]
+
+
 # --- visitor lobby (ADR-0012) ---
 
 

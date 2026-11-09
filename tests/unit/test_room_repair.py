@@ -689,6 +689,18 @@ async def test_reopen_by_room_id_and_refusals() -> None:
     assert effectors.state_store[(LOBBY, JOIN_RULES)] == RESTRICTED
 
 
+async def test_reopen_names_the_group_in_any_form_of_its_uuid() -> None:
+    """W6R-01: `!lobby reopen <group>` compared the raw string, so the 32 hex digit form missed."""
+    engine, _admin, effectors, _attention = _manually_closed()
+    await engine.reconcile_once()
+    engine.active_lobbies = {LOBBY: "1120a6e1-124f-309b-be96-c8be5fb09eab"}  # as Authentik names it
+
+    reply = await engine.reopen_lobby("1120A6E1124F309BBE96C8BE5FB09EAB")
+
+    assert reply.startswith("Reopened the visitor lobby"), reply
+    assert effectors.state_store[(LOBBY, JOIN_RULES)] == RESTRICTED
+
+
 # --- W4R-07: one refused repair does not stop the others -------------------------------------------
 
 

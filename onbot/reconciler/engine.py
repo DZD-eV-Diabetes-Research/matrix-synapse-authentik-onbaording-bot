@@ -1765,7 +1765,10 @@ class ReconcilerEngine:
         elif target.startswith("#"):
             room_id = await self.effectors.resolve_room_alias(target)
         else:
-            room_id = next((r for r, g in self.active_lobbies.items() if g == target), None)
+            wanted = normalize_group_pk(target)  # any form of the group's UUID (W6R-01)
+            room_id = next(
+                (r for r, g in self.active_lobbies.items() if normalize_group_pk(g) == wanted), None
+            )
         space_id = self.rooms.space_id
         if room_id is None or room_id not in self.active_lobbies or space_id is None:
             return (
@@ -1881,7 +1884,7 @@ class ReconcilerEngine:
         report: PassReport,
         plan: PassPlan,
     ) -> None:
-        members_in_room = [u for u in users if group_pk in u.group_pks]
+        members_in_room = [u for u in users if normalize_group_pk(group_pk) in u.group_pks]
         desired = compute_desired_user_levels(
             members_in_room,
             pl_groups,

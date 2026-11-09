@@ -11,6 +11,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 from onbot.models import MappedUser
+from onbot.utils import normalize_group_pk
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,7 +33,8 @@ def desired_room_members(
     passed as ``protected_ids`` to :func:`diff_room_membership`, otherwise the very next pass reads
     them back as members of a group they are not in and kicks them straight out again.
     """
-    return {u.mxid for u in mapped_users if group_pk in u.group_pks} | set(always_members)
+    wanted = normalize_group_pk(group_pk)
+    return {u.mxid for u in mapped_users if wanted in u.group_pks} | set(always_members)
 
 
 def diff_room_membership(

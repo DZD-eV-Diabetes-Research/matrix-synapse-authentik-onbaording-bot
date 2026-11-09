@@ -337,7 +337,8 @@ class AdminRoom(_StrictModel):
                 provider, not to page the whole company, and a capability that reaches every user on
                 the server must not widen silently because somebody was granted an unrelated role
                 upstream. Create a group, put people in it, and name it here. While the admin room is
-                enabled, this list or `admin_user_ids` must not be empty."""
+                enabled, this list or `admin_user_ids` must not be empty. A pk may be written in any
+                form of its UUID: with or without hyphens, in upper or lower case."""
             ),
             examples=[["1120a6e1124f309bbe96c8be5fb09eab"]],
         ),
@@ -709,7 +710,8 @@ class SyncAuthentikUsersWithMatrix(_StrictModel):
                 """Only sync users who belong to at least one of these Authentik groups, identified by
                 the group's primary key (`pk`). `null` applies no group filter. Note this filters
                 *which users exist* for the bot; it does not by itself decide which groups become
-                rooms — that is `sync_matrix_rooms_based_on_authentik_groups`."""
+                rooms — that is `sync_matrix_rooms_based_on_authentik_groups`. A pk may be written in
+                any form of its UUID: with or without hyphens, in upper or lower case."""
             ),
             examples=[["1120a6e1124f309bbe96c8be5fb09eab"]],
         ),
@@ -844,7 +846,8 @@ class SyncMatrixRoomsBasedOnAuthentikGroups(_StrictModel):
             description=inspect.cleandoc(
                 """Only mirror Authentik groups that are direct children of one of these parent
                 groups, identified by the parent's primary key (`pk`). Only the immediate children
-                match, not grandchildren. `null` considers all groups."""
+                match, not grandchildren. `null` considers all groups. A pk may be written in any form
+                of its UUID: with or without hyphens, in upper or lower case."""
             ),
             examples=[["a1b2c3d4parentgroupuid"]],
         ),
@@ -1662,7 +1665,8 @@ class OnbotConfig(BaseSettings):
                 """Overrides for `matrix_room_default_settings`, keyed by the Authentik group's primary
                 key (`pk`). Only the keys you list are overridden; the rest fall back to the defaults.
                 Use this to give a single group a different name prefix, or to leave one room
-                unencrypted."""
+                unencrypted. A key may be written in any form of the group's UUID: with or without
+                hyphens, in upper or lower case."""
             ),
             examples=[
                 {
@@ -1746,7 +1750,8 @@ class OnbotConfig(BaseSettings):
             description=inspect.cleandoc(
                 """Authentik groups that never become a Matrix room, identified by the group's primary
                 key (`pk`). Applied before every other group filter, so a listed group is skipped even
-                if it carries the attributes or name prefix that would otherwise select it."""
+                if it carries the attributes or name prefix that would otherwise select it. A pk may be
+                written in any form of its UUID: with or without hyphens, in upper or lower case."""
             ),
             examples=[["1120a6e1124f309bbe96c8be5fb09eab"]],
         ),
