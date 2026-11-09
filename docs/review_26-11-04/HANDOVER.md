@@ -20,7 +20,7 @@ Local `main` is ahead of `origin/main` (the maintainer pushes; last push was the
 | between | S16, CI1 | history scrub (force-pushed by the maintainer), shorter CI (D17) | first GitHub CI run green |
 | 2 | S11, S3, S4, W2F, W2R | HTTP layer, guard layers 1 and 2 with `!confirm <id>`, offboarding completeness (D7), D19 fixups (MAS 1.28 and Synapse 1.164 in the test stack, admin room on by default), wave 2 review fixups | 1130 passed |
 | 3 | S5, S6, S9, W3R | guard layer 3, room identity by creator plus locked marker (D20), user identity across renames (D8, D21), wave 3 review fixups | 1277 passed (before W3R; W3R's own full run on its branch: 1295 passed) |
-| 4 | S8, S7, S12, W4R (merged), S18 (running) | onboarding correctness, room repair, broadcast and admin room, wave 4 review fixups | after S12 and W4R (5deb135): 1454 passed | 1384 passed, 1 failed, fixed (see "Wave 4"); rerun at a47c0f1: 1385 passed |
+| 4 | S8, S7, S12, W4R (merged), S18 (running) | onboarding correctness, room repair, broadcast and admin room, wave 4 review fixups | after S7 and S8: 1385 passed (a47c0f1); after S12 and W4R: 1454 passed (5deb135) |
 
 Status per session: the table in `SESSIONS.md`. Release notes: `CHANGELOG.md` (Unreleased) has a line
 for every merged session.
