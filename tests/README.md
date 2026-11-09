@@ -105,8 +105,8 @@ test's rooms, and for Synapse's two-minute token cache in the offboarding tests.
   fresh stack is faster: a warm stack keeps every room earlier runs created, and every pass reads
   them all (measured on a workstation, two workers: 12.3 minutes fresh, 15.7 minutes warm).
 
-Measured on a workstation (8 cores, 2026-11-09): one worker 21.7 minutes, two workers 12.3 minutes,
-three workers 11.5 minutes. With three, the machine was loaded enough that a first login raced MAS's
+Measured on a workstation (8 cores, 2026-11-09): one worker 21.7 minutes, two workers 12.3 minutes
+(17.7 with the machine busy with other runs, load average about 20), three workers 11.5 minutes. With three, the machine was loaded enough that a first login raced MAS's
 user provisioning (now retried in `stack_api.mas_login`).
 
 Tear down every stack of the current instance, worker stacks included:
