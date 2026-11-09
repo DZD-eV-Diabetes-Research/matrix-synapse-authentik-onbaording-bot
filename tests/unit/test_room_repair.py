@@ -308,6 +308,56 @@ async def test_a_converged_room_gets_no_writes() -> None:
     assert attention == []
 
 
+OLD_SPACE = "!oldspace:company.org"
+HUMAN_SPACE = "!department:company.org"
+
+
+async def test_the_links_to_an_earlier_space_go_when_the_room_is_linked_into_a_recreated_one() -> None:
+    """S7 leftover: after the space was recreated, the room kept naming the old space as its parent."""
+    effectors = RecordingEffectors()
+    _seed_converged(effectors)
+    # The room as the old space left it, and not yet in the new one.
+    del effectors.state_store[(SPACE, CHILD, ROOM1)]
+    del effectors.state_store[(ROOM1, PARENT, SPACE)]
+    effectors.state_store[(ROOM1, PARENT, OLD_SPACE)] = {"canonical": True, "via": ["company.org"]}
+    effectors.state_store[(OLD_SPACE, CHILD, ROOM1)] = {"suggested": False, "via": ["company.org"]}
+    # A link a human added to a space of their own stays.
+    effectors.state_store[(ROOM1, PARENT, HUMAN_SPACE)] = {"via": ["company.org"]}
+    effectors.senders[(ROOM1, PARENT, HUMAN_SPACE)] = MODERATOR
+    engine, _admin, effectors, _attention = _engine(SharedStateAdmin(effectors), effectors)
+
+    await engine.reconcile_once()
+
+    assert effectors.state_store[(ROOM1, PARENT, SPACE)] == {"canonical": True, "via": ["company.org"]}
+    assert effectors.state_store[(ROOM1, PARENT, OLD_SPACE)] == {}
+    assert effectors.state_store[(OLD_SPACE, CHILD, ROOM1)] == {}
+    assert effectors.state_store[(ROOM1, PARENT, HUMAN_SPACE)] == {"via": ["company.org"]}
+    writes = len(effectors.state_writes)
+    await engine.reconcile_once()
+    assert len(effectors.state_writes) == writes  # converged: reads only
+
+
+async def test_a_stale_link_into_an_earlier_space_the_bot_left_is_not_a_room_problem() -> None:
+    class OldSpaceGone(RecordingEffectors):
+        async def get_room_state(
+            self, room_id: str, event_type: str, state_key: str = ""
+        ) -> dict[str, Any] | None:
+            if room_id == OLD_SPACE:
+                raise ApiError("GET", f"/rooms/{room_id}/state", 403, {"errcode": "M_FORBIDDEN"})
+            return await super().get_room_state(room_id, event_type, state_key)
+
+    effectors = OldSpaceGone()
+    _seed_converged(effectors)
+    del effectors.state_store[(ROOM1, PARENT, SPACE)]
+    effectors.state_store[(ROOM1, PARENT, OLD_SPACE)] = {"canonical": True, "via": ["company.org"]}
+    engine, _admin, effectors, _attention = _engine(SharedStateAdmin(effectors), effectors)
+
+    await engine.reconcile_once()
+
+    assert effectors.state_store[(ROOM1, PARENT, OLD_SPACE)] == {}
+    assert all(not r.problems for r in engine.last_pass_report.rooms)
+
+
 # --- REC-09: marker and lock -----------------------------------------------------------------------
 
 
@@ -325,9 +375,10 @@ class _SharedState:
             if not _shared(e["type"])
         ]
         for key, content in self.effectors.state_store.items():
-            if len(key) == 2 and key[0] == room_id and _shared(key[1]):
+            if key[0] == room_id and _shared(key[1]):
                 sender = self.effectors.senders.get(key, BOT)
-                events.append({"type": key[1], "state_key": "", "sender": sender, "content": content})
+                state_key = key[2] if len(key) == 3 else ""
+                events.append({"type": key[1], "state_key": state_key, "sender": sender, "content": content})
         return events
 
 
@@ -350,7 +401,7 @@ def _is_marker(event_type: str) -> bool:
 
 
 def _shared(event_type: str) -> bool:
-    return _is_marker(event_type) or event_type == JOIN_RULES
+    return _is_marker(event_type) or event_type in (JOIN_RULES, PARENT, CHILD)
 
 
 def _running(

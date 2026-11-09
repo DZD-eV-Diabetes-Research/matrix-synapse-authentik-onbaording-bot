@@ -178,7 +178,8 @@ in, so your identity directory and your chat rooms need not be the same list.
   on a difference, that each of its rooms is still linked into the space (and, for a lobby, suggested
   there), still carries its marker as Onbot wrote it, and that the marker is still protected. A room
   whose creation was cut off halfway, a room from before the space existed, or the rooms of a space
-  that was recreated are linked in again. A marker somebody at Onbot's own level removed or rewrote,
+  that was recreated are linked in again (the links Onbot wrote to the old space are removed, a
+  link a human added to another space stays). A marker somebody at Onbot's own level removed or rewrote,
   or whose protection they lowered, is restored from what Onbot last wrote there itself, and
   reported once; Onbot never takes over what such a marker claims. Each repair stands on its own: one
   the server refuses is reported, and the others still run. This works while Onbot runs: a marker

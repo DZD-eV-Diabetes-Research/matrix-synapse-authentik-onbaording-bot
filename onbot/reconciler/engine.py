@@ -1200,7 +1200,8 @@ class ReconcilerEngine:
         """Link the room into the space (``m.space.child`` there, ``m.space.parent`` here).
 
         Covers a creation cut off between ``createRoom`` and the child link, rooms from before the
-        space existed, a recreated space, and a lobby whose feature was switched on again.
+        space existed, a recreated space, and a lobby whose feature was switched on again. When the
+        parent link had to be written, links the bot wrote to an earlier space of its own are removed.
         """
         child = await self.effectors.get_room_state(space_id, SPACE_CHILD_EVENT_TYPE, room.room_id)
         if not space_child_ok(child, suggested=suggested):
@@ -1220,6 +1221,45 @@ class ReconcilerEngine:
                 state_key=space_id,
             )
             log.info("set the parent space of room %s to %s", room.room_id, space_id)
+            await self._drop_stale_space_links(room, space_id)
+
+    async def _drop_stale_space_links(self, room: MatrixRoom, space_id: str) -> None:
+        """Remove the links the bot wrote between ``room`` and a space it no longer uses.
+
+        After the space was recreated (or its alias setting changed), the room still named the old
+        space as a parent, and the old space, if it still exists, still listed the room. Only a
+        parent link the bot wrote is removed: one a human added (another space of theirs) stays.
+        Runs only when the link to the current space had to be written, so it costs nothing in a
+        converged pass.
+        """
+        bot_id = self.config.synapse_server.bot_user_id
+        for event in await self.admin.get_room_state_events(room.room_id):
+            old = event.get("state_key")
+            if (
+                event.get("type") != SPACE_PARENT_EVENT_TYPE
+                or not isinstance(old, str)
+                or not old
+                or old == space_id
+                or not event.get("content")
+                or event.get("sender") != bot_id
+            ):
+                continue
+            await self.effectors.put_room_state(room.room_id, SPACE_PARENT_EVENT_TYPE, {}, state_key=old)
+            log.info("removed the link of room %s to the earlier space %s", room.room_id, old)
+            try:
+                child = await self.effectors.get_room_state(old, SPACE_CHILD_EVENT_TYPE, room.room_id)
+                if space_child_attached(child):
+                    await self.effectors.put_room_state(
+                        old, SPACE_CHILD_EVENT_TYPE, {}, state_key=room.room_id
+                    )
+            except ApiError as exc:
+                # The old space may be gone, or the bot no longer in it: nothing left to tidy there.
+                log.info(
+                    "could not remove room %s from the earlier space %s (%s)",
+                    room.room_id,
+                    old,
+                    describe_error(exc),
+                )
 
     async def _report_once(self, key: str, text: str) -> None:
         """Log ``text`` at WARNING and tell the admin room, once per process for ``key``."""
