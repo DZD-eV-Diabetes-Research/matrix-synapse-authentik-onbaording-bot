@@ -134,6 +134,9 @@ class RoomIdentity:
     """The room was created as a space (``type: m.space`` in its create event)."""
     join_rule: str | None = None
     """The room's join rule (``restricted`` for a visitor lobby), as last read."""
+    notice_board_marker: bool = False
+    """The room carries an onbot ``direct_room`` state event (with content or removed): it is, or was,
+    a user's notice board, never a managed role (W7R-02)."""
 
     @property
     def trusted(self) -> bool:
@@ -180,6 +183,7 @@ def classify_room(
         predecessor=predecessor if isinstance(predecessor, str) else None,
         is_space=create_content.get("type") == SPACE_ROOM_TYPE,
         join_rule=join_rule if isinstance(join_rule, str) else None,
+        notice_board_marker=event_type_name(server_name, OnbotRoomType.direct_room) in by_type,
     )
 
     markers: list[tuple[OnbotRoomType, str, dict[str, Any]]] = []
@@ -200,8 +204,10 @@ def classify_room(
             foreign_types.append(room_type)
     identity.foreign_markers = tuple(foreign_types)
     identity.marker_types = tuple(m[0] for m in markers)
+    # Recorded even beside a marker with content: a former control room or lobby into which somebody
+    # wrote a group room marker must not pass for a group room that lost its marker (W7R-03).
+    identity.removed_markers = tuple(removed)
     if not markers:
-        identity.removed_markers = tuple(removed)
         return identity
     if foreign:
         # The bot writes every marker itself (in createRoom's initial_state, whose events Synapse
@@ -278,6 +284,10 @@ class RoomIndex:
         return (
             f"the state of {len(self.unreadable)} room(s) the bot created could not be read ({sample}{more})"
         )
+
+
+class NoticeBoardsUnreadable(Exception):
+    """The bot's ``m.direct`` (its list of notice boards) could not be read (W7R-02)."""
 
 
 class MarkerWriteFailed(Exception):
@@ -358,7 +368,15 @@ class RoomIdentityResolver:
         """List every room and identify the bot's own (cached per room id once locked)."""
         index = RoomIndex()
         listing = await self.admin.list_rooms()
-        skip: Collection[str] = await self._direct_rooms() if self._direct_rooms is not None else ()
+        skip: Collection[str] = ()
+        if self._direct_rooms is not None:
+            try:
+                skip = await self._direct_rooms()
+            except Exception:
+                # Only an optimisation here: without the list, the notice boards are read too.
+                log.warning(
+                    "could not read the bot's m.direct; the room scan reads every bot room", exc_info=True
+                )
         to_read: list[str] = []
         for raw in listing:
             room = MatrixRoom.from_admin_api(raw, is_space=raw.get("room_type") == "m.space")
@@ -397,8 +415,18 @@ class RoomIdentityResolver:
         return index
 
     async def is_notice_board(self, room_id: str) -> bool:
-        """Whether ``room_id`` is one of the notice boards in the bot's ``m.direct``."""
-        return self._direct_rooms is not None and room_id in await self._direct_rooms()
+        """Whether ``room_id`` is one of the notice boards in the bot's ``m.direct``.
+
+        Raises :class:`NoticeBoardsUnreadable` when ``m.direct`` cannot be read, so a caller about to
+        hand the room a role fails closed (W7R-02).
+        """
+        if self._direct_rooms is None:
+            return False
+        try:
+            boards = await self._direct_rooms()
+        except Exception as exc:
+            raise NoticeBoardsUnreadable(str(exc) or type(exc).__name__) from exc
+        return room_id in boards
 
     async def identify(self, room_id: str) -> RoomIdentity | None:
         """The identity of one room (``None``: not the bot's), from the cache or one state read."""

@@ -98,6 +98,7 @@ from onbot.reconciler.state import (
 )
 from onbot.rooms.identity import (
     MarkerWriteFailed,
+    NoticeBoardsUnreadable,
     Resolution,
     RoomIdentity,
     RoomIdentityResolver,
@@ -210,19 +211,27 @@ def _adoption_refusal(identity: RoomIdentity, kind: OnbotRoomType = OnbotRoomTyp
     """Why a room the bot created cannot be adopted as a ``kind`` room; ``None`` if it can (W4R-06).
 
     Only a room whose one managed marker is a ``kind`` marker that was removed, or that somebody other
-    than the bot wrote, qualifies: the cases the bot reports with "A room lost its onbot marker". A
-    space is never one, and a room with a visitor lobby's join rule is no group room (W6R-05).
+    than the bot wrote, qualifies: the cases the bot reports with "A room lost its onbot marker". No
+    other managed marker type may be there, with content or removed (W7R-03). A space is never one, a
+    room with a visitor lobby's join rule is no group room (W6R-05), and a room with a notice board's
+    ``direct_room`` marker is never adopted (W7R-02).
     """
     name = _kind_name(kind)
     if identity.trusted:
         assert identity.key is not None
         return f"is already the {identity.key.describe()}"
+    if identity.notice_board_marker:
+        return "carries an onbot direct_room marker: it is or was a user's notice board; it is not adopted"
     if identity.tombstone is not None:
         return f"was upgraded to {identity.tombstone}; it is not adopted"
     if identity.is_space:
         return f"is a space, not a {name}; it is not adopted"
     removed = identity.removed_markers == (kind,) and not identity.marker_types
-    foreign = identity.marker_types == (kind,) and identity.foreign_markers == (kind,)
+    foreign = (
+        identity.marker_types == (kind,)
+        and identity.foreign_markers == (kind,)
+        and not identity.removed_markers
+    )
     if not (removed or foreign):
         if identity.marker_types or identity.removed_markers:
             kinds = ", ".join(sorted({k.value for k in (*identity.marker_types, *identity.removed_markers)}))
@@ -1894,8 +1903,16 @@ class ReconcilerEngine:
                 False,
             )
         refusal = _adoption_refusal(identity, kind)
-        if refusal is None and await self.rooms.is_notice_board(room_id):
-            refusal = "is a user's notice board (in the bot's m.direct); it is not adopted"
+        if refusal is None:
+            try:
+                if await self.rooms.is_notice_board(room_id):
+                    refusal = "is a user's notice board (in the bot's m.direct); it is not adopted"
+            except NoticeBoardsUnreadable as exc:
+                return (
+                    f"The bot cannot read its list of notice boards (m.direct: {exc}), so it cannot rule "
+                    f"out that {room_id} is one." + unchanged,
+                    False,
+                )
         if refusal is not None:
             return f"The room {room_id} {refusal}." + unchanged, False
         marker = (

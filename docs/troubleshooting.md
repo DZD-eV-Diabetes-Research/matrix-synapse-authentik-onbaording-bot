@@ -142,8 +142,11 @@ To hand the room back to Onbot, do one of these:
    that it created the room (it never takes over a room somebody else created), that the group is one
    it keeps a room for (for `lobby`: one that has a visitor lobby in the configuration), and that the
    group has no other room (or lobby) yet. Only a room whose group room marker (or lobby marker) was
-   removed or written by somebody else qualifies; a space, a user's notice board, or, as a group
-   room, a room with a lobby's `restricted` join rule never does. Then it protects the marker, writes
+   removed or written by somebody else, and that carries no other onbot marker (not even a removed
+   one), qualifies; a space, a user's notice board (in the bot's `m.direct`, or with an onbot
+   `direct_room` marker, even a removed one), or, as a group room, a room with a lobby's `restricted`
+   join rule never does. While the bot's `m.direct` cannot be read, nothing is adopted. Then it
+   protects the marker, writes
    it as the bot, answers `Adopted ... as the room of group ...` (or `... as the visitor lobby of
    group ...`) and manages the room from the next pass on. Otherwise it answers why not and changes
    nothing. If protecting the marker worked but writing it failed, the answer says so: the protection

@@ -319,16 +319,13 @@ class App:
 
 
 def _notice_boards(matrix: ApiClientMatrix, bot_id: str) -> Callable[[], Awaitable[set[str]]]:
-    """The bot's notice boards (its ``m.direct``), which a room identity scan need not read."""
+    """The bot's notice boards (its ``m.direct``), which a room identity scan need not read.
+
+    A read error propagates: the scan then reads every bot room, and ``!room adopt`` refuses (W7R-02).
+    """
 
     async def read() -> set[str]:
-        try:
-            direct = await matrix.get_account_data(bot_id, "m.direct")
-        except Exception:
-            log.warning(
-                "could not read the bot's m.direct; the room scan reads every bot room", exc_info=True
-            )
-            return set()
+        direct = await matrix.get_account_data(bot_id, "m.direct")
         return {
             room
             for rooms in direct.values()

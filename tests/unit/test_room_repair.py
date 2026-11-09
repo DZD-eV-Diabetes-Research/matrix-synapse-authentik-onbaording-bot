@@ -1225,6 +1225,105 @@ async def test_room_adopt_refuses_a_notice_board() -> None:
     assert len(effectors.state_writes) == writes
 
 
+DIRECT_MARKER = "org.company.onbot.direct_room"
+
+
+def _adopt_engine(effectors: RecordingEffectors, boards: Any) -> ReconcilerEngine:
+    admin = SharedStateAdmin(effectors)
+    rooms = RoomIdentityResolver(admin, effectors, bot_id=BOT, server_name="company.org", direct_rooms=boards)
+    return ReconcilerEngine(
+        OnbotConfig.model_validate(_BASE),
+        FakeAuthentik(),  # type: ignore[arg-type]
+        admin,  # type: ignore[arg-type]
+        effectors,
+        EventBus(),
+        rooms=rooms,
+    )
+
+
+async def _unreadable_m_direct() -> list[str]:
+    raise ApiError("GET", "https://company.org/account_data/m.direct", 502, "bad gateway")
+
+
+@pytest.mark.parametrize("marker", [{"schema_version": 1, "room_type": "direct_room", "user_id": "@a:x"}, {}])
+async def test_room_adopt_refuses_a_room_with_a_notice_board_marker_even_without_m_direct(
+    marker: dict[str, Any],
+) -> None:
+    """W7R-02: m.direct may be unreadable, and the legacy welcome rooms were never in it."""
+    effectors = RecordingEffectors()
+    _seed_converged(effectors)
+    effectors.state_store[(ROOM1, DIRECT_MARKER)] = marker
+    effectors.state_store[(ROOM1, GROUP_MARKER)] = {}
+
+    async def no_boards() -> list[str]:
+        return []
+
+    engine = _adopt_engine(effectors, no_boards)
+    writes = len(effectors.state_writes)
+
+    reply = await engine.adopt_room("g1", ROOM1, by=HUMAN_ADMIN)
+
+    assert "notice board" in reply and "Nothing was changed" in reply, reply
+    assert len(effectors.state_writes) == writes
+
+
+async def test_room_adopt_fails_closed_when_m_direct_cannot_be_read() -> None:
+    """W7R-02: a lost group room marker qualifies, but the room could still be a notice board."""
+    effectors = RecordingEffectors()
+    _seed_converged(effectors)
+    effectors.state_store[(ROOM1, GROUP_MARKER)] = {}
+    engine = _adopt_engine(effectors, _unreadable_m_direct)
+    writes = len(effectors.state_writes)
+
+    reply = await engine.adopt_room("g1", ROOM1, by=HUMAN_ADMIN)
+
+    assert "cannot read its list of notice boards" in reply and "Nothing was changed" in reply, reply
+    assert len(effectors.state_writes) == writes
+
+
+async def test_a_room_scan_reads_every_bot_room_when_m_direct_cannot_be_read() -> None:
+    effectors = RecordingEffectors()
+    _seed_converged(effectors)
+    admin = SharedStateAdmin(effectors)
+    rooms = RoomIdentityResolver(
+        admin, effectors, bot_id=BOT, server_name="company.org", direct_rooms=_unreadable_m_direct
+    )
+
+    index = await rooms.scan()
+
+    assert index.complete and ROOM1 in index.identities
+
+
+@pytest.mark.parametrize(
+    "other",
+    [
+        "org.company.onbot.admin_room",  # a former control room
+        LOBBY_MARKER,  # a former lobby
+    ],
+)
+def test_a_removed_marker_of_another_kind_is_seen_beside_a_foreign_group_marker(other: str) -> None:
+    """W7R-03: a foreign marker of the wanted kind hid the removed marker of the room's real role."""
+    from onbot.reconciler.engine import _adoption_refusal
+    from onbot.rooms.identity import classify_room
+
+    state = [
+        {"type": "m.room.create", "state_key": "", "sender": BOT, "content": {"room_version": "10"}},
+        {"type": JOIN_RULES, "state_key": "", "sender": BOT, "content": {"join_rule": "invite"}},
+        {"type": other, "state_key": "", "sender": MODERATOR, "content": {}},
+        {
+            "type": GROUP_MARKER,
+            "state_key": "",
+            "sender": MODERATOR,
+            "content": dump_room_state(GroupRoomState(group_id="g1")),
+        },
+    ]
+    identity = classify_room("!ex:company.org", state, bot_id=BOT, server_name="company.org")
+
+    assert identity is not None and identity.removed_markers
+    refusal = _adoption_refusal(identity)
+    assert refusal is not None and "not a lost group room marker" in refusal
+
+
 async def test_room_adopt_refuses_an_ex_lobby_as_a_group_room() -> None:
     effectors = RecordingEffectors()
     _seed_converged(effectors)
