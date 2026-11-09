@@ -123,6 +123,12 @@ guess could take a MAS-linked account).
   created explicitly from a given `main` commit (worktrees may start from an old commit), and its own
   stack instance (`ONBOT_ITEST_INSTANCE=1..3`; 0 is the orchestrator's).
 - Agents share the session scratchpad: give every log a unique file name.
+- Every wait (orchestrator and agents) has a hard timeout and ends when the watched process is gone,
+  for example `timeout 2400 bash -c 'while kill -0 $PID 2>/dev/null; do sleep 10; done'`, or relies
+  on the background completion notification. Never a bare `until grep <log>` or `pgrep -f` loop (one
+  ran for over 8 hours on 2026-11-06). Put this rule into every agent brief that runs tests, and run
+  a report-only watchdog in the background while agents test (flags wait loops over 45 minutes or
+  with a log unchanged for 15 minutes, and pytest runs over 45 minutes).
 - Before briefing an agent, re-read the current brief and the decisions it depends on.
 - Agents do not edit CHANGELOG, generated config docs, DECISIONS.md or the status table; they report
   product questions instead of deciding them.
