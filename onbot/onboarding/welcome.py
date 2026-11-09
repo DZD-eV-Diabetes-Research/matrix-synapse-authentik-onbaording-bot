@@ -190,6 +190,17 @@ class WelcomeService:
         # Whether a new notice board of this process was checked for forced encryption (ONB-06).
         self._encryption_checked = False
 
+    def board_avatar_sha256(self) -> str | None:
+        """The image hash of the picture the notice boards wear, as last fetched (nothing is fetched).
+
+        The listener compares it from pass to pass: when the picture behind the bot avatar URL changed
+        (ONB-15), every board is looked at again.
+        """
+        url = self.config.synapse_server.bot_avatar_url
+        if not url or self.media is None:
+            return None
+        return self.media.known_digest(url)
+
     async def welcome_user(self, mxid: str) -> None:
         """Ensure ``mxid`` has a DM with all configured welcome messages delivered (idempotent)."""
         messages = self.config.welcome_new_users_messages or []

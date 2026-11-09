@@ -37,6 +37,10 @@ process has welcomed and skips them. It is per process and deliberately not pers
 each user is checked once more, which is also when a changed ``welcome_new_users_messages`` is picked
 up (:mod:`onbot.onboarding.welcome` sends only the message that changed).
 
+**A new bot avatar.** The notice boards wear the bot's avatar. When the picture behind its URL
+changes (the media layer looks again about once a day, ONB-15), the welcomed cache is cleared at the
+next pass, so every mapped user's board is looked at once more and gets the new picture.
+
 **Housekeeping.** With every pass the queue also gets one prune job: notice boards of accounts that no
 longer exist (deactivated or erased) or are not on this server are dropped from ``m.direct``
 (SEC-06, ONB-07), see :meth:`~onbot.onboarding.welcome.WelcomeService.prune_direct`.
@@ -122,6 +126,8 @@ class OnboardingListener:
         # Users whose welcome failed, with the last error, so a failure repeating every pass is one
         # traceback and then a line per attempt.
         self._failing: dict[str, str] = {}
+        # The picture the notice boards wear, as of the last pass (ONB-15).
+        self._board_avatar: str | None = None
 
     def start(self) -> None:
         """Subscribe to the reconciler's signal (call once, before running)."""
@@ -155,10 +161,21 @@ class OnboardingListener:
     async def _on_users_mapped(self, event: Event) -> None:
         self._mapped = frozenset(event.payload["mxids"])
         self._accounts = frozenset(event.payload.get("accounts") or ())
+        self._notice_new_board_avatar()
         self._enqueue(_PRUNE)
         for mxid in sorted(self._mapped):
             if mxid not in self._welcomed and self._is_target(mxid):
                 self._enqueue(mxid)
+
+    def _notice_new_board_avatar(self) -> None:
+        """Forget who was welcomed when the bot avatar's picture changed, so every board gets it."""
+        current = self.welcome.board_avatar_sha256()
+        if current is None:
+            return
+        if self._board_avatar is not None and current != self._board_avatar:
+            log.info("the bot avatar changed; checking every notice board for the new picture")
+            self._welcomed.clear()
+        self._board_avatar = current
 
     def _is_target(self, mxid: str) -> bool:
         if self._mapped is None or mxid not in self._mapped:

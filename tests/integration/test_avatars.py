@@ -17,8 +17,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from onbot.app import run_reconcile_once
+from onbot.app import build_app, run_reconcile_once
 from onbot.clients.matrix import ApiClientMatrix
+from onbot.runtime import StartupSupervisor
 from tests.integration import stack_api as S
 
 pytestmark = pytest.mark.integration
@@ -119,3 +120,62 @@ async def test_a_new_picture_behind_the_same_url_reaches_the_bot_and_the_notice_
 
         assert await matrix_client.get_user_avatar(S.BOT_USER_ID) == second_profile
         assert await matrix_client.get_room_state_event(board, "m.room.avatar") == board_event
+
+
+async def _room_avatar(client: ApiClientMatrix, room_id: str) -> bytes:
+    content = await client.get_room_state_event(room_id, "m.room.avatar")
+    assert content is not None
+    return await client.download_media(content["url"])
+
+
+async def test_a_new_picture_reaches_profile_room_and_notice_board_without_a_restart(
+    make_config, authentik_admin: S.AuthentikAdmin, matrix_client: ApiClientMatrix
+) -> None:
+    """S18 (ONB-15): the running service looks at avatar URLs again about once a day.
+
+    One process: the startup steps, a pass, then the image changes and the re-check is due (the
+    interval is shortened, not waited for). The next passes set the new picture everywhere.
+    """
+    prefix = S.uniq("avrecheck")
+    red, blue = _png(255, 0, 0), _png(0, 0, 255)
+    with _serving(red) as server:
+        alias = S.uniq("avroom")
+        group = authentik_admin.create_group(
+            f"{prefix}-scope",
+            attributes={"is_chatroom": True, "chatroom_alias": alias, "chatroom_avatar_url": server.url},
+        )
+        _u, user = S.provision(authentik_admin, S.uniq("avrecheckuser"), groups=[group["pk"]])
+        config = make_config()
+        config.sync_matrix_rooms_based_on_authentik_groups.only_for_groupnames_starting_with = prefix
+        room_settings = config.matrix_room_default_settings
+        room_settings.matrix_alias_from_authentik_attribute = "attributes.chatroom_alias"
+        config.sync_authentik_users_with_matrix_rooms.sync_only_users_of_groups_with_id = [group["pk"]]
+        config.synapse_server.bot_avatar_url = server.url
+        config.avatar_fetch.allowed_internal_destinations = ["127.0.0.1"]
+
+        async with build_app(config) as app:
+            await StartupSupervisor(app.reconcile_once_steps()).run_once()
+            await app.engine.reconcile_once()
+            await app.listener.process_queued()
+            room = await matrix_client.resolve_room_alias(f"#{alias}:{S.SERVER_NAME}")
+            assert room is not None
+            board = (await matrix_client.get_account_data(S.BOT_USER_ID, "m.direct"))[user.mxid][0]
+            assert await _room_avatar(matrix_client, room) == red
+            assert await _board_avatar(matrix_client, board) == red
+            requests = server.requests
+
+            await app.engine.reconcile_once()  # within the interval: the URL is not asked again
+            assert server.requests == requests
+
+            server.image = blue
+            app.media.recheck_interval_sec = 0  # the day has passed
+            await app.engine.reconcile_once()  # the room, then (after the pass) the bot profile
+            app.media.recheck_interval_sec = 3600
+            await app.engine.reconcile_once()  # the listener notices the new board picture
+            await app.listener.process_queued()
+
+            profile = await matrix_client.get_user_avatar(S.BOT_USER_ID)
+            assert profile is not None
+            assert await matrix_client.download_media(profile) == blue
+            assert await _room_avatar(matrix_client, room) == blue
+            assert await _board_avatar(matrix_client, board) == blue
