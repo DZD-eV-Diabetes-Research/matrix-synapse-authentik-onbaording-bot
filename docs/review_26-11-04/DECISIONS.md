@@ -327,3 +327,11 @@ New work (session S18):
   manages membership and levels at all (user sync on and identity available), like every other level
   change.
 - Two configurations sharing one bot account and one group room are unsupported (W8R-08): document it.
+
+## D29 W8R confirmations (decided 2026-11-09)
+
+- The new default topics are accepted as written by W8R.
+- A switched-off lobby that the bot itself blocked stays blocked and closed; the bot lifts its own
+  block only when the lobby is switched on again.
+- A last cold review of W8R runs before the release; critical or high findings are fixed before the
+  release, low ones are listed for afterwards.
