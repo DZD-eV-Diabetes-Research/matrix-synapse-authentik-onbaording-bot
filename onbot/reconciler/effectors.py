@@ -18,6 +18,7 @@ unit tests build on.
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 from typing import Any, Protocol, runtime_checkable
 
@@ -47,6 +48,10 @@ class MatrixEffectors(Protocol):
     async def set_room_topic(self, room_id: str, topic: str) -> None: ...
 
     async def set_room_avatar(self, room_id: str, mxc_uri: str) -> None: ...
+
+    async def avatar_digest(self, url: str) -> str:
+        """SHA-256 of the image at ``url``, fetched at most once per process (ONB-15)."""
+        ...
 
     async def upload_avatar(self, url: str) -> str:
         """Fetch ``url`` and upload it to the media repo, returning its ``mxc://`` URI."""
@@ -134,6 +139,13 @@ class DryRunEffectors:
 
     async def set_room_avatar(self, room_id: str, mxc_uri: str) -> None:
         log.info("[dry-run] would set avatar of %s -> %s", room_id, mxc_uri)
+
+    async def avatar_digest(self, url: str) -> str:
+        # Fetching only reads, so a preview with live reads compares the real content. Without
+        # them (the unit tests) the URL stands in for the image.
+        if self._reads is not None:
+            return await self._reads.avatar_digest(url)
+        return hashlib.sha256(url.encode()).hexdigest()
 
     async def upload_avatar(self, url: str) -> str:
         log.info("[dry-run] would upload avatar from %s", url)

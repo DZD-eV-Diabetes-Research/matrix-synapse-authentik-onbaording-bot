@@ -715,6 +715,9 @@ class CSApiEffectors:
     async def set_room_avatar(self, room_id: str, mxc_uri: str) -> None:
         await self.client.set_room_avatar(room_id, mxc_uri)
 
+    async def avatar_digest(self, url: str) -> str:
+        return (await self._media.image(url)).sha256
+
     async def upload_avatar(self, url: str) -> str:
         return await self._media.upload_from_url(url)
 

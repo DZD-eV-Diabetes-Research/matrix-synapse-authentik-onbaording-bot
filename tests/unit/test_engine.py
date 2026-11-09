@@ -1199,3 +1199,73 @@ async def test_an_unreadable_bot_room_holds_creation_and_teardown() -> None:
     assert effectors.created == []  # g-new waits
     assert admin.blocked_changes == []  # and nothing is torn down
     assert any(group == "g-new" and "could not be read" in problems[0] for group, problems in reported)
+
+
+# --- ONB-15: room avatars are keyed by content as well as URL ------------------------------------
+
+
+class _ContentEffectors(RecordingEffectors):
+    """The image behind each URL, as the test says; its digest is what the engine compares."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.content: dict[str, str] = {}
+        self.fail_fetch = False
+
+    async def avatar_digest(self, url: str) -> str:
+        if self.fail_fetch:
+            raise RuntimeError("cdn down")
+        return f"sha-of-{self.content.get(url, 'first')}"
+
+
+async def test_a_new_picture_behind_an_unchanged_url_reaches_the_group_room() -> None:
+    """Before the fix the room avatar was keyed by the URL alone, so a rebrand never arrived."""
+    config = OnbotConfig.model_validate(_BASE)
+    effectors = _ContentEffectors()
+    engine = ReconcilerEngine(config, AvatarAuthentik(), FakeAdmin(), effectors)  # type: ignore[arg-type]
+    await engine.reconcile_once()
+    assert len(effectors.avatars) == 1
+
+    effectors.content["https://cdn/t.png"] = "rebranded"  # same URL, new image
+    await engine.reconcile_once()
+
+    assert effectors.avatars == [
+        ("!room1:company.org", "mxc://company.org/1"),
+        ("!room1:company.org", "mxc://company.org/2"),
+    ]
+    marker = next(
+        c
+        for (room, t), c in effectors.state_store.items()
+        if room == "!room1:company.org" and "group_room" in t
+    )
+    assert marker["avatar_sha256"] == "sha-of-rebranded"
+
+
+async def test_a_marker_without_a_digest_adopts_the_current_picture_without_setting_it() -> None:
+    """A room whose avatar an older version set (URL recorded, no digest) is not touched on upgrade."""
+    config = OnbotConfig.model_validate(_BASE)
+    effectors = _ContentEffectors()
+    engine = ReconcilerEngine(config, AvatarAuthentik(), FakeAdmin(), effectors)  # type: ignore[arg-type]
+    await engine.reconcile_once()
+    key = next(k for k in effectors.state_store if k[0] == "!room1:company.org" and "group_room" in k[1])
+    effectors.state_store[key] = {**effectors.state_store[key], "avatar_sha256": None}
+
+    await engine.reconcile_once()
+
+    assert len(effectors.avatars) == 1
+    assert effectors.state_store[key]["avatar_sha256"] == "sha-of-first"
+
+
+async def test_an_unreachable_avatar_keeps_the_room_picture() -> None:
+    config = OnbotConfig.model_validate(_BASE)
+    effectors = _ContentEffectors()
+    engine = ReconcilerEngine(config, AvatarAuthentik(), FakeAdmin(), effectors)  # type: ignore[arg-type]
+    await engine.reconcile_once()
+    key = next(k for k in effectors.state_store if k[0] == "!room1:company.org" and "group_room" in k[1])
+    recorded = dict(effectors.state_store[key])
+
+    effectors.fail_fetch = True
+    await engine.reconcile_once()
+
+    assert len(effectors.avatars) == 1
+    assert effectors.state_store[key] == recorded
