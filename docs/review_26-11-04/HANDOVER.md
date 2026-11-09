@@ -52,38 +52,26 @@ blocks a release from a safety point of view.
   read the agent's report if it is in this file below, otherwise review the branch against its brief,
   then merge per "How merging works".
 
-## Next steps
+## Next steps (session of 2026-11-09, in progress)
 
-1. Optional: one more full integration run on main to confirm the test fix in context (the
-   rerun of the affected file was green).
-2. Cold review of wave 4 (fresh reviewer agent over the wave's diff, without the orchestrator's
-   summary), fixups as a W4R session if needed.
-3. S12, then wave 5: S14 (docs, dead code, cleanup; also the integration suite speed-up from D17).
-4. S17 (bot-driven room upgrades, D20) is deferred: not before the next release.
+Running in parallel since cf5c582:
+
+- Full integration run on main (instance 0), log `itest-main-a47c0f1.log` in the session scratchpad.
+- Cold review of wave 4 (`git diff b5fd0b5 a47c0f1`) by a fresh read-only agent.
+- S12 in its own worktree, branch `review/s12-broadcast-admin` from cf5c582, stack instance 1.
+
+Then: W4R fixups (cold review findings plus the D21 addition "binding wins without MAS"), then wave
+5: S14 (docs, dead code, cleanup; also the integration suite speed-up from D17). S17 (bot-driven room
+upgrades, D20) is deferred: not before the next release.
+
+If this session stops before they finish: check `git branch` and `git worktree list` for
+`review/s12-*`, review it against the brief, merge per "How merging works"; rerun the cold review if
+no W4R brief exists in `SESSIONS.md`.
 
 ## Questions collected for the maintainer
 
-Ask with AskUserQuestion, in German, one batch at a time:
-
-1. **D21 gap:** without MAS (or when MAS does not link the account), a recorded binding against a
-   never-seen attribute guess currently fails closed for both users. Should the binding holder win,
-   as the MAS-linked owner does?
-2. **Guard, implemented conservatively by W3R, pending confirmation:**
-   (a) a rejected batch with irreversible actions keeps them held until it expires, instead of ending
-   once fewer than `confirm_irreversible_actions_from` remain (the remaining one or two erasures
-   would otherwise run without asking);
-   (b) confirmed batches expire too, so a deletion waiting weeks for its teardown is proposed again
-   instead of running on an old confirmation;
-   (c) a confirmation resets the batch's expiry window, so a last-minute confirmation is not lost.
-   Confirm or choose the earlier behaviour; then record the outcome in D13.
-3. **S8, user sync off:** with `sync_authentik_users_with_matrix_rooms.enabled: false`, welcomes and
-   broadcasts now stop completely (only mapped users are onboarded, and nobody is mapped). Confirm.
-4. **S8, CLI broadcast:** `onbot broadcast` now needs Authentik to be reachable (it maps the users
-   first). OK?
-5. **S7, alias repair:** when the alias settings change, the room also gets the *new* alias when it
-   is free, while its main address stays the old one. Confirm.
-6. **S7, lobby made public by a human:** D16 only covers closing, so a lobby a human made `public` is
-   still reverted by the bot. Confirm or extend D16.
+All answered on 2026-11-09 (recommended options throughout): recorded in D13 (guard details), D21
+(binding wins without MAS, implementation in W4R) and D22 (S7 and S8 confirmations).
 
 ## Maintainer to-dos outside the code
 
