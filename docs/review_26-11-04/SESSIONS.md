@@ -37,6 +37,7 @@ Start a session by pointing Claude at this file and the session ID, for example:
 | 7b | W2R | Wave 2 review fixups: guard fails closed, rejected batches end, ledger report, guard gaps | S | S3, S4 | done (merged in wave 2) |
 | 11a | W3R | Wave 3 review fixups: identity guess vs MAS owner, marker sender, upgrade claims, lock retry, batch expiry | S | S5, S6, S9 | done (merged in wave 3) |
 | 11b | W4R | Wave 4 review fixups: closed rooms, human-blocked rooms as hold (D23), lost notice boards, upkeep isolation, binding wins (D21) | S | S7, S8 | done (merged in wave 4) |
+| 14b | W6R | S18 review fixups: group pk forms everywhere, avatar refetch, adopt checks and lobbies, control room marker | M | S18 | open |
 | 14a | S18 | Wave 4 follow-ups (D24) plus W5R review fixups: avatar re-check, sync scope re-check, duplicate announce guard, `!room adopt`, flaky deletion test, marker signing, UUID forms | M | S12, W4R | done (merged in wave 4) |
 | 4 | S3 | Guard layers 1 and 2, reconciler dry-run | M | S2 | done (merged in wave 2) |
 | 5 | S16 | Git history scrub | S | S0, no open branches | done (force-pushed 2026-11-06, new main 89afecf) |
@@ -189,6 +190,55 @@ finding; given to the running S18 agent because all of them sit in the code S18 
   `control_room.stop()`; a cancelled broadcast never posts a result.
 - **W5R-05 (low):** `MediaUploader` keeps up to 5 MB of image bytes per avatar URL for the life of the
   process; `_failed` re-raises one exception object.
+
+---
+
+## W6R S18 review fixups
+
+From the cold review of S18 (`git diff 3d01196 b0aec61`), 2026-11-09. No critical or high finding.
+Experiment tests asserting the faulty behaviour: orchestrator scratchpad `review-s18/`. Plus items
+moved here from S14 because they sit in the same files.
+
+- **W6R-01 (medium):** W5R-02 is incomplete. `authentik_group_id_ignore_list` and
+  `only_for_children_of_groups_with_uid` (`onbot/reconciler/rooms.py` around 36 to 43) and
+  `!lobby reopen <group>` (`engine.py` `reopen_lobby`) still compare raw strings, so the documented
+  32-hex example of the ignore list ignores nothing (the group gets a room and its members are
+  invited). Normalise with `normalize_group_pk` on both sides everywhere a group pk is compared.
+  Mention in the config descriptions of every group pk field that any UUID form works (the
+  orchestrator regenerates the config docs). CHANGELOG note: hex-form keys of
+  `per_authentik_group_pk_matrix_room_settings` now match where they silently did not before.
+- **W6R-02 (low, regression from W5R-05):** `_converge_avatar` calls `avatar_digest` (fetch, bytes
+  dropped), then `upload_avatar` fetches again without lock or `_failed` backoff; a host with varying
+  bytes is downloaded once per room per pass and never set. Pass the fetched image with its bytes to
+  the upload, or keep bytes until the digest is uploaded; put any refetch behind the lock and backoff;
+  on a mismatch learn the new digest instead of raising.
+- **W6R-03 (low):** the W5R-04 "shutting down, not sent" reply is stored as `_broadcast_task` and the
+  second `stop()` cancels it before it is posted; the unit test waits before the second stop, so it
+  does not test production order. Keep refusal replies out of `_broadcast_task` and await them with a
+  short timeout in `stop()`.
+- **W6R-04 (low):** held announcement ids are case-sensitive, guard batch ids are not
+  (`normalize_batch_id`). Normalise before the held lookup; have new ids avoid held ids; list held
+  announcements in `!pending` (moved from S14).
+- **W6R-05 (low):** `!room adopt` does not check what kind of room it takes: a legacy notice board (in
+  the bot's `m.direct`), an ex-lobby with a `restricted` join rule, or a space (`type: m.space`) with a
+  foreign `group_room` marker is accepted. Refuse those (except the lobby case below); when the lock
+  succeeded but the marker write failed, do not say "Nothing was changed".
+- **D25 `!room adopt` for lobbies (moved from S14):** visitor lobbies whose marker was lost or
+  rewritten can be adopted too, with the same rules (allowlisted admins, bot-created rooms only per
+  D20, refuse otherwise); syntax for example `!room adopt lobby <group pk> <room>`. Unit and
+  integration tests; update "A room lost its onbot marker" in `docs/troubleshooting.md`.
+- **W6R-06 (low):** `MediaUploader.holds()` remembers a human-chosen mxc (possibly on a remote
+  server) as the upload for a digest, and then hands it to every room. Do not remember in `holds()`
+  (or only own-server mxcs). Let `WelcomeService._wears` and `ensure_bot_avatar._holds_same_bytes`
+  reuse `holds` where it fits (moved from S14).
+- **W6R-07 (low):** notice boards welcomed while the bot avatar URL could not be fetched never get
+  the picture without a restart (`listener.py` `_notice_new_board_avatar`: no clear when the first
+  digest appears).
+- **W6R-08 (low):** the admin room marker is read from the room and written back by the bot
+  (`onbot/rooms/admin.py` `_load_state` has no sender check), so the bot signs content a human above
+  the lock wrote (D20). Build it from the marker the resolver trusts or a fresh one. While there
+  (moved from S14, S7 leftover): give the control room the marker, alias and lock repair the other
+  managed rooms have.
 
 ---
 
@@ -618,39 +668,45 @@ only after the allowlist check; key avatars by content hash as well as URL (ONB-
 
 ## S14 Docs, dead code, cleanup
 
-**From S7:** upkeep costs about 4 extra GETs per room per pass (REC-16); the control room
-(`onbot/rooms/admin.py`) gets no marker, alias or lock repair yet; stale space links to an old space
-are not removed after the space is recreated; a closed lobby keeps the levels the bot granted there;
-the integration teardown tests delete other tests' group rooms on the shared stack (harmless today).
+Split on 2026-11-09 so it can run beside W6R: part 1 starts while W6R runs, part 2 after W6R is
+merged (it touches the engine and the reconciler test fakes, which W6R changes too). Items that sit in
+W6R's files moved to W6R.
 
-**From S12:** the first start after the upgrade rewrites every onbot marker once ("marker was
-incomplete", info log) and downloads each older notice board's avatar once; the broadcast stall
-limit (300 s), the wait cap (60 s) and the 20-room listing are constants; pre-existing em dashes in
-the `!status` line and the help text. Not done, would need a decision: re-fetching an avatar URL
-without a restart (ETag or periodic check), the SEC-09 local re-check for
-`sync_only_users_of_groups_with_id`, the ONB-11 duplicate guard for identical announcements.
+### Part 1 (parallel to W6R; keep out of `onbot/reconciler/`, `onbot/media.py`,
+`onbot/admin/control_room.py`, `onbot/rooms/admin.py`, `onbot/rooms/identity.py` and their tests)
 
-**From W4R:** the reconciler unit fakes still do not serve one shared room state everywhere; only
-the marker tests in `test_room_repair.py` use `SharedStateAdmin`.
+**Findings:** MNT-12, SUP-18, SUP-19, ONB-19, MNT-10, MNT-14, MNT-15, ONB-05 (D5), LIF-15 leftovers.
 
-**From S18:** mention in the config descriptions of the group pk fields that every UUID form works
-(then `pdm run gen-config-docs`); `!pending` does not list held announcements;
-`WelcomeService._wears` and `ensure_bot_avatar._holds_same_bytes` could reuse `MediaUploader.holds`;
-the discovery poller's group re-check has no dedicated test. The S18 timings stay constants (D25).
-Extend `!room adopt` to visitor lobbies (D25), with unit and integration tests, and update the
-troubleshooting section "A room lost its onbot marker".
+**Steps:** bring `todo.md`, `issues.md`, `CHANGELOG.md` (releases 0.0.1 to 0.0.11 are published; leave
+the Unreleased section's content alone apart from obvious formatting), `BATTLE_PLAN.md` (close Phase 1
+per D1 and D2), `architecture.md` links and `tests/README.md` in line with the code; add the legacy
+cutover note (D5); delete dead code outside the files listed above; fix the layering items that are
+cheap there; pre-existing em dashes in the `!status` line and the help text only if they are outside
+the files above (otherwise part 2).
 
 **From D17:** speed up the integration suite (about 20 minutes in CI): cache or reuse the stack start
-(Authentik dominates), run independent test files in parallel where the stack allows it.
+(Authentik dominates), run independent test files in parallel where the stack allows it. Keep the
+per-instance isolation (`ONBOT_ITEST_INSTANCE`) working; the suite must stay a reliable gate.
 
-**Findings:** MNT-12, SUP-18, SUP-19, ONB-19, MNT-10, MNT-14, MNT-15, REC-15, ONB-05 (D5), LIF-15
-leftovers, optionally REC-16 and REC-17.
+### Part 2 (after W6R is merged)
 
-**Steps:** bring `todo.md`, `issues.md`, `CHANGELOG.md` (releases 0.0.1 to 0.0.11 are published),
-`BATTLE_PLAN.md` (close Phase 1 per D1 and D2), `architecture.md` links and `tests/README.md` in line
-with the code; add the legacy cutover note (D5); delete dead code; fix the layering items that are
-cheap; include all inputs in the discovery fingerprint. REC-16 (performance) and REC-17 (engine
-restructure) are optional and only worth it once S2, S3 and S6 have settled the engine's shape.
+**From S7:** upkeep costs about 4 extra GETs per room per pass (REC-16); stale space links to an old
+space are not removed after the space is recreated; a closed lobby keeps the levels the bot granted
+there; the integration teardown tests delete other tests' group rooms on the shared stack (harmless
+today).
+
+**From S12:** the first start after the upgrade rewrites every onbot marker once ("marker was
+incomplete", info log) and downloads each older notice board's avatar once (document in the upgrade
+notes); the broadcast stall limit (300 s), the wait cap (60 s) and the 20-room listing stay constants.
+
+**From W4R:** the reconciler unit fakes still do not serve one shared room state everywhere; only the
+marker tests in `test_room_repair.py` use `SharedStateAdmin`.
+
+**From S18:** the discovery poller's group re-check has no dedicated test. The S18 timings stay
+constants (D25).
+
+**Findings:** REC-15, include all inputs in the discovery fingerprint; optionally REC-16 and REC-17
+(engine restructure) now that the engine's shape has settled.
 
 ---
 
