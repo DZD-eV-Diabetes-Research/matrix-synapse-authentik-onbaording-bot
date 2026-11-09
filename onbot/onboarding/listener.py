@@ -38,8 +38,9 @@ each user is checked once more, which is also when a changed ``welcome_new_users
 up (:mod:`onbot.onboarding.welcome` sends only the message that changed).
 
 **A new bot avatar.** The notice boards wear the bot's avatar. When the picture behind its URL
-changes (the media layer looks again about once a day, ONB-15), the welcomed cache is cleared at the
-next pass, so every mapped user's board is looked at once more and gets the new picture.
+changes (the media layer looks again about once a day, ONB-15), the users welcomed with another
+picture (or none) leave the welcomed cache at the next pass, so their boards are looked at once more
+and get the new picture.
 
 **Housekeeping.** With every pass the queue also gets one prune job: notice boards of accounts that no
 longer exist (deactivated or erased) or are not on this server are dropped from ``m.direct``
@@ -112,9 +113,10 @@ class OnboardingListener:
         self._mapped: frozenset[str] | None = None
         # Every active local account Synapse listed in that pass (what the prune job keeps).
         self._accounts: frozenset[str] = frozenset()
-        # Users this process has already welcomed. Bounded by the directory size; see the module
+        # Users this process has already welcomed, with the picture their board was converged to
+        # (``None``: no picture was known then). Bounded by the directory size; see the module
         # docstring for why it is not persisted.
-        self._welcomed: set[str] = set()
+        self._welcomed: dict[str, str | None] = {}
         self._queue: asyncio.Queue[str | None] = asyncio.Queue()
         self._pending: set[str] = set()  # queued, not yet taken by a worker
         self._in_flight: set[str] = set()
@@ -155,7 +157,7 @@ class OnboardingListener:
             if self._is_target(mxid):
                 # Possibly their notice board: the welcome flow looks and re-invites once (ONB-07).
                 self._recheck.add(mxid)
-                self._welcomed.discard(mxid)
+                self._welcomed.pop(mxid, None)
                 self._enqueue(mxid)
 
     async def _on_users_mapped(self, event: Event) -> None:
@@ -171,17 +173,19 @@ class OnboardingListener:
         """Forget who was welcomed when the bot avatar's picture changed, so every board gets it.
 
         That includes the first picture known at all: boards welcomed while the bot avatar URL could
-        not be fetched got no picture, and would otherwise only get it after a restart (W6R-07).
+        not be fetched got no picture, and would otherwise only get it after a restart (W6R-07). Only
+        users whose welcome ran with another picture (or none) are forgotten: a board welcomed after
+        the picture was fetched already wears it (W7R-05).
         """
         current = self.welcome.board_avatar_sha256()
         if current is None or current == self._board_avatar:
             return
-        if self._welcomed:
-            if self._board_avatar is None:
-                log.info("the bot avatar can be fetched now; checking every notice board for the picture")
-            else:
-                log.info("the bot avatar changed; checking every notice board for the new picture")
-            self._welcomed.clear()
+        stale = [mxid for mxid, picture in self._welcomed.items() if picture != current]
+        if stale:
+            what = "can be fetched now" if self._board_avatar is None else "changed"
+            log.info("the bot avatar %s; checking %d notice board(s) for the picture", what, len(stale))
+            for mxid in stale:
+                del self._welcomed[mxid]
         self._board_avatar = current
 
     def _is_target(self, mxid: str) -> bool:
@@ -256,7 +260,7 @@ class OnboardingListener:
         except NoticeBoardUnreadable as exc:
             # Retrying cannot help and would repeat the error every pass; a restart checks again.
             log.error("cannot welcome %s: %s", item, exc)
-            self._welcomed.add(item)
+            self._welcomed[item] = self.welcome.board_avatar_sha256()
             return
         except Exception as exc:
             # Not remembered as welcomed, so the next pass retries: a homeserver that was briefly
@@ -270,4 +274,5 @@ class OnboardingListener:
             return
         if self._failing.pop(item, None) is not None:
             log.info("welcome flow for %s succeeded after earlier failures", item)
-        self._welcomed.add(item)
+        # The picture as of the end of the welcome, which fetched it if it was not known yet.
+        self._welcomed[item] = self.welcome.board_avatar_sha256()

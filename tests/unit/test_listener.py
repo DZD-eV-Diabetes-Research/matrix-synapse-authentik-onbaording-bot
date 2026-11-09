@@ -157,7 +157,7 @@ async def test_a_mapped_user_seen_joining_is_welcomed_without_waiting_for_a_pass
     await _pass(events, ALICE, BOB)
     await listener.process_queued()
     welcome.welcomed.clear()
-    listener._welcomed.discard(BOB)  # a welcome that failed in that pass
+    listener._welcomed.pop(BOB, None)  # a welcome that failed in that pass
 
     await listener.handle_sync(_joins(ALICE, BOB))
     await listener.process_queued()
@@ -449,3 +449,57 @@ async def test_a_bot_avatar_known_from_the_start_costs_no_second_look() -> None:
         await _pass(events, ALICE, BOB)
         await listener.process_queued()
     assert sorted(welcome.welcomed) == [ALICE, BOB]
+
+
+async def test_boards_welcomed_with_the_picture_are_not_looked_at_again_when_it_first_appears() -> None:
+    """W7R-05: the first digest known cleared the whole cache, although the welcomes had fetched it."""
+
+    class _FetchingWelcome(_RecordingWelcome):
+        async def welcome_user(self, mxid: str) -> None:
+            await super().welcome_user(mxid)
+            if mxid == BOB:
+                self.board_avatar = "red"  # this welcome fetched the picture and set it on the board
+
+    welcome = _FetchingWelcome()  # nothing fetched before the first pass (a restart)
+    listener, events = _listener(welcome, concurrency=1)
+    await _pass(events, ALICE, BOB)
+    await listener.process_queued()
+    assert welcome.welcomed == [ALICE, BOB]  # ALICE's board was welcomed without a picture
+
+    await _pass(events, ALICE, BOB)
+    await listener.process_queued()
+    assert welcome.welcomed == [ALICE, BOB, ALICE]  # only the board without the picture again
+
+    await _pass(events, ALICE, BOB)
+    await listener.process_queued()
+    assert len(welcome.welcomed) == 3
+
+
+async def test_only_boards_welcomed_with_an_older_picture_are_looked_at_again() -> None:
+    class _BobFailsOnce(_RecordingWelcome):
+        failed = False
+
+        async def welcome_user(self, mxid: str) -> None:
+            if mxid == BOB and not self.failed:
+                self.failed = True
+                raise RuntimeError("homeserver briefly unreachable")
+            await super().welcome_user(mxid)
+
+    welcome = _BobFailsOnce()
+    welcome.board_avatar = "red"
+    listener, events = _listener(welcome)
+    await _pass(events, ALICE, BOB)
+    await listener.process_queued()
+    assert welcome.welcomed == [ALICE]
+
+    welcome.board_avatar = "blue"  # the media layer saw a new picture
+    await listener.handle_sync(_joins(BOB))  # BOB's welcome now runs with the new picture
+    await listener.process_queued()
+    assert welcome.welcomed == [ALICE, BOB]
+
+    await _pass(events, ALICE, BOB)
+    await listener.process_queued()
+    assert welcome.welcomed == [ALICE, BOB, ALICE]  # BOB's board already wears it
+    await _pass(events, ALICE, BOB)
+    await listener.process_queued()
+    assert len(welcome.welcomed) == 3
