@@ -1537,6 +1537,24 @@ async def test_room_adopt_fails_closed_when_m_direct_cannot_be_read() -> None:
 
     assert "cannot read its list of notice boards" in reply and "Nothing was changed" in reply, reply
     assert len(effectors.state_writes) == writes
+    # W8R-07: the bounded cause, not the ApiError's text with its URL and the raw payload.
+    assert "(m.direct: HTTP 502)" in reply, reply
+    assert "https://" not in reply and "bad gateway" not in reply, reply
+
+
+async def test_room_adopt_quotes_a_long_m_direct_error_bounded() -> None:
+    async def huge_error() -> list[str]:
+        raise ApiError("GET", "/account_data/m.direct", 500, {"errcode": "M_UNKNOWN", "error": "x" * 5000})
+
+    effectors = RecordingEffectors()
+    _seed_converged(effectors)
+    effectors.state_store[(ROOM1, GROUP_MARKER)] = {}
+    engine = _adopt_engine(effectors, huge_error)
+
+    reply = await engine.adopt_room("g1", ROOM1, by=HUMAN_ADMIN)
+
+    assert "(m.direct: HTTP 500 M_UNKNOWN: " in reply, reply
+    assert len(reply) < 600, len(reply)
 
 
 async def test_a_room_scan_reads_every_bot_room_when_m_direct_cannot_be_read() -> None:
