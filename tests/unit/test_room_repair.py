@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
+import pytest
+
 from onbot.admin.notifier import AdminRoomNotifier
 from onbot.clients.base import ApiError
 from onbot.clients.synapse_admin import RoomBlock
@@ -864,3 +866,273 @@ async def test_a_closed_room_is_still_deleted_once_deletion_is_switched_on() -> 
 
     assert admin.deleted == [ORPHAN]
     assert admin.blocked_changes == []
+
+
+# --- W5R-01: no marker is built from what is read in the room ------------------------------------
+
+
+class FlakyMarkerRead(RecordingEffectors):
+    """The marker read of the repair step fails once (a 502 after retries)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.fail_next = False
+
+    async def get_room_state_event(self, room_id: str, event_type: str, state_key: str = "") -> Any:
+        if self.fail_next and (room_id, event_type) == (ROOM1, GROUP_MARKER):
+            self.fail_next = False
+            raise ApiError("GET", "/state", 502, {})
+        return await super().get_room_state_event(room_id, event_type, state_key)
+
+
+def _avatar_engine(effectors: RecordingEffectors, config: OnbotConfig | None = None) -> ReconcilerEngine:
+    return ReconcilerEngine(
+        config or OnbotConfig.model_validate(_BASE),
+        AvatarAuthentik(),  # type: ignore[arg-type]
+        SharedStateAdmin(effectors),  # type: ignore[arg-type]
+        effectors,
+        EventBus(),
+    )
+
+
+def _rewrite_to_a_gone_group(effectors: RecordingEffectors) -> None:
+    """Somebody above the marker lock names another group and another avatar URL."""
+    effectors.state_store[(ROOM1, GROUP_MARKER)] = dump_room_state(
+        GroupRoomState(group_id="g-gone", avatar_source_url="https://evil/x.png")
+    )
+    effectors.senders[(ROOM1, GROUP_MARKER)] = MODERATOR
+
+
+async def test_a_failed_marker_repair_never_lets_the_avatar_step_sign_a_foreign_marker() -> None:
+    effectors = FlakyMarkerRead()
+    _seed_converged(effectors)
+    engine = _avatar_engine(effectors)
+    await engine.reconcile_once()
+    assert effectors.state_store[(ROOM1, GROUP_MARKER)]["group_id"] == "g1"
+
+    _rewrite_to_a_gone_group(effectors)
+    effectors.fail_next = True  # the repair cannot read the marker this pass
+    await engine.reconcile_once()
+
+    assert effectors.senders[(ROOM1, GROUP_MARKER)] == MODERATOR  # not re-signed by the bot
+    known = engine.rooms.known_marker(ROOM1)
+    assert known is not None and known["group_id"] == "g1"
+
+    await engine.reconcile_once()  # the next pass repairs it from what the bot knows
+    assert effectors.state_store[(ROOM1, GROUP_MARKER)]["group_id"] == "g1"
+    assert effectors.senders[(ROOM1, GROUP_MARKER)] == BOT
+
+
+async def test_a_restart_after_a_failed_repair_does_not_tear_down_the_room_as_the_gone_group() -> None:
+    effectors = FlakyMarkerRead()
+    _seed_converged(effectors)
+    config = OnbotConfig.model_validate(_BASE)
+    rooms_cfg = config.sync_matrix_rooms_based_on_authentik_groups
+    rooms_cfg.disable_rooms_when_mapped_authentik_group_disappears = True
+    engine = _avatar_engine(effectors, config)
+    await engine.reconcile_once()
+    _rewrite_to_a_gone_group(effectors)
+    effectors.fail_next = True
+    await engine.reconcile_once()
+
+    effectors.aliases["#g1:company.org"] = ROOM1
+    restarted = _avatar_engine(effectors, config)
+    effectors.kicks.clear()
+    await restarted.reconcile_once()
+
+    assert [k for k in effectors.kicks if k[0] == ROOM1] == []
+    assert restarted.rooms.known_marker(ROOM1) is None  # a foreign marker is never trusted
+    assert isinstance(restarted.admin, SharedStateAdmin)
+    assert [b for b in restarted.admin.blocked_changes if b[0] == ROOM1] == []
+
+
+async def test_the_power_level_step_writes_the_known_marker_not_the_one_in_the_room() -> None:
+    effectors = RecordingEffectors()
+    _seed_converged(effectors)
+    engine = _avatar_engine(effectors)
+    await engine.reconcile_once()
+    # The marker is rewritten after the upkeep read it, before the power-level step writes it.
+    original = engine._converge_room_upkeep
+
+    async def rewrite_after_upkeep(room: Any, *args: Any, **kwargs: Any) -> None:
+        await original(room, *args, **kwargs)
+        if room.room_id == ROOM1:
+            _rewrite_to_a_gone_group(effectors)
+
+    engine._converge_room_upkeep = rewrite_after_upkeep  # type: ignore[method-assign]
+    engine.config.global_room_admins = ["carol"]  # a new global admin: the marker records them
+    effectors.state_writes.clear()
+    await engine.reconcile_once()
+
+    written = [c for r, t, c in effectors.state_writes if (r, t) == (ROOM1, GROUP_MARKER)]
+    assert written, "the power-level step wrote the marker"
+    assert all(c["group_id"] == "g1" for c in written)
+
+
+def test_the_identity_cache_refuses_a_marker_of_another_role() -> None:
+    from onbot.rooms.identity import RoomIdentity, RoomIdentityResolver, RoomKey
+
+    rooms = RoomIdentityResolver(None, None, bot_id=BOT, server_name="company.org")  # type: ignore[arg-type]
+    rooms._cache[ROOM1] = RoomIdentity(
+        room_id=ROOM1,
+        key=RoomKey(OnbotRoomType.group_room, "g1"),
+        locked=True,
+        marker_content={"room_type": "group_room", "group_id": "g1"},
+    )
+    foreign = {"room_type": "group_room", "group_id": "g-gone"}
+    rooms.remember_marker(ROOM1, foreign)
+    assert rooms.known_marker(ROOM1) == {"room_type": "group_room", "group_id": "g1"}
+    assert rooms.marker_conflict(ROOM1, foreign) is not None
+    own = {"room_type": "group_room", "group_id": "g1", "global_admins": ["@a:x"]}
+    rooms.remember_marker(ROOM1, own)
+    assert rooms.known_marker(ROOM1) == own
+
+
+async def test_a_refused_marker_restore_does_not_set_the_avatar_on_every_pass() -> None:
+    effectors = RefusingEffectors()
+    _seed_converged(effectors)
+    engine = _avatar_engine(effectors)
+    await engine.reconcile_once()
+    effectors.avatars.clear()
+    effectors.refused.add((ROOM1, GROUP_MARKER))
+    del effectors.state_store[(ROOM1, GROUP_MARKER)]  # removed; the restore is refused (403)
+
+    for _ in range(3):
+        await engine.reconcile_once()
+
+    assert [a for a in effectors.avatars if a[0] == ROOM1] == []
+    problems = [p for r in engine.last_pass_report.rooms for p in r.problems]
+    assert any("marker repair failed" in p for p in problems)
+
+
+# --- W5R-03: a marker without a recorded image hash looks at the picture the room wears ----------
+
+
+async def test_an_upgraded_room_gets_the_picture_that_changed_behind_its_url_before_the_upgrade() -> None:
+    effectors = RecordingEffectors()
+    _seed_converged(effectors)
+    effectors.state_store[(ROOM1, GROUP_MARKER)] = {
+        **effectors.state_store[(ROOM1, GROUP_MARKER)],
+        "avatar_source_url": "https://cdn/t.png",
+    }
+    effectors.state_store[(ROOM1, "m.room.avatar")] = {"url": "mxc://company.org/old-logo"}
+    engine = _avatar_engine(effectors)
+
+    await engine.reconcile_once()
+
+    assert effectors.uploads == ["https://cdn/t.png"]
+    assert [a for a in effectors.avatars if a[0] == ROOM1] == [(ROOM1, "mxc://company.org/1")]
+    assert effectors.state_store[(ROOM1, GROUP_MARKER)]["avatar_sha256"]
+
+
+# --- S18 (W4R-06): `!room adopt` hands a room that lost its marker back to the bot ------------------
+
+
+async def test_room_adopt_takes_back_a_room_whose_marker_was_removed_while_the_bot_was_stopped() -> None:
+    effectors = RecordingEffectors()
+    _seed_converged(effectors)
+    effectors.state_store[(ROOM1, GROUP_MARKER)] = {}
+    engine, admin, effectors, _attention = _restarted(effectors)
+    await engine.reconcile_once()
+    assert engine.last_pass_report.rooms  # skipped and reported, as before
+
+    reply = await engine.adopt_room("g1", ROOM1, by="@admin:company.org")
+
+    assert reply.startswith(f"Adopted {ROOM1} as the room of group g1")
+    assert effectors.state_store[(ROOM1, GROUP_MARKER)]["group_id"] == "g1"
+    assert effectors.senders[(ROOM1, GROUP_MARKER)] == BOT
+    known = engine.rooms.known_marker(ROOM1)
+    assert known is not None and known["group_id"] == "g1"
+    await engine.reconcile_once()
+    assert (ROOM1, "@bob:company.org") in admin.added
+    assert engine.last_pass_report.rooms == []
+
+
+async def test_room_adopt_takes_back_a_room_whose_marker_somebody_else_rewrote() -> None:
+    effectors = RecordingEffectors()
+    _seed_converged(effectors)
+    effectors.state_store[(ROOM1, GROUP_MARKER)] = dump_room_state(GroupRoomState(group_id="g-gone"))
+    effectors.senders[(ROOM1, GROUP_MARKER)] = MODERATOR
+    engine, _admin, effectors, _attention = _restarted(effectors)
+    await engine.reconcile_once()
+
+    reply = await engine.adopt_room("g1", "#g1:company.org", by="@admin:company.org")
+
+    assert reply.startswith("Adopted")
+    assert effectors.state_store[(ROOM1, GROUP_MARKER)] == dump_room_state(GroupRoomState(group_id="g1"))
+    assert effectors.senders[(ROOM1, GROUP_MARKER)] == BOT
+
+
+async def test_room_adopt_refuses_an_unknown_group_and_a_group_that_has_its_room() -> None:
+    engine, _admin, effectors, _attention = _running()
+    await engine.reconcile_once()
+    writes = len(effectors.state_writes)
+
+    unknown = await engine.adopt_room("g-nope", ROOM1, by="@admin:company.org")
+    managed = await engine.adopt_room("g1", ROOM1, by="@admin:company.org")
+    usage = await engine.adopt_room("g1", "room1", by="@admin:company.org")
+
+    assert "is not a group the bot keeps a room for" in unknown and "Nothing was changed" in unknown
+    assert "Group g1 is already that room" in managed
+    assert usage.startswith("Usage: !room adopt")
+    assert len(effectors.state_writes) == writes
+
+
+async def test_room_adopt_refuses_a_room_the_bot_did_not_create() -> None:
+    class ForeignCreator(SharedStateAdmin):
+        async def get_room_state_events(self, room_id: str) -> list[dict[str, Any]]:
+            events = await super().get_room_state_events(room_id)
+            if room_id == ROOM1:
+                for event in events:
+                    if event["type"] == "m.room.create":
+                        event["sender"] = MODERATOR
+                        event["content"] = {**event.get("content", {}), "creator": MODERATOR}
+            return events
+
+    effectors = RecordingEffectors()
+    _seed_converged(effectors)
+    effectors.state_store[(ROOM1, GROUP_MARKER)] = {}
+    effectors.aliases["#g1:company.org"] = ROOM1
+    engine, _admin, effectors, _attention = _engine(ForeignCreator(effectors), effectors)
+    writes = len(effectors.state_writes)
+
+    reply = await engine.adopt_room("g1", ROOM1, by="@admin:company.org")
+
+    assert "was not created by the bot" in reply and "D20" in reply
+    assert len(effectors.state_writes) == writes
+
+
+def test_only_a_lost_group_room_marker_qualifies_for_adoption() -> None:
+    from onbot.reconciler.engine import _adoption_refusal
+    from onbot.rooms.identity import RoomIdentity, RoomKey
+
+    group, lobby = OnbotRoomType.group_room, OnbotRoomType.visitor_lobby
+    removed = RoomIdentity(room_id=ROOM1, key=None, removed_markers=(group,))
+    foreign = RoomIdentity(
+        room_id=ROOM1, key=None, problem="... not by the bot", marker_types=(group,), foreign_markers=(group,)
+    )
+    assert _adoption_refusal(removed) is None
+    assert _adoption_refusal(foreign) is None
+    never = RoomIdentity(room_id=ROOM1, key=None)  # a notice board, or any other room of the bot's
+    assert "never was a group room" in (_adoption_refusal(never) or "")
+    lost_lobby = RoomIdentity(room_id=ROOM1, key=None, removed_markers=(lobby,))
+    assert "not a lost group room marker" in (_adoption_refusal(lost_lobby) or "")
+    trusted = RoomIdentity(room_id=ROOM1, key=RoomKey(group, "g2"), locked=True)
+    assert "is already the room of group g2" in (_adoption_refusal(trusted) or "")
+    upgraded = RoomIdentity(room_id=ROOM1, key=None, removed_markers=(group,), tombstone="!new:x")
+    assert "was upgraded" in (_adoption_refusal(upgraded) or "")
+
+
+async def test_room_adopt_waits_for_a_running_pass_and_gives_up_after_a_while(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An adoption racing a pass could leave the group with a new room beside the adopted one."""
+    from onbot.reconciler import engine as engine_module
+
+    monkeypatch.setattr(engine_module, "ADOPT_WAIT_SEC", 0.01)
+    engine, _admin, effectors, _attention = _running()
+    writes = len(effectors.state_writes)
+    async with engine._pass_lock:  # a pass is running
+        reply = await engine.adopt_room("g1", ROOM1, by="@admin:company.org")
+    assert reply.startswith("A reconcile pass is still running")
+    assert len(effectors.state_writes) == writes

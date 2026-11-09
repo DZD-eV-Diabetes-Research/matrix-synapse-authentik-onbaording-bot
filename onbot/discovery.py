@@ -27,6 +27,7 @@ import json
 from collections.abc import Callable
 from typing import Any
 
+from onbot.admin.admins import in_groups
 from onbot.clients.authentik import ApiClientAuthentik
 from onbot.config import OnbotConfig
 from onbot.logging import get_logger
@@ -148,6 +149,9 @@ class DiscoveryPoller:
                     filter_is_active=True,
                 )
             )
+        if cfg.sync_only_users_of_groups_with_id:
+            # The engine's re-check of the group filter (SEC-09), so both look at the same users.
+            users = in_groups(users, cfg.sync_only_users_of_groups_with_id)
         return users
 
     async def _list_groups(self) -> list[dict[str, Any]]:

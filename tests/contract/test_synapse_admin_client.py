@@ -7,7 +7,13 @@ import pytest
 import respx
 
 from onbot.clients.base import ApiError
-from onbot.clients.synapse_admin import ApiClientSynapseAdmin, RoomBlock, RoomDeletionFailed
+from onbot.clients.synapse_admin import (
+    DELETE_STATUS_LOOKUPS,
+    DELETE_STATUS_RETRY_SEC,
+    ApiClientSynapseAdmin,
+    RoomBlock,
+    RoomDeletionFailed,
+)
 
 
 def _client() -> ApiClientSynapseAdmin:
@@ -146,6 +152,46 @@ async def test_a_timed_out_delete_waits_for_the_deletion_it_started_instead_of_f
         await client.aclose()
     assert result["status"] == "complete"
     assert delete.call_count == 1  # never sent twice
+
+
+@respx.mock
+async def test_a_lost_delete_whose_deletion_is_not_listed_yet_is_awaited() -> None:
+    """S18: Synapse leaves a still scheduled deletion out of the room's delete status, so the lookup
+    right after a lost DELETE can answer 404 although the deletion exists. It is asked again."""
+    delete = respx.delete(f"{ADMIN}/v2/rooms/!r:x").mock(side_effect=httpx.ReadTimeout("lost"))
+    lookup = respx.get(f"{ADMIN}/v2/rooms/!r:x/delete_status").mock(
+        side_effect=[
+            httpx.Response(404, json={"errcode": "M_NOT_FOUND", "error": "No delete task for room_id"}),
+            httpx.Response(404, json={"errcode": "M_NOT_FOUND", "error": "No delete task for room_id"}),
+            httpx.Response(200, json={"results": [{"delete_id": "d9", "status": "active"}]}),
+        ]
+    )
+    _deletion_done("d9")
+    client, waits = _waiting_client()
+    try:
+        result = await client.delete_room("!r:x")
+    finally:
+        await client.aclose()
+    assert result["status"] == "complete"
+    assert delete.call_count == 1
+    assert lookup.call_count == 3
+    assert waits == [DELETE_STATUS_RETRY_SEC, DELETE_STATUS_RETRY_SEC]
+
+
+@respx.mock
+async def test_a_lost_delete_without_any_deletion_gives_up_after_a_few_lookups() -> None:
+    respx.delete(f"{ADMIN}/v2/rooms/!r:x").mock(side_effect=httpx.ReadTimeout("lost"))
+    lookup = respx.get(f"{ADMIN}/v2/rooms/!r:x/delete_status").mock(
+        return_value=httpx.Response(404, json={"errcode": "M_NOT_FOUND"})
+    )
+    client, waits = _waiting_client()
+    try:
+        with pytest.raises(httpx.ReadTimeout):
+            await client.delete_room("!r:x")
+    finally:
+        await client.aclose()
+    assert lookup.call_count == DELETE_STATUS_LOOKUPS
+    assert len(waits) == DELETE_STATUS_LOOKUPS - 1
 
 
 @respx.mock

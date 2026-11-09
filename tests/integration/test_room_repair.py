@@ -513,3 +513,63 @@ async def test_a_lobby_a_human_closed_stays_closed_until_an_admin_reopens_it(
     rule = await matrix_client.get_room_state_event_with_sender(lobby_id, JOIN_RULES)
     assert rule is not None
     assert rule["content"].get("join_rule") == "restricted" and rule["sender"] == S.BOT_USER_ID
+
+
+# --- S18 (W4R-06): `!room adopt` --------------------------------------------------------------------
+
+
+async def test_room_adopt_hands_a_room_whose_marker_was_removed_back_to_the_bot(
+    make_config,
+    authentik_admin: S.AuthentikAdmin,
+    matrix_client: ApiClientMatrix,
+    admin_client: ApiClientSynapseAdmin,
+) -> None:
+    """The marker goes while the bot is stopped; a fresh process skips the group (D20) until an
+    allowlisted admin runs ``!room adopt`` in the control room. Then the next pass manages the room."""
+    prefix = S.uniq("adopt")
+    group = authentik_admin.create_group(f"{prefix}-room", attributes={"is_chatroom": True})
+    _a, admin = S.provision(authentik_admin, S.uniq("adoptadmin"))
+    config = _config(make_config, prefix)
+    config.admin_room.enabled = True
+    config.admin_room.alias = S.uniq("onbot-admin")
+    config.admin_room.admin_user_ids = [admin.mxid]
+    await run_reconcile_once(config)
+    room_id = await _room_of(matrix_client, config, group)
+    await matrix_client.put_room_state_event(room_id, GROUP_MARKER, {})  # removed while stopped
+
+    _n, newcomer = S.provision(authentik_admin, S.uniq("adoptnew"), groups=[group["pk"]])
+    async with _service(config) as app:  # a fresh process: it no longer knows the room
+        await app.engine.reconcile_once()
+        assert newcomer.mxid not in await admin_client.list_room_members(room_id)
+        assert app.control_room is not None and app.control_room.room_id is not None
+        control_room = app.control_room.room_id
+        await admin_client.add_user_to_room(control_room, admin.mxid)
+
+        command = f"!room adopt {group['pk']} {room_id}"
+        assert S.send_message_status(admin.access_token, control_room, command) == 200
+        await app.control_room.handle_sync(await matrix_client.sliding_sync(None))
+        await app.engine.reconcile_once()
+
+    replies = await _bot_messages(matrix_client, control_room)
+    assert any(r.startswith(f"Adopted {room_id} as the room of group") for r in replies), replies
+    marker = await matrix_client.get_room_state_event_with_sender(room_id, GROUP_MARKER)
+    assert marker is not None and marker["sender"] == S.BOT_USER_ID
+    assert marker["content"]["group_id"] == str(group["pk"])
+    assert newcomer.mxid in await admin_client.list_room_members(room_id)
+
+
+async def test_room_adopt_refuses_a_room_the_bot_did_not_create(
+    make_config,
+    authentik_admin: S.AuthentikAdmin,
+    matrix_client: ApiClientMatrix,
+) -> None:
+    prefix = S.uniq("adoptno")
+    group = authentik_admin.create_group(f"{prefix}-room", attributes={"is_chatroom": True})
+    _u, human = S.provision(authentik_admin, S.uniq("adoptnohuman"))
+    created = _cs("POST", human.access_token, "createRoom", {"name": "not the bot's"})
+    assert created.status_code == 200, created.text
+    foreign_room = created.json()["room_id"]
+    config = _config(make_config, prefix)
+    async with _service(config) as app:  # no pass yet: the group has no room of its own
+        reply = await app.engine.adopt_room(str(group["pk"]), foreign_room, by="@someadmin:" + S.SERVER_NAME)
+    assert "was not created by the bot" in reply, reply

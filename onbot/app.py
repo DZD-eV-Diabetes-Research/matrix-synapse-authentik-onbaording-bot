@@ -191,6 +191,8 @@ class App:
     dry_run: bool = False
     _onboarding_open: bool = False
     _control_room_subscribed: bool = False
+    # The image hash of the bot avatar the "bot avatar" step last made sure of (ONB-15).
+    _bot_avatar_sha256: str | None = None
 
     # Startup step actions. Each is safe to repeat after a partial failure.
 
@@ -240,13 +242,34 @@ class App:
         Idempotent: re-setting an unchanged picture would announce "changed their profile picture"
         in every room the bot is in, so :mod:`onbot.avatar` writes the profile only when it has to.
         """
+        url = self.config.synapse_server.bot_avatar_url
         await ensure_bot_avatar(
             self.matrix,
             self.media,
             user_id=self.config.synapse_server.bot_user_id,
             server_name=self.config.synapse_server.server_name,
-            source_url=self.config.synapse_server.bot_avatar_url,
+            source_url=url,
         )
+        if url:
+            self._bot_avatar_sha256 = self.media.known_digest(url)
+
+    async def recheck_bot_avatar(self, _event: object = None) -> None:
+        """After a pass: set the bot avatar again when the picture behind its URL changed (ONB-15).
+
+        :class:`~onbot.media.MediaUploader` looks at the URL again about once a day, so this costs
+        nothing on most passes. Until the "bot avatar" startup step has succeeded, that step owns it.
+        """
+        url = self.config.synapse_server.bot_avatar_url
+        if not url or self._bot_avatar_sha256 is None:
+            return
+        try:
+            image = await self.media.image(url)
+        except Exception:
+            return  # logged by the media layer; the profile keeps its picture
+        if image.sha256 == self._bot_avatar_sha256:
+            return
+        log.info("the picture behind the bot avatar URL %s changed; setting it", url)
+        await self.apply_bot_avatar()
 
     async def start_control_room(self) -> None:
         """Provision the admin control room and bind its command router (ADR-0010)."""
@@ -460,7 +483,7 @@ async def build_app(
             # Reports raised before the room is bound are queued and posted once it is.
             notifier = AdminRoomNotifier(matrix)
             notifier.subscribe(events)
-        yield App(
+        app = App(
             config=config,
             matrix=matrix,
             admin=admin,
@@ -477,6 +500,10 @@ async def build_app(
             notifier=notifier,
             dry_run=dry_run,
         )
+        if config.synapse_server.bot_avatar_url and not dry_run:
+            # A new picture behind the URL reaches the profile without a restart (ONB-15).
+            events.subscribe(Signal.reconcile_completed, app.recheck_bot_avatar)
+        yield app
 
 
 # --- commands ---------------------------------------------------------------------------------
@@ -569,11 +596,15 @@ async def _stop_loops(
     app.listener.request_stop()  # the user in hand is finished, the rest of the queue waits
     supervisor.request_stop()
     if app.control_room is not None:
-        # A broadcast in flight would hold the shutdown for as long as the rate limit allows.
+        # A broadcast in flight would hold the shutdown for as long as the rate limit allows. From
+        # here on the control room starts no new one, even for a command in the slice the pump is
+        # still finishing (W5R-04).
         await app.control_room.stop()
     # The discovery poll only reads Authentik; nothing is lost by cutting it off.
     tasks["discovery"].cancel()
     unfinished = await drain(set(tasks.values()), grace=grace, forced=shutdown.forced)
+    if app.control_room is not None:
+        await app.control_room.stop()  # whatever the drained slice started, before the clients close
     if unfinished:
         log.warning(
             "cancelling %s after the %.0fs shutdown grace period",

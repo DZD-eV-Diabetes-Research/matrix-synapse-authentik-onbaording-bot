@@ -184,7 +184,11 @@ in, so your identity directory and your chat rooms need not be the same list.
   the server refuses is reported, and the others still run. This works while Onbot runs: a marker
   removed or rewritten while Onbot was stopped (or before its last restart) makes the room look like
   one that never belonged to the group, and Onbot does not take it back on its own. It reports the
-  group instead; see [A room lost its onbot marker](troubleshooting.md#a-room-lost-its-onbot-marker).
+  group instead. An allowlisted admin hands such a group room back with `!room adopt <group pk>
+  <room id or alias>` in the admin control room: Onbot checks that it created the room, that the
+  group is one it keeps a room for and has no other room, writes and protects the marker, and manages
+  the room from the next pass on. See
+  [A room lost its onbot marker](troubleshooting.md#a-room-lost-its-onbot-marker).
 - **A room a server admin blocked stays blocked.** Synapse records who blocked a room. Onbot unblocks
   only rooms it blocked itself (when their group disappeared and came back). A group room or lobby a
   server admin blocked (for moderation, a legal hold) is left blocked, and Onbot does not manage it
@@ -237,7 +241,12 @@ follows.
 - **Who is considered at all** is narrowed by the user filters: `sync_only_users_in_authentik_pathes`,
   `sync_only_users_with_authentik_attributes`, and `sync_only_users_of_groups_with_id`. Only *active*
   Authentik users are synced, and `authentik_user_ignore_list` keeps named accounts (service,
-  break-glass) out of chat entirely.
+  break-glass) out of chat entirely. Group membership is checked on each user Authentik returns (its
+  own `groups`), not only through Authentik's group filter: a user who is in none of the configured
+  groups is left out and logged as an error. Group pks can be written with or without hyphens. If
+  Authentik ever stopped naming the groups in its user objects, the scope would be empty; the
+  [guard](#guard-against-mass-removals) holds that like any empty answer, so nobody is removed or
+  offboarded until an admin looks.
 - **The identity match is the thing to get right.** Onbot maps each Authentik user to a Matrix ID
   using `authentik_username_mapping_attribute`. On a homeserver fronted by the Matrix Authentication
   Service this *must* agree with the localpart the login flow produces, or the computed Matrix IDs
@@ -361,9 +370,9 @@ joinable at all.
   holds the alias, Onbot does not use it and the room stage stops with an error instead. Turn creation off to build and curate the space
   yourself, in which case Onbot only adds rooms to it; if the space is then missing entirely, Onbot
   refuses to start rather than scatter rooms.
-- **Its name, topic and icon are configurable.** The icon is downloaded once per start and
-  re-applied only when its source URL or the picture behind it changed, so it also updates an
-  already existing space.
+- **Its name, topic and icon are configurable.** The icon is downloaded at startup, looked at again
+  about once a day, and re-applied only when its source URL or the picture behind it changed, so it
+  also updates an already existing space.
 - **Space membership is add-only** — Onbot never kicks anyone out of the space, only out of
   individual rooms.
 - Onboarding notice-board rooms can optionally be gathered here too
@@ -531,9 +540,10 @@ without anyone editing rooms by hand.
   topic comes from `matrix_topic_from_authentik_attribute` with an optional `topic_prefix`, and an
   unset source simply leaves the topic blank.
 - **The icon is a URL held on the group.** `room_avatar_url_attribute` names a key inside the group's
-  custom attributes that holds an HTTP(S) image URL; Onbot downloads it once per start and re-uploads
-  it only when the URL or the picture behind it changed (it records a hash of the image), so a new
-  logo at the same address reaches rooms that already exist after the next restart. (The parent space
+  custom attributes that holds an HTTP(S) image URL; Onbot downloads it, looks at it again about once
+  a day, and re-uploads it only when the URL or the picture behind it changed (it records a hash of
+  the image), so a new logo at the same address reaches rooms that already exist within a day, without
+  a restart. (The parent space
   has its own icon setting.) A group's [visitor lobby](#visitor-lobby) wears the same icon as its group room, from the
   same attribute: there is nothing extra to configure.
 - **Keeping in step is a switch.** `keep_updating_matrix_attributes_from_authentik` (on by default)
@@ -680,8 +690,8 @@ to a shell.
 
 - **As an ordinary user:** an announcement simply appears in your welcome / notice-board room.
 - **As an administrator:** you are invited to the control room. Typing `!announce <message>`,
-  `!status`, `!pending`, `!confirm <id>`, `!reject <id>`, `!guard reset`, `!lobby reopen <group>` or
-  `!help` does something;
+  `!status`, `!pending`, `!confirm <id>`, `!reject <id>`, `!guard reset`, `!lobby reopen <group>`,
+  `!room adopt <group> <room>` or `!help` does something;
   any message *without* a `!` prefix is ignored, so admins can discuss an incident in the room
   without a stray sentence paging the whole company.
 - The bot also reports into the room: destructive actions it paused (see
@@ -735,6 +745,12 @@ to a shell.
 - **Edits are not commands.** Correcting a typo in an `!announce` you already sent does nothing (the
   announcement went out as first written); Onbot says so in the room. Send a new `!announce` if
   needed.
+- **The same announcement twice asks first.** An `!announce` with the same text (spacing aside) from
+  the same admin within 60 seconds of their previous one is not sent: Onbot answers with an id, and
+  only `!confirm <id>` from that admin within 10 minutes sends it (`!reject <id>` drops it). A message
+  pasted twice, or sent again because the first answer was slow, does not page everybody twice.
+- **A shutdown interrupts an announcement.** Stopping the bot cancels a broadcast in flight; Onbot
+  posts how many rooms it reached. An `!announce` sent while the bot shuts down is not sent.
 - **Admins who leave stay out.** An admin who declines the invitation or leaves the room is not
   invited again on the next reconcile. To get back in, they need to drop out of the admin list (or
   group) and be added again, which brings a new invitation. Admins who left before this behaviour

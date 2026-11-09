@@ -379,3 +379,50 @@ async def test_an_admin_who_declines_or_leaves_is_not_invited_again(
     )
     assert await restarted.ensure() == control_room
     assert await matrix_client.get_membership(control_room, decliner.mxid) == "leave"
+
+
+# --- S18 (ONB-11): the same announcement twice within a minute asks first ---------------------------
+
+
+async def test_a_repeated_announce_is_held_until_its_admin_confirms_it(
+    make_config,
+    authentik_admin: S.AuthentikAdmin,
+    authentik_client: ApiClientAuthentik,
+    matrix_client: ApiClientMatrix,
+    admin_client: ApiClientSynapseAdmin,
+    room_identity: RoomIdentityResolver,
+) -> None:
+    _u, target = S.provision(authentik_admin, S.uniq("duptarget"))
+    _a, admin = S.provision(authentik_admin, S.uniq("dupadmin"))
+    config = make_config()
+    config.admin_room.enabled = True
+    config.admin_room.alias = S.uniq("onbot-admin")
+    config.admin_room.admin_user_ids = [admin.mxid]
+    await run_reconcile_once(config)
+    notice_board = (await matrix_client.get_account_data(S.BOT_USER_ID, "m.direct"))[target.mxid][0]
+
+    resolver = _resolver(authentik_client, config)
+    control_room = await AdminRoomProvisioner(matrix_client, config, resolver, room_identity).ensure()
+    assert control_room is not None
+    await admin_client.add_user_to_room(control_room, admin.mxid)
+    handler = ControlRoomHandler(
+        matrix_client,
+        config,
+        BroadcastService(matrix_client, config, recipients=S.recipients(target.mxid)),
+        resolver,
+    )
+    await handler.start(control_room)
+
+    assert S.send_message_status(admin.access_token, control_room, "!announce Pasted twice") == 200
+    await _pump_once(handler, matrix_client)
+    assert S.send_message_status(admin.access_token, control_room, "!announce  Pasted twice ") == 200
+    await _pump_once(handler, matrix_client)
+
+    assert (await _messages_in(matrix_client, notice_board)).count("Pasted twice") == 1
+    held = [r for r in await _messages_in(matrix_client, control_room) if "was not sent" in r]
+    assert len(held) == 1
+    held_id = held[0].split("!confirm ", 1)[1].split()[0]
+
+    assert S.send_message_status(admin.access_token, control_room, f"!confirm {held_id}") == 200
+    await _pump_once(handler, matrix_client)
+    assert (await _messages_in(matrix_client, notice_board)).count("Pasted twice") == 1 + 1

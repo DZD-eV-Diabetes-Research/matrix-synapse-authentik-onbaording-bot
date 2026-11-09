@@ -23,6 +23,7 @@ from typing import Any, TypeVar
 
 from pydantic import ValidationError
 
+from onbot.admin.admins import in_groups, names_no_groups
 from onbot.clients.authentik import ApiClientAuthentik
 from onbot.clients.base import ApiError
 from onbot.clients.synapse_admin import ApiClientSynapseAdmin, RoomBlock
@@ -97,6 +98,7 @@ from onbot.reconciler.state import (
 )
 from onbot.rooms.identity import (
     Resolution,
+    RoomIdentity,
     RoomIdentityResolver,
     RoomIndex,
     RoomKey,
@@ -104,6 +106,7 @@ from onbot.rooms.identity import (
     stray_claims,
 )
 from onbot.rooms.provision import ManagedRoomSpec, lock_markers, markers_locked
+from onbot.utils import normalize_group_pk
 
 log = get_logger(__name__)
 
@@ -190,6 +193,36 @@ class _RoomStepProblems(Exception):
         self.held = list(held)
 
 
+# `!room adopt` (W4R-06): how long it waits for a running pass, and how it is used.
+ADOPT_WAIT_SEC = 60.0
+ADOPT_USAGE = "!room adopt <group pk> <room id or alias>"
+
+
+def _adoption_refusal(identity: RoomIdentity) -> str | None:
+    """Why a room the bot created cannot be adopted as a group room; ``None`` if it can (W4R-06).
+
+    Only a room whose one managed marker is a group room marker that was removed, or that somebody
+    other than the bot wrote, qualifies: the cases the bot reports with "A room lost its onbot marker".
+    """
+    if identity.trusted:
+        assert identity.key is not None
+        return f"is already the {identity.key.describe()}"
+    if identity.tombstone is not None:
+        return f"was upgraded to {identity.tombstone}; it is not adopted"
+    group_room = OnbotRoomType.group_room
+    removed = identity.removed_markers == (group_room,) and not identity.marker_types
+    foreign = identity.marker_types == (group_room,) and identity.foreign_markers == (group_room,)
+    if removed or foreign:
+        return None
+    if identity.marker_types or identity.removed_markers:
+        kinds = ", ".join(sorted({k.value for k in (*identity.marker_types, *identity.removed_markers)}))
+        return (
+            f"carries onbot markers ({kinds}) that are not a lost group room marker; only a group room "
+            "whose marker was removed or written by somebody else is adopted"
+        )
+    return "never was a group room (it carries no onbot marker); it is not adopted"
+
+
 class ReconcilerEngine:
     def __init__(
         self,
@@ -228,6 +261,8 @@ class ReconcilerEngine:
         # Matrix accounts that several Authentik users resolve to this pass: nobody joins, kicks,
         # changes the power level of, locks or erases them (D8, fail closed).
         self._held_mxids: frozenset[str] = frozenset()
+        # Authentik user pks the group re-check of the sync scope left out and logged (SEC-09).
+        self._group_scope_strays: set[str] = set()
         # Which room is which, by creator and marker (D20). Shared with the admin room and the welcome
         # flow in the service, so the room identities are read once per process.
         self.rooms = rooms or RoomIdentityResolver(
@@ -256,6 +291,9 @@ class ReconcilerEngine:
         self.active_lobbies: dict[str, str] = {}
         self._stop = asyncio.Event()
         self._trigger = asyncio.Event()
+        # Held by every pass, and by `!room adopt`, so an adoption never races a pass that is about to
+        # create the group a new room (W4R-06).
+        self._pass_lock = asyncio.Lock()
 
     # --- runtime loop --------------------------------------------------------
 
@@ -299,6 +337,11 @@ class ReconcilerEngine:
     # --- one convergence pass ------------------------------------------------
 
     async def reconcile_once(self) -> None:
+        """One convergence pass. Passes and ``!room adopt`` never run at the same time."""
+        async with self._pass_lock:
+            await self._reconcile_once()
+
+    async def _reconcile_once(self) -> None:
         log.info(
             "reconcile: gathering desired (Authentik) and actual (Synapse) state%s",
             " (dry run: nothing is changed)" if self.dry_run else "",
@@ -597,7 +640,47 @@ class ReconcilerEngine:
                     continue
                 seen_pks.add(user["pk"])
                 users.append(user)
+        if cfg.sync_only_users_of_groups_with_id:
+            users = self._recheck_group_scope(users, cfg.sync_only_users_of_groups_with_id)
         return users
+
+    def _recheck_group_scope(
+        self, users: list[dict[str, Any]], group_pks: Sequence[str]
+    ) -> list[dict[str, Any]]:
+        """Keep the users whose own user object names a sync group (SEC-09); log the others as an error.
+
+        ``groups_by_pk`` is only a narrowing hint: an Authentik that does not know the filter drops it
+        and answers with every user. A user the filter should have excluded is therefore dropped here.
+        An Authentik that stops naming the groups in its user objects drops everybody; the empty scope
+        is then held and reported by the guard's plausibility check (D4 layer 1), never acted on.
+        """
+        members = in_groups(users, group_pks)
+        kept = {str(u["pk"]) for u in members}
+        strays = [u for u in users if str(u["pk"]) not in kept]
+        # Each stray is logged once while it stays one, not on every pass (the room sync and the
+        # lifecycle both ask); a user who is a member again is forgotten, so a relapse is logged.
+        self._group_scope_strays -= kept
+        fresh = {str(u["pk"]) for u in strays} - self._group_scope_strays
+        self._group_scope_strays |= fresh
+        if fresh:
+            names = [str(u.get("username", u.get("pk"))) for u in strays]
+            hint = (
+                " None of them names any group at all: does this Authentik leave the groups out of its "
+                "user objects?"
+                if all(names_no_groups(u) for u in strays)
+                else " Did the server ignore the groups_by_pk filter?"
+            )
+            listed = sorted(names)
+            log.error(
+                "Authentik answered the sync scope query with %d user(s) whose own user object names none "
+                "of the groups in sync_only_users_of_groups_with_id (%s): %s. They are left out of the sync "
+                "scope.%s",
+                len(strays),
+                ", ".join(group_pks),
+                ", ".join(listed[:10]) + (", ..." if len(listed) > 10 else ""),
+                hint,
+            )
+        return members
 
     async def _gather_group_room_maps(self) -> list[GroupRoomMap]:
         settings = self.config.sync_matrix_rooms_based_on_authentik_groups
@@ -668,10 +751,13 @@ class ReconcilerEngine:
         but leaves the current icon in place (removing avatars is out of scope). ``fresh_state`` seeds
         the state event (its ``group_id``) when the room has none yet. ``marker`` is the marker's
         content when the caller has just read it (the upkeep step), saving a read.
+
+        The marker it writes is built from what the bot knows the room's marker to be, never from what
+        it reads in the room (W5R-01): see :meth:`_marker_basis`.
         """
         event_type = event_type_name(self.server_name, room_type)
         raw = marker if marker is not None else await self.effectors.get_room_state(room_id, event_type)
-        state = parse_room_state(room_type, raw) if raw else fresh_state
+        state = self._marker_basis(room_id, room_type, fresh_state, raw)
         if not desired:
             if state.avatar_source_url is None and state.avatar_sha256 is None:
                 return
@@ -687,8 +773,10 @@ class ReconcilerEngine:
         if desired == state.avatar_source_url:
             if digest == state.avatar_sha256:
                 return
-            if state.avatar_sha256 is None:
-                # Set by a version that recorded only the URL: take the picture as it is now.
+            if state.avatar_sha256 is None and await self.effectors.room_wears(room_id, digest):
+                # Set by a version that recorded only the URL, and the room still wears that picture:
+                # record its digest instead of setting it again. A picture that changed behind the URL
+                # before the upgrade is set below like any other change (W5R-03).
                 state.avatar_sha256 = digest
                 await self._put_marker(room_id, event_type, dump_room_state(state))
                 return
@@ -702,6 +790,25 @@ class ReconcilerEngine:
         state.avatar_source_url = desired
         state.avatar_sha256 = digest
         await self._put_marker(room_id, event_type, dump_room_state(state))
+
+    def _marker_basis(
+        self, room_id: str, room_type: OnbotRoomType, fresh_state: AnyRoomState, raw: dict[str, Any] | None
+    ) -> AnyRoomState:
+        """The marker the bot changes a field of and writes back (W5R-01).
+
+        What the bot knows it wrote into the room (:meth:`RoomIdentityResolver.known_marker`), else, in
+        a room this pass created, what is there (the bot's own ``initial_state``), else the marker the
+        room's role calls for (``fresh_state``). Never a marker read in an existing room: somebody above
+        the marker lock may have rewritten it, and writing it back would sign their content as the bot's.
+        """
+        known = self.rooms.known_marker(room_id)
+        content = known if known is not None else (raw if room_id in self._created_this_pass else None)
+        if content:
+            try:
+                return parse_room_state(room_type, content)
+            except ValidationError:
+                log.warning("the onbot marker of %s cannot be read; writing a fresh one", room_id)
+        return fresh_state.model_copy(deep=True)
 
     async def _converge_rooms(
         self,
@@ -951,11 +1058,14 @@ class ReconcilerEngine:
                 await self._repair_step(
                     problems, "space link", self._repair_space_link(room, space_id, suggested=suggested)
                 )
-        await self._repair_step(
-            problems,
-            "avatar",
-            self._converge_avatar(room.room_id, room_type, avatar_source_url, marker, marker=content),
-        )
+        if room.room_id in self._created_this_pass or content is not None:
+            # Not after a failed marker repair (W5R-01): the avatar step writes the marker too, and with
+            # a restore the server refuses it would set the picture again on every pass.
+            await self._repair_step(
+                problems,
+                "avatar",
+                self._converge_avatar(room.room_id, room_type, avatar_source_url, marker, marker=content),
+            )
         if problems:
             raise _RoomStepProblems(problems)
 
@@ -998,7 +1108,13 @@ class ReconcilerEngine:
         return repair.content
 
     async def _put_marker(self, room_id: str, event_type: str, content: dict[str, Any]) -> None:
-        """Write a managed room's marker, and remember it as what the bot knows about the room."""
+        """Write a managed room's marker, and remember it as what the bot knows about the room.
+
+        Refuses a marker naming another role than the one the bot knows the room plays (W5R-01).
+        """
+        conflict = self.rooms.marker_conflict(room_id, content)
+        if conflict is not None:
+            raise RuntimeError(f"refusing to write the onbot marker of {room_id}: {conflict}")
         await self.effectors.put_room_state(room_id, event_type, content)
         self.rooms.remember_marker(room_id, content)
 
@@ -1673,6 +1789,88 @@ class ReconcilerEngine:
             "again, and the bot manages it from the configuration."
         )
 
+    async def adopt_room(self, group_pk: str, target: str, *, by: str) -> str:
+        """``!room adopt <group> <room>``: hand a group room that lost its marker back to the bot.
+
+        Returns the reply for the admin room. Waits for a running pass to end (at most
+        :data:`ADOPT_WAIT_SEC`) so the two never decide about the same group at once.
+        """
+        try:
+            async with asyncio.timeout(ADOPT_WAIT_SEC):
+                await self._pass_lock.acquire()
+        except TimeoutError:
+            return (
+                "A reconcile pass is still running; send the command again in a minute. Nothing was changed."
+            )
+        try:
+            reply, adopted = await self._adopt_room(group_pk.strip(), target.strip(), by)
+        finally:
+            self._pass_lock.release()
+        if adopted:
+            self.trigger()  # manage it now, not a whole tick later
+        return reply
+
+    async def _adopt_room(self, group_pk: str, target: str, by: str) -> tuple[str, bool]:
+        """The checks and the write of :meth:`adopt_room`; ``(reply, adopted)``. Fails closed (D20)."""
+        unchanged = " Nothing was changed."
+        if not self.config.sync_matrix_rooms_based_on_authentik_groups.enabled:
+            return "Group rooms are switched off in the configuration." + unchanged, False
+        if target.startswith("#"):
+            room_id = await self.effectors.resolve_room_alias(target)
+            if room_id is None:
+                return f"The alias {target} points at no room." + unchanged, False
+        elif target.startswith("!"):
+            room_id = target
+        else:
+            return f"Usage: {ADOPT_USAGE}", False
+        wanted = normalize_group_pk(group_pk)
+        group = next(
+            (m for m in await self._gather_group_room_maps() if normalize_group_pk(m.group_pk) == wanted),
+            None,
+        )
+        if group is None:
+            return (
+                f"{group_pk} is not a group the bot keeps a room for (unknown in Authentik, or left out "
+                "by the configuration)." + unchanged,
+                False,
+            )
+        key = RoomKey(OnbotRoomType.group_room, group.group_pk)
+        index = await self.rooms.scan()
+        if not index.complete:
+            return (
+                f"The bot cannot see all of its rooms right now ({index.describe_incomplete()})." + unchanged,
+                False,
+            )
+        current = [i.room_id for i in index.claims(key) if i.locked]
+        if current:
+            where = "is already that room" if current == [room_id] else f"already has the room {current[0]}"
+            return f"Group {group.group_pk} {where}; the bot manages it." + unchanged, False
+        try:
+            identity = await self.rooms.reread(room_id)
+        except ApiError as exc:
+            return f"The room {room_id} cannot be read ({describe_error(exc)})." + unchanged, False
+        if identity is None:
+            return (
+                f"The room {room_id} was not created by the bot. The bot only manages rooms it created "
+                "(D20), so it does not take this one over." + unchanged,
+                False,
+            )
+        refusal = _adoption_refusal(identity)
+        if refusal is not None:
+            return f"The room {room_id} {refusal}." + unchanged, False
+        try:
+            await self.rooms.adopt(identity, key, dump_room_state(GroupRoomState(group_id=group.group_pk)))
+        except ApiError as exc:
+            return f"Writing the marker into {room_id} failed ({describe_error(exc)})." + unchanged, False
+        log.warning(
+            "room identity: %s adopted %s as the room of group %s (!room adopt)", by, room_id, group.group_pk
+        )
+        return (
+            f"Adopted {room_id} as the room of group {group.group_pk}: the bot wrote and protected its "
+            "marker and manages the room from the next pass on (members, power levels, name, avatar).",
+            True,
+        )
+
     async def _converge_power_levels(
         self,
         room: MatrixRoom,
@@ -1781,7 +1979,7 @@ class ReconcilerEngine:
         global_admins = self.global_admins.mxids
         event_type = event_type_name(self.server_name, room_type)
         raw = await self.effectors.get_room_state(room_id, event_type)
-        state = parse_room_state(room_type, raw) if raw else fresh_state
+        state = self._marker_basis(room_id, room_type, fresh_state, raw)
         legacy_admins = frozenset(state.global_admins)
         record = await self._load_grant_record(room_id)
         recorded: dict[str, int | None] = {**dict.fromkeys(legacy_admins - record.keys()), **record}

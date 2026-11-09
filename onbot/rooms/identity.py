@@ -124,6 +124,10 @@ class RoomIdentity:
     """The marker as the bot last wrote or read it (see :meth:`RoomIdentityResolver.remember_marker`)."""
     removed_markers: tuple[OnbotRoomType, ...] = ()
     """Managed marker types whose state event is there but empty: somebody removed the marker."""
+    foreign_markers: tuple[OnbotRoomType, ...] = ()
+    """Managed marker types whose state event somebody other than the bot wrote."""
+    marker_types: tuple[OnbotRoomType, ...] = ()
+    """Managed marker types the room carries with content, whoever wrote them."""
 
     @property
     def trusted(self) -> bool:
@@ -171,6 +175,7 @@ def classify_room(
 
     markers: list[tuple[OnbotRoomType, str, dict[str, Any]]] = []
     foreign: list[str] = []
+    foreign_types: list[OnbotRoomType] = []
     removed: list[OnbotRoomType] = []
     for room_type in MANAGED_ROOM_TYPES:
         event_type = event_type_name(server_name, room_type)
@@ -183,6 +188,9 @@ def classify_room(
         markers.append((room_type, event_type, dict(content)))
         if event.get("sender") != bot_id:
             foreign.append(f"{room_type.value} marker written by {event.get('sender')}")
+            foreign_types.append(room_type)
+    identity.foreign_markers = tuple(foreign_types)
+    identity.marker_types = tuple(m[0] for m in markers)
     if not markers:
         identity.removed_markers = tuple(removed)
         return identity
@@ -391,6 +399,34 @@ class RoomIdentityResolver:
             self._cache[room_id] = identity
         return identity
 
+    async def reread(self, room_id: str) -> RoomIdentity | None:
+        """The identity of one room read now, not from the cache (``None``: not the bot's)."""
+        self._cache.pop(room_id, None)
+        return await self._read(room_id)
+
+    async def adopt(self, identity: RoomIdentity, key: RoomKey, content: dict[str, Any]) -> None:
+        """Hand ``key`` to a room the bot created that lost its marker (``!room adopt``, W4R-06).
+
+        Locks the marker types first, so nobody below the bot can change the marker in between, then
+        writes the marker as the bot. From then on the room is trusted like any room the bot created
+        for ``key``. The caller has checked that the room may take the role.
+        """
+        marker_type = event_type_name(self.server_name, key.kind)
+        await lock_markers(
+            self.writer,
+            identity.room_id,
+            self.server_name,
+            bot_id=self.bot_id,
+            room_version=identity.room_version,
+        )
+        await self.writer.put_room_state(identity.room_id, marker_type, dict(content))
+        identity.key, identity.marker_type, identity.marker_content = key, marker_type, dict(content)
+        identity.problem = None
+        identity.removed_markers = identity.foreign_markers = ()
+        identity.marker_types = (key.kind,)
+        identity.locked = True
+        self._cache[identity.room_id] = identity
+
     def known_marker(self, room_id: str) -> dict[str, Any] | None:
         """The marker content of a trusted room as the bot last wrote or read it (W4R-08)."""
         identity = self._cache.get(room_id)
@@ -399,10 +435,39 @@ class RoomIdentityResolver:
         return dict(identity.marker_content)
 
     def remember_marker(self, room_id: str, content: dict[str, Any]) -> None:
-        """Record ``content`` as what the bot wrote (or found written by itself) into a trusted room."""
+        """Record ``content`` as what the bot wrote (or found written by itself) into a trusted room.
+
+        Content naming another role than the room plays is not remembered (W5R-01).
+        """
         identity = self._cache.get(room_id)
-        if identity is not None and identity.trusted and content:
-            identity.marker_content = dict(content)
+        if identity is None or not identity.trusted or not content:
+            return
+        conflict = self.marker_conflict(room_id, content)
+        if conflict is not None:
+            log.error("room identity: not remembering the marker of %s: %s", room_id, conflict)
+            return
+        identity.marker_content = dict(content)
+
+    def marker_conflict(self, room_id: str, content: dict[str, Any]) -> str | None:
+        """Why ``content`` cannot be the marker of ``room_id``, a trusted room; ``None`` if it can.
+
+        A marker names the room's role (its type, its group, the space's or control room's alias). For
+        a room the bot knows, any content naming another role is somebody else's, however it got here.
+        """
+        identity = self._cache.get(room_id)
+        if identity is None or not identity.trusted or identity.key is None:
+            return None
+        key = identity.key
+        try:
+            parsed = parse_room_state(key.kind, content)
+        except ValidationError:
+            return f"it is not a valid onbot {key.kind.value} marker"
+        group_id = parsed.group_id if isinstance(parsed, GroupRoomState | VisitorLobbyRoomState) else None
+        name = parsed.configured_alias if isinstance(parsed, SpaceRoomState | AdminRoomState) else None
+        if group_id != key.group_id or (name is not None and key.name is not None and name != key.name):
+            claimed = RoomKey(key.kind, group_id, name).describe()
+            return f"it names the {claimed}, but the room is the {key.describe()}"
+        return None
 
     def register(self, room: MatrixRoom, key: RoomKey) -> None:
         """Record a room the bot just created for ``key`` (its marker came with ``createRoom``).

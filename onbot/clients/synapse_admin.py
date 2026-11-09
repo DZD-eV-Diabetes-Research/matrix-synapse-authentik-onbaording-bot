@@ -40,6 +40,11 @@ NextParams = Callable[[Any, dict[str, Any]], dict[str, Any] | None]
 # How often and how long ``delete_room`` waits for Synapse's background deletion.
 DELETE_POLL_INTERVAL_SEC = 2.0
 DELETE_WAIT_SEC = 600.0
+# How often, and how far apart, the room's delete status is read again when it answers 404 right
+# after a DELETE whose answer was lost. Synapse lists a room's deletions by status and leaves out the
+# ones still "scheduled", so a deletion the scheduler has not started yet is invisible for a moment.
+DELETE_STATUS_LOOKUPS = 5
+DELETE_STATUS_RETRY_SEC = 1.0
 # Delete statuses that end a deletion (the others: scheduled, active, and the older
 # shutting_down and purging).
 _DELETE_DONE = "complete"
@@ -311,13 +316,24 @@ class ApiClientSynapseAdmin(BaseApiClient):
         return await self._wait_for_room_deletion(room_id, delete_id, poll_interval_sec, wait_sec)
 
     async def _existing_room_deletion(self, room_id: str) -> str | None:
-        """The delete id of a deletion of ``room_id`` that is running or done, if Synapse knows one."""
-        try:
-            result = await self.get_json(f"v2/rooms/{path_segment(room_id)}/delete_status")
-        except ApiError as exc:
-            if exc.status_code == 404:
-                return None  # "No delete task for room_id ... found"
-            raise
+        """The delete id of a deletion of ``room_id`` that is running or done, if Synapse knows one.
+
+        Synapse lists a room's deletions only once they are active, complete or failed, not while
+        they are still scheduled. Right after a DELETE whose answer was lost, the deletion it started
+        can be in exactly that moment, so a 404 ("No delete task for room_id") is asked again a few
+        times, :data:`DELETE_STATUS_RETRY_SEC` apart, before it counts as "no deletion".
+        """
+        sleep = self._sleep or asyncio.sleep
+        for attempt in range(DELETE_STATUS_LOOKUPS):
+            try:
+                result = await self.get_json(f"v2/rooms/{path_segment(room_id)}/delete_status")
+                break
+            except ApiError as exc:
+                if exc.status_code != 404:
+                    raise
+                if attempt + 1 == DELETE_STATUS_LOOKUPS:
+                    return None  # "No delete task for room_id ... found"
+                await sleep(DELETE_STATUS_RETRY_SEC)
         for entry in (result or {}).get("results") or []:
             if entry.get("status") != _DELETE_FAILED and entry.get("delete_id"):
                 return str(entry["delete_id"])

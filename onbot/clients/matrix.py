@@ -721,6 +721,11 @@ class CSApiEffectors:
     async def upload_avatar(self, url: str) -> str:
         return await self._media.upload_from_url(url)
 
+    async def room_wears(self, room_id: str, digest: str) -> bool:
+        content = await self.client.get_room_state_event(room_id, "m.room.avatar") or {}
+        mxc = content.get("url")
+        return isinstance(mxc, str) and bool(mxc) and await self._media.holds(mxc, digest)
+
     async def get_room_state(
         self, room_id: str, event_type: str, state_key: str = ""
     ) -> dict[str, Any] | None:

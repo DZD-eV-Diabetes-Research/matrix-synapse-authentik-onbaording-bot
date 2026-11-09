@@ -37,6 +37,10 @@ class _RecordingWelcome:
     def __init__(self) -> None:
         self.welcomed: list[str] = []
         self.pruned: list[frozenset[str]] = []
+        self.board_avatar: str | None = None
+
+    def board_avatar_sha256(self) -> str | None:
+        return self.board_avatar
 
     async def welcome_user(self, mxid: str) -> None:
         await asyncio.sleep(0)
@@ -394,3 +398,26 @@ async def test_a_user_reported_again_while_a_failing_run_is_in_hand_runs_once_mo
     assert welcome.welcomed == [ALICE, ALICE]
     listener.request_stop()
     await asyncio.wait_for(worker, timeout=1)
+
+
+# --- ONB-15 (S18): a new bot avatar reaches every notice board without a restart ---------------------
+
+
+async def test_a_new_bot_avatar_has_every_board_looked_at_again() -> None:
+    welcome = _RecordingWelcome()
+    welcome.board_avatar = "red"
+    listener, events = _listener(welcome)
+    await _pass(events, ALICE, BOB)
+    await listener.process_queued()
+    await _pass(events, ALICE, BOB)
+    await listener.process_queued()
+    assert sorted(welcome.welcomed) == [ALICE, BOB]  # welcomed once, as before
+
+    welcome.board_avatar = "blue"  # the media layer saw a new picture behind the URL
+    await _pass(events, ALICE, BOB)
+    await listener.process_queued()
+    assert sorted(welcome.welcomed) == [ALICE, ALICE, BOB, BOB]
+
+    await _pass(events, ALICE, BOB)
+    await listener.process_queued()
+    assert len(welcome.welcomed) == 4

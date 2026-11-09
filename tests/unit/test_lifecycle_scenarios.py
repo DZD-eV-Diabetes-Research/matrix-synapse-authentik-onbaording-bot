@@ -65,6 +65,8 @@ class Directory:
         self._next_pk = 1
         self.blind = False  # simulate a token that suddenly sees nobody (200 with an empty list)
         self.visible: set[str] | None = None  # a token narrowed to these usernames (REC-01)
+        # An Authentik that still filters by group but leaves the groups out of its user objects.
+        self.hide_groups = False
 
     def add(
         self,
@@ -120,7 +122,10 @@ class Directory:
                 continue
             if groups and not set(groups) & set(user["groups"]):
                 continue
-            out.append(dict(user, attributes=dict(user["attributes"])))
+            copy = dict(user, attributes=dict(user["attributes"]))
+            if self.hide_groups:
+                del copy["groups"]
+            out.append(copy)
         return out
 
     async def list_groups(self, **_: Any) -> list[dict[str, Any]]:
@@ -1160,3 +1165,46 @@ async def test_an_unreadable_guard_state_holds_the_locks_of_a_rejected_batch() -
     assert w.mas.calls == []
     assert w.store.raw[GUARD_TYPE] == broken
     assert [e.signal for e in w.guard_events].count(Signal.guard_state_unreadable) == 1
+
+
+# --- SEC-09 (S18): the group scope is re-checked on each user object --------------------------------
+
+
+async def test_authentik_that_stops_naming_groups_offboards_nobody() -> None:
+    """Every user object without its groups empties the sync scope; guard layer 1 holds that (D4)."""
+    w = World(guard=True, delete_after=DAY, sync_only_users_of_groups_with_id=["grp-staff"])
+    pks = {name: w.person(name, groups=["grp-staff"]) for name in ("anna", "ben", "cleo", "dino")}
+    await w.tick()  # all four become known users; four active users in the scope
+
+    w.directory.hide_groups = True
+    w.directory.set_active(pks["dino"], False)  # a real disable in the same interval (D14 path)
+    for _ in range(3):
+        await w.tick(DAY)
+
+    assert w.mas.calls == []
+    proposals = _proposals(w)
+    assert proposals, "the empty scope is reported in the admin room"
+    assert all("active users in the sync scope" in p.payload["reason"] for p in proposals)
+    assert "no active users in the sync scope (last known good: 4)" in proposals[0].payload["reason"]
+
+
+async def test_users_outside_the_sync_groups_are_out_of_scope_even_if_authentik_returns_them() -> None:
+    """An Authentik that ignores ``groups_by_pk`` answers with everybody (SEC-09)."""
+
+    class IgnoresGroupFilter(Directory):
+        async def list_users(self, **kwargs: Any) -> list[dict[str, Any]]:
+            kwargs.pop("filter_groups_by_pk", None)
+            return await super().list_users(**kwargs)
+
+    w = World(delete_after=DAY, sync_only_users_of_groups_with_id=["grp-staff"])
+    w.directory = IgnoresGroupFilter()
+    w.engine.authentik = w.directory  # type: ignore[assignment]
+    w.person("anna", groups=["grp-staff"])
+    pk = w.person("svc", groups=["grp-other"])  # never in the sync scope
+    await w.tick()
+    w.directory.set_active(pk, False)
+    for _ in range(3):
+        await w.tick(DAY)
+    # svc was never seen active in scope, so its account is never bound or touched (REC-14).
+    assert w.mas.calls == []
+    assert w.store.ledger().entries == {}

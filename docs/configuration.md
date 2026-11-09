@@ -120,12 +120,16 @@ avatar_fetch:
 ```
 
 A refused avatar is logged with the reason. A group room keeps its previous avatar and is retried on
-the next reconcile; a refused bot avatar is not retried until the next start.
+the next reconcile; a refused bot avatar is retried when the URL is looked at again.
 
-Each avatar URL is downloaded once per start, and Onbot records a hash of the image next to every
-avatar it sets (the bot's profile, rooms, the space, notice boards). A new picture at the same URL is
-therefore picked up on the next restart, everywhere it is worn. While the URL cannot be fetched, the
-current pictures stay as they are.
+Each avatar URL is downloaded at startup (or when it is first used) and then looked at again about
+once a day, with a conditional request (`If-None-Match` or `If-Modified-Since` from the last answer,
+so an unchanged picture costs a `304`; a server without them sends the image, which is compared by
+content). Onbot records a hash of the image next to every avatar it sets (the bot's profile, rooms,
+the space, notice boards), so a new picture at the same URL reaches everything that wears it within
+about a day, without a restart (a restart picks it up at once). The same limits apply to these
+re-checks. While the URL cannot be fetched, the current pictures stay as they are. The interval is
+fixed, not configurable.
 
 ## The MXID localpart contract
 

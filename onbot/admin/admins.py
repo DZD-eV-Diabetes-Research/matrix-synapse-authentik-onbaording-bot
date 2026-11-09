@@ -40,6 +40,7 @@ from onbot.clients.authentik import ApiClientAuthentik
 from onbot.config import OnbotConfig
 from onbot.identity import IdentityResolver, Resolution, attribute_mxid, is_ignored
 from onbot.logging import get_logger
+from onbot.utils import normalize_group_pk
 
 log = get_logger(__name__)
 
@@ -74,25 +75,40 @@ def resolve_admin_mxids(
 
 
 def _group_pks_of(user: dict[str, Any]) -> set[str]:
-    """The group pks an Authentik user object names: ``groups`` (pks), else ``groups_obj``."""
+    """The group pks an Authentik user object names (``groups``, ``groups_obj``), normalised (W5R-02)."""
     pks: set[str] = set()
     groups = user.get("groups")
     if isinstance(groups, list):
-        pks.update(str(pk) for pk in groups if isinstance(pk, str | int))
+        pks.update(normalize_group_pk(pk) for pk in groups if isinstance(pk, str | int))
     groups_obj = user.get("groups_obj")
     if isinstance(groups_obj, list):
-        pks.update(str(g["pk"]) for g in groups_obj if isinstance(g, dict) and "pk" in g)
+        pks.update(normalize_group_pk(g["pk"]) for g in groups_obj if isinstance(g, dict) and "pk" in g)
     return pks
+
+
+def in_groups(users: Iterable[dict[str, Any]], group_pks: Iterable[str]) -> list[dict[str, Any]]:
+    """The ``users`` whose own user object names one of ``group_pks``, active or not (SEC-09).
+
+    The server-side ``groups_by_pk`` filter only narrows the answer; it is not trusted to have done
+    so. A user object that names none of the groups, or names none at all, is not a member. Both
+    sides are compared as UUIDs where they are ones: Authentik names the groups hyphenated, the
+    configuration may name them as 32 hex digits or in upper case (W5R-02).
+    """
+    wanted = {normalize_group_pk(pk) for pk in group_pks}
+    return [u for u in users if _group_pks_of(u) & wanted]
+
+
+def names_no_groups(user: dict[str, Any]) -> bool:
+    """Whether a user object carries no group membership at all (neither ``groups`` nor ``groups_obj``)."""
+    return not _group_pks_of(user)
 
 
 def members_of(users: Iterable[dict[str, Any]], group_pks: Iterable[str]) -> list[dict[str, Any]]:
     """The ``users`` that are active members of one of ``group_pks``, by their own user object (SEC-09).
 
-    The server-side ``groups_by_pk`` filter only narrows the answer; it is not trusted to have done
-    so. A user object that names none of the groups, or names none at all, is not a member.
+    See :func:`in_groups`; a user object that says the account is disabled is not a member either.
     """
-    wanted = {str(pk) for pk in group_pks}
-    return [u for u in users if u.get("is_active") is not False and _group_pks_of(u) & wanted]
+    return [u for u in in_groups(users, group_pks) if u.get("is_active") is not False]
 
 
 def _directory_freshness_sec(config: OnbotConfig) -> int:

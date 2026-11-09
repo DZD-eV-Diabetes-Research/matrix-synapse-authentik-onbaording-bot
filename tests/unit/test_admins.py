@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from onbot.admin.admins import AdminResolver, resolve_admin_mxids
+from onbot.admin.admins import AdminResolver, in_groups, members_of, resolve_admin_mxids
 from onbot.config import AdminRoom, AuthentikServer, OnbotConfig, SynapseServer
 
 BOT = "@bot:matrix.test"
@@ -251,3 +251,32 @@ async def test_membership_is_also_read_from_groups_obj() -> None:
     resolver = _resolver(authentik, _config(group_pks=[GROUP]))
 
     assert await resolver.admins() == frozenset({ADMIN, "@alice:matrix.test"})
+
+
+# --- W5R-02: group pks compare as UUIDs, whatever form the config uses ---------------------------
+
+_HYPHENATED = "1120a6e1-124f-309b-be96-c8be5fb09eab"
+
+
+@pytest.mark.parametrize(
+    "configured",
+    [
+        "1120a6e1124f309bbe96c8be5fb09eab",  # the documented config example
+        _HYPHENATED,
+        "1120A6E1-124F-309B-BE96-C8BE5FB09EAB",
+        "1120A6E1124F309BBE96C8BE5FB09EAB",
+    ],
+)
+@pytest.mark.parametrize("field", ["groups", "groups_obj"])
+def test_a_group_uuid_in_any_form_finds_its_members(configured: str, field: str) -> None:
+    groups: Any = [_HYPHENATED] if field == "groups" else [{"pk": _HYPHENATED, "name": "admins"}]
+    user = {"pk": 7, "username": "alice", "is_active": True, field: groups}
+    assert members_of([user], [configured]) == [user]
+    assert in_groups([user], [configured]) == [user]
+
+
+def test_another_group_or_a_plain_pk_is_still_compared_exactly() -> None:
+    user = {"pk": 7, "username": "alice", "is_active": True, "groups": [_HYPHENATED, "legacy-pk"]}
+    assert members_of([user], ["2220a6e1124f309bbe96c8be5fb09eab"]) == []
+    assert members_of([user], ["legacy-pk"]) == [user]
+    assert members_of([user], ["LEGACY-PK"]) == []

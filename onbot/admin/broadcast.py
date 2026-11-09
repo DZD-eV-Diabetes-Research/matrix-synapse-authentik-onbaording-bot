@@ -222,6 +222,8 @@ class BroadcastService:
         # Whether the startup step lifted Synapse's send rate limit for the bot: ``None`` until it
         # ran, then its outcome (set by :mod:`onbot.app`). Shown by !status and with each result.
         self.rate_limit_lifted: bool | None = None
+        # (rooms done, rooms targeted) of the last broadcast that was cancelled, for its note (W5R-04).
+        self.interrupted: tuple[int, int] | None = None
 
     async def target_rooms(self) -> dict[str, str]:
         """Map ``room_id -> user_id`` for every notice board the bot should announce into.
@@ -275,10 +277,9 @@ class BroadcastService:
             await fan_out.run()
         except asyncio.CancelledError:
             done = fan_out.result
+            self.interrupted = (done.sent_count + done.failed_count + len(done.not_member), len(rooms))
             log.warning(
-                "broadcast interrupted after %d of %d rooms; the rest did not get it",
-                done.sent_count + done.failed_count + len(done.not_member),
-                len(rooms),
+                "broadcast interrupted after %d of %d rooms; the rest did not get it", *self.interrupted
             )
             raise
         log.info("broadcast finished: %s", fan_out.result.summary())

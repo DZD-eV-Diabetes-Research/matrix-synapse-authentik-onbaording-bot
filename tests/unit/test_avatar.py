@@ -228,3 +228,36 @@ class TestEnsureBotAvatar:
 
         assert client.uploads == [IMAGE]
         assert client.profile_writes == [client.avatar]
+
+
+# --- ONB-15 (S18): the profile follows a new picture without a restart ------------------------------
+
+
+class _AppStub:
+    """The parts of :class:`onbot.app.App` its bot avatar re-check uses."""
+
+    def __init__(self, sha: str | None, new_sha: str) -> None:
+        from types import SimpleNamespace
+
+        self.config = SimpleNamespace(
+            synapse_server=SimpleNamespace(bot_avatar_url="https://cdn.test/bot.png")
+        )
+        self._bot_avatar_sha256 = sha
+        self.applied = 0
+
+        async def image(url: str) -> SimpleNamespace:
+            return SimpleNamespace(sha256=new_sha)
+
+        self.media = SimpleNamespace(image=image)
+
+    async def apply_bot_avatar(self) -> None:
+        self.applied += 1
+
+
+async def test_the_bot_avatar_is_set_again_when_the_picture_behind_its_url_changed() -> None:
+    from onbot.app import App
+
+    changed, same, not_started = _AppStub("old", "new"), _AppStub("old", "old"), _AppStub(None, "new")
+    for stub in (changed, same, not_started):
+        await App.recheck_bot_avatar(stub)  # type: ignore[arg-type]
+    assert (changed.applied, same.applied, not_started.applied) == (1, 0, 0)

@@ -7,8 +7,11 @@ and power levels, so "zero kicks" and "zero withdrawals" are observed, not infer
 
 from __future__ import annotations
 
+import logging
 from dataclasses import replace
 from typing import Any, ClassVar
+
+import pytest
 
 from onbot.clients.base import ApiError
 from onbot.config import OnbotConfig
@@ -253,6 +256,49 @@ async def test_an_empty_group_list_tears_down_no_room() -> None:
     assert "Irreversible: 2 of these action(s) cannot be undone" in proposed.payload["summary"]
 
 
+# --- SEC-09 (S18): the sync scope's group filter is re-checked on each user object -------------------
+
+
+async def test_users_outside_the_sync_groups_are_not_synced_when_authentik_ignores_the_filter(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The fake directory ignores ``groups_by_pk`` like an Authentik that does not know the filter."""
+    engine, _directory, rooms, _effectors, _seen = world(
+        ["alice"],
+        ["carol"],
+        sync_authentik_users_with_matrix_rooms={"sync_only_users_of_groups_with_id": ["g1"]},
+    )
+    with caplog.at_level(logging.ERROR):
+        await engine.reconcile_once()
+    assert rooms.members[ROOM1] == {BOT, mx("alice")}
+    assert mx("carol") not in rooms.members[ROOM2]
+    [error] = [r for r in caplog.records if "sync_only_users_of_groups_with_id" in r.getMessage()]
+    assert error.levelno == logging.ERROR and "carol" in error.getMessage()
+
+
+async def test_user_objects_without_groups_empty_the_scope_and_the_guard_holds_it() -> None:
+    engine, directory, rooms, _effectors, seen = world(
+        ["alice", "bob", "dan"],
+        ["carol"],
+        sync_authentik_users_with_matrix_rooms={"sync_only_users_of_groups_with_id": ["g1", "g2"]},
+    )
+    await engine.reconcile_once()
+    assert rooms.members[ROOM1] == {BOT, mx("alice"), mx("bob"), mx("dan")}
+
+    async def without_groups(**kwargs: Any) -> list[dict[str, Any]]:
+        users = await Directory.list_users(directory, **kwargs)
+        return [{k: v for k, v in u.items() if k != "groups_obj"} for u in users]
+
+    directory.list_users = without_groups  # type: ignore[method-assign]
+    await engine.reconcile_once()
+    await engine.reconcile_once()
+
+    assert rooms.members[ROOM1] == {BOT, mx("alice"), mx("bob"), mx("dan")}
+    assert mx("carol") in rooms.members[ROOM2]
+    [proposed] = [e for e in seen if e.signal is Signal.destructive_actions_suppressed]
+    assert "no active users in the sync scope (last known good: 4)" in proposed.payload["reason"]
+
+
 # --- layer 3: room deletion is irreversible (D19) -----------------------------------------------------
 
 OBSOLETE = [f"!old{n}:company.org" for n in range(14)]
@@ -433,3 +479,18 @@ async def test_a_level_the_bot_may_not_change_does_not_hold_up_other_withdrawals
         f"cannot change power level of {mx('mallory')}: wanted at 50, "
         "but is a room creator (infinite power level)"
     ]
+
+
+async def test_a_sync_group_configured_without_hyphens_keeps_its_members() -> None:
+    """W5R-02: Authentik names the group hyphenated; the documented config form has no hyphens."""
+    engine, directory, _rooms, _effectors, _seen = world(
+        ["alice", "bob"],
+        ["carol"],
+        sync_authentik_users_with_matrix_rooms={
+            "sync_only_users_of_groups_with_id": ["1120a6e1124f309bbe96c8be5fb09eab"]
+        },
+    )
+    for name in ("alice", "bob"):
+        directory.users[name]["groups_obj"] = [{"pk": "1120a6e1-124f-309b-be96-c8be5fb09eab"}]
+    scoped = await engine._list_scoped_users(filter_is_active=True)
+    assert sorted(u["username"] for u in scoped) == ["alice", "bob"]

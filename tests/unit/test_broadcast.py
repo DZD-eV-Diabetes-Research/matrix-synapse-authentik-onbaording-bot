@@ -440,3 +440,29 @@ async def test_slow_failures_without_a_rate_limit_never_count_as_a_stall() -> No
 
     assert result.sent == ["!r2:x"]
     assert [f.error for f in result.failures] == ["RuntimeError: HTTP 500", "RuntimeError: HTTP 500"]
+
+
+async def test_a_cancelled_broadcast_records_how_far_it_got() -> None:
+    """W5R-04: the control room says after a shutdown how many rooms got the announcement."""
+
+    class _Stuck(_FakeClient):
+        def __init__(self) -> None:
+            super().__init__({f"@u{i}:matrix.test": [f"!r{i}:x"] for i in range(3)})
+            self.hold = asyncio.Event()
+
+        async def send_text_message(
+            self, room_id: str, body: str, *, msgtype: str = "m.text", **kwargs: object
+        ) -> str:
+            if self.sends:
+                await self.hold.wait()  # the second room hangs until the shutdown
+            return await super().send_text_message(room_id, body, msgtype=msgtype, **kwargs)
+
+    client = _Stuck()
+    service = _service(client, concurrency=1)
+    task = asyncio.create_task(service.broadcast("hello"))
+    for _ in range(10):
+        await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert service.interrupted == (1, 3)
