@@ -61,7 +61,7 @@ from onbot.auth.token_provider import (
 from onbot.avatar import ensure_bot_avatar
 from onbot.clients.authentik import ApiClientAuthentik
 from onbot.clients.mas_admin import ApiClientMasAdmin
-from onbot.clients.matrix import ApiClientMatrix, CSApiEffectors
+from onbot.clients.matrix import ApiClientMatrix
 from onbot.clients.synapse_admin import ApiClientSynapseAdmin
 from onbot.config import OnbotConfig
 from onbot.discovery import DiscoveryPoller
@@ -89,7 +89,7 @@ from onbot.logging import get_logger
 from onbot.media import MediaUploader
 from onbot.onboarding.listener import OnboardingListener
 from onbot.onboarding.welcome import WelcomeService
-from onbot.reconciler.effectors import DryRunEffectors, DryRunSynapseAdmin, MatrixEffectors
+from onbot.reconciler.effectors import CSApiEffectors, DryRunEffectors, DryRunSynapseAdmin, MatrixEffectors
 from onbot.reconciler.engine import ReconcilerEngine
 from onbot.rooms.identity import RoomIdentityResolver
 from onbot.runtime import (

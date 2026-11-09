@@ -9,10 +9,10 @@ import respx
 from onbot.clients.base import ApiError
 from onbot.clients.matrix import (
     ApiClientMatrix,
-    CSApiEffectors,
     SyncNotSupportedError,
     _parse_mxc,
 )
+from onbot.reconciler.effectors import CSApiEffectors
 from onbot.rooms.provision import ManagedRoomSpec
 from onbot.state import GroupRoomState
 

@@ -30,7 +30,7 @@ import pytest_asyncio
 from testcontainers.compose import DockerCompose
 
 from onbot.clients.authentik import ApiClientAuthentik
-from onbot.clients.matrix import ApiClientMatrix, CSApiEffectors
+from onbot.clients.matrix import ApiClientMatrix
 from onbot.clients.synapse_admin import ApiClientSynapseAdmin
 from onbot.config import (
     AdminRoom,
@@ -41,6 +41,7 @@ from onbot.config import (
 )
 from onbot.guard import guard_account_data_type
 from onbot.lifecycle.accounts import known_users_account_data_type, lifecycle_account_data_type
+from onbot.reconciler.effectors import CSApiEffectors
 from onbot.rooms.identity import RoomIdentityResolver
 from tests.integration import stack_api as S
 from tests.integration.stack_instance import SKIP_VAR, StackUnavailable, skip_requested, start_stack

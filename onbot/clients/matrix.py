@@ -1,18 +1,13 @@
-"""Matrix Client-Server API client (async) + the concrete :class:`MatrixEffectors`.
+"""Matrix Client-Server API client (async).
 
 Phase 4. Drives the CS API over the shared async :class:`BaseApiClient` (ADR-0007), *not* a Matrix
 library: the library decision (``matrix-nio`` vs. raw httpx vs. ``mautrix``) is an explicit Phase 6
 ADR (BATTLE_PLAN §5). Building on the base client keeps everything async, pooled and uniformly
-authenticated, and lets the reconciler's :class:`~onbot.reconciler.effectors.MatrixEffectors` seam
-get its concrete implementation here (the Phase 3 deferral).
+authenticated. The reconciler's effectors adapt it
+(:class:`~onbot.reconciler.effectors.CSApiEffectors`); the client itself imports no domain code.
 
-Two things live here:
-
-* :class:`ApiClientMatrix`: the CS-API operations the bot needs (room/space creation, kicks, power
-  levels, room name/topic, custom state events, sending messages, account data, and the sync
-  stream).
-* :class:`CSApiEffectors`: adapts that client to the reconciler's ``MatrixEffectors`` protocol,
-  replacing the dry-run effectors when the bot runs for real.
+:class:`ApiClientMatrix` holds the CS-API operations the bot needs (room/space creation, kicks, power
+levels, room name/topic, custom state events, sending messages, account data, and the sync stream).
 
 The sync transport is **Simplified Sliding Sync** (MSC4186, ADR-0003). Its endpoint is still unstable;
 Phase 6 adds CS-API version negotiation. To keep that churn out of the onboarding listener, the
@@ -25,12 +20,9 @@ from __future__ import annotations
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import httpx
-
-if TYPE_CHECKING:
-    from onbot.media import MediaUploader, SourceImage, UploadedImage
 
 from onbot.auth.token_provider import TokenProvider
 from onbot.clients.base import (
@@ -42,7 +34,6 @@ from onbot.clients.base import (
 )
 from onbot.clients.versions import CLIENT_VERSIONS_PATH, ServerVersions
 from onbot.logging import get_logger
-from onbot.rooms.provision import ManagedRoomSpec, create_managed_room
 
 log = get_logger(__name__)
 
@@ -663,93 +654,3 @@ def _parse_mxc(mxc_uri: str) -> tuple[str, str]:
     if not server or not media_id:
         raise ValueError(f"malformed mxc URI: {mxc_uri!r}")
     return server, media_id
-
-
-class CSApiEffectors:
-    """Concrete :class:`~onbot.reconciler.effectors.MatrixEffectors` backed by the CS API.
-
-    Replaces ``DryRunEffectors`` when the bot runs for real (Phase 3 deferral resolved).
-    """
-
-    def __init__(
-        self, client: ApiClientMatrix, *, media: MediaUploader | None = None, bot_id: str | None = None
-    ) -> None:
-        self.client = client
-        # The bot's MXID, needed to lock the marker of the rooms it creates (onbot.rooms.provision).
-        self._bot_id = bot_id
-        self._owns_media = media is None
-        if media is None:
-            # Local import avoids a module-level cycle (onbot.media imports ApiClientMatrix).
-            from onbot.media import MediaUploader
-
-            media = MediaUploader(client)
-        self._media = media
-
-    async def aclose(self) -> None:
-        if self._owns_media:
-            await self._media.aclose()
-
-    async def create_managed_room(self, spec: ManagedRoomSpec) -> str:
-        if self._bot_id is None:
-            raise RuntimeError("CSApiEffectors needs bot_id to create managed rooms")
-        return await create_managed_room(self.client, spec, bot_id=self._bot_id)
-
-    async def resolve_room_alias(self, alias: str) -> str | None:
-        return await self.client.resolve_room_alias(alias)
-
-    async def kick_user(self, room_id: str, user_id: str, reason: str | None = None) -> None:
-        await self.client.kick_user(room_id, user_id, reason)
-
-    async def get_room_power_levels(self, room_id: str) -> dict[str, Any]:
-        return await self.client.get_room_power_levels(room_id)
-
-    async def set_room_power_levels(self, room_id: str, power_levels: dict[str, Any]) -> None:
-        await self.client.set_room_power_levels(room_id, power_levels)
-
-    async def set_room_name(self, room_id: str, name: str) -> None:
-        await self.client.set_room_name(room_id, name)
-
-    async def set_room_topic(self, room_id: str, topic: str) -> None:
-        await self.client.set_room_topic(room_id, topic)
-
-    async def set_room_avatar(self, room_id: str, mxc_uri: str) -> None:
-        await self.client.set_room_avatar(room_id, mxc_uri)
-
-    async def avatar_image(self, url: str) -> SourceImage:
-        return await self._media.image(url)
-
-    async def upload_avatar(self, image: SourceImage) -> UploadedImage:
-        return await self._media.upload(image)
-
-    async def room_wears(self, room_id: str, digest: str) -> bool:
-        content = await self.client.get_room_state_event(room_id, "m.room.avatar") or {}
-        mxc = content.get("url")
-        return isinstance(mxc, str) and bool(mxc) and await self._media.holds(mxc, digest)
-
-    async def get_room_state(
-        self, room_id: str, event_type: str, state_key: str = ""
-    ) -> dict[str, Any] | None:
-        return await self.client.get_room_state_event(room_id, event_type, state_key)
-
-    async def get_room_state_event(
-        self, room_id: str, event_type: str, state_key: str = ""
-    ) -> dict[str, Any] | None:
-        return await self.client.get_room_state_event_with_sender(room_id, event_type, state_key)
-
-    async def put_room_state(
-        self, room_id: str, event_type: str, content: dict[str, Any], state_key: str = ""
-    ) -> None:
-        await self.client.put_room_state_event(room_id, event_type, content, state_key)
-
-    async def set_room_alias(self, alias: str, room_id: str) -> None:
-        await self.client.set_room_alias(alias, room_id)
-
-    async def get_room_account_data(
-        self, user_id: str, room_id: str, data_type: str
-    ) -> dict[str, Any] | None:
-        return await self.client.get_room_account_data(user_id, room_id, data_type) or None
-
-    async def put_room_account_data(
-        self, user_id: str, room_id: str, data_type: str, content: dict[str, Any]
-    ) -> None:
-        await self.client.set_room_account_data(user_id, room_id, data_type, content)
