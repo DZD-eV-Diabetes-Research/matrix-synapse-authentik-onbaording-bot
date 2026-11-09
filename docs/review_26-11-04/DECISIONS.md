@@ -284,3 +284,12 @@ New work (session S18):
 - W4R-06: an admin command to re-adopt a group room that lost its marker (for example
   `!room adopt <group> <room>`): allowlisted admins only, only rooms the bot created (D20), the bot
   writes its marker and reports.
+
+## D25 S18 confirmations (decided 2026-11-09)
+
+- A held repeated `!announce` can be confirmed or rejected only by the admin who sent it; it lapses
+  after 10 minutes.
+- `!room adopt` should also cover visitor lobbies whose marker was lost or rewritten (same rules:
+  allowlisted admins, bot-created rooms only per D20, refuse otherwise). Work for S14.
+- The S18 timings stay code constants: avatar re-check 24 h, duplicate window 60 s, confirm window
+  10 minutes, adopt wait 60 s.

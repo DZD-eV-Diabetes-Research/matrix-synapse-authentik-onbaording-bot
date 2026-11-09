@@ -20,7 +20,7 @@ Local `main` is ahead of `origin/main` (the maintainer pushes; last push was the
 | between | S16, CI1 | history scrub (force-pushed by the maintainer), shorter CI (D17) | first GitHub CI run green |
 | 2 | S11, S3, S4, W2F, W2R | HTTP layer, guard layers 1 and 2 with `!confirm <id>`, offboarding completeness (D7), D19 fixups (MAS 1.28 and Synapse 1.164 in the test stack, admin room on by default), wave 2 review fixups | 1130 passed |
 | 3 | S5, S6, S9, W3R | guard layer 3, room identity by creator plus locked marker (D20), user identity across renames (D8, D21), wave 3 review fixups | 1277 passed (before W3R; W3R's own full run on its branch: 1295 passed) |
-| 4 | S8, S7, S12, W4R (merged), S18 (running) | onboarding correctness, room repair, broadcast and admin room, wave 4 review fixups | after S7 and S8: 1385 passed (a47c0f1); after S12 and W4R: 1454 passed (5deb135) |
+| 4 | S8, S7, S12, W4R, S18 (merged) | onboarding correctness, room repair, broadcast and admin room, wave 4 review fixups | after S7 and S8: 1385 passed (a47c0f1); after S12 and W4R: 1454 passed (5deb135); S18 branch, code equal to main at b0aec61: 1502 passed |
 
 Status per session: the table in `SESSIONS.md`. Release notes: `CHANGELOG.md` (Unreleased) has a line
 for every merged session.
@@ -67,22 +67,25 @@ Also done: full integration run on main at 5deb135 (S12 and W4R together): 1454 
 Cold review of S12 plus W4R: 5 findings (2 medium, 3 low), no critical; added to S18 as W5R-01 to
 W5R-05 (see the S18 brief).
 
-Running: S18 (wave 4 follow-ups from D24 plus W5R) in its own worktree, branch
-`review/s18-followups` from 3d01196, stack instance 1.
+S18 merged (b0aec61): the D24 follow-ups plus W5R-01 to W5R-05. Its full run on the branch, with code
+identical to main: 1502 passed; the flaky deletion test passed 10 of 10 times. Unit and contract on
+main: 1413 passed. D25 records the S18 confirmations.
 
-Then: merge S18, full integration run, cold review of S18, then wave 5: S14 (docs, dead code,
-cleanup; also the integration suite speed-up from D17). S17 (bot-driven room upgrades, D20) is
-deferred: not before the next release.
+Running: cold review of S18 (`git diff 3d01196 b0aec61`), read-only agent.
 
-If this session stops before they finish: check `git branch` and `git worktree list` for
-`review/s18-*`, review it against its brief (including the W5R items) and merge per "How merging
-works".
+Then: fixups from that review if any (W6R, or fold them into S14), then wave 5: S14 (docs, dead code,
+cleanup, `!room adopt` for lobbies (D25), the integration suite speed-up from D17), then a last full
+integration run and cold review. S17 (bot-driven room upgrades, D20) is deferred: not before the next
+release.
+
+If this session stops before they finish: rerun the cold review of S18 if no W6R notes
+exist in `SESSIONS.md`, then start S14.
 
 ## Questions collected for the maintainer
 
 All answered on 2026-11-09: recorded in D13 (guard details), D21 (binding wins without MAS, done in
 W4R), D22 (S7 and S8 confirmations), D23 (rooms blocked by someone else are a hold, done in W4R) and
-D24 (S12 and W4R confirmations, new work in S18).
+D24 (S12 and W4R confirmations, new work in S18) and D25 (S18 confirmations).
 
 ## Maintainer to-dos outside the code
 

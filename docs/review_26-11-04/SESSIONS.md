@@ -636,9 +636,9 @@ the marker tests in `test_room_repair.py` use `SharedStateAdmin`.
 **From S18:** mention in the config descriptions of the group pk fields that every UUID form works
 (then `pdm run gen-config-docs`); `!pending` does not list held announcements;
 `WelcomeService._wears` and `ensure_bot_avatar._holds_same_bytes` could reuse `MediaUploader.holds`;
-the discovery poller's group re-check has no dedicated test. Constants that could become config if
-anyone asks: avatar re-check 24 h, duplicate window 60 s, confirm window 10 min, adopt wait 60 s.
-`!room adopt` covers group rooms only (lobbies need the manual marker restore).
+the discovery poller's group re-check has no dedicated test. The S18 timings stay constants (D25).
+Extend `!room adopt` to visitor lobbies (D25), with unit and integration tests, and update the
+troubleshooting section "A room lost its onbot marker".
 
 **From D17:** speed up the integration suite (about 20 minutes in CI): cache or reuse the stack start
 (Authentik dominates), run independent test files in parallel where the stack allows it.
