@@ -37,7 +37,7 @@ Start a session by pointing Claude at this file and the session ID, for example:
 | 7b | W2R | Wave 2 review fixups: guard fails closed, rejected batches end, ledger report, guard gaps | S | S3, S4 | done (merged in wave 2) |
 | 11a | W3R | Wave 3 review fixups: identity guess vs MAS owner, marker sender, upgrade claims, lock retry, batch expiry | S | S5, S6, S9 | done (merged in wave 3) |
 | 11b | W4R | Wave 4 review fixups: closed rooms, human-blocked rooms as hold (D23), lost notice boards, upkeep isolation, binding wins (D21) | S | S7, S8 | done (merged in wave 4) |
-| 14b | W6R | S18 review fixups: group pk forms everywhere, avatar refetch, adopt checks and lobbies, control room marker | M | S18 | open |
+| 14b | W6R | S18 review fixups: group pk forms everywhere, avatar refetch, adopt checks and lobbies, control room marker | M | S18 | done (merged in wave 4) |
 | 14a | S18 | Wave 4 follow-ups (D24) plus W5R review fixups: avatar re-check, sync scope re-check, duplicate announce guard, `!room adopt`, flaky deletion test, marker signing, UUID forms | M | S12, W4R | done (merged in wave 4) |
 | 4 | S3 | Guard layers 1 and 2, reconciler dry-run | M | S2 | done (merged in wave 2) |
 | 5 | S16 | Git history scrub | S | S0, no open branches | done (force-pushed 2026-11-06, new main 89afecf) |

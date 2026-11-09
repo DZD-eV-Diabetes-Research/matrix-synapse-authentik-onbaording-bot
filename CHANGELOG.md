@@ -11,6 +11,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **`!room adopt lobby <group pk> <room id or alias>` (review W6R, D25):** hands a visitor lobby whose
+  marker was removed or rewritten back to the bot, with the same rules as for group rooms (allowlisted
+  admins, rooms the bot created only, D20); refused when the group has no lobby in the configuration.
+- **The admin control room is repaired like the other managed rooms (review W6R-08):** a removed or
+  rewritten marker, a lowered marker lock and a removed alias are restored at startup and after every
+  pass, and reported once.
+- **`!pending` lists held repeated announcements (review W6R-04)** beside the guard's batches.
 - **`!room adopt <group pk> <room id or alias>` (review S18, W4R-06):** an allowlisted admin hands a
   group room that lost its marker, or carries one somebody else wrote, back to the bot. Only rooms the
   bot created (D20), only for a group it keeps a room for that has no other room; otherwise it refuses
@@ -76,6 +83,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   This `CHANGELOG.md`.
 
 ### Changed
+- **`!room adopt` checks what kind of room it takes (review W6R-05):** it refuses spaces, users' notice
+  boards and, as a group room, rooms with a lobby's `restricted` join rule. If the marker lock was
+  raised but writing the marker failed, the reply says so.
+- **Held announcement ids are matched in any case (review W6R-04)** like guard batch ids, and never
+  collide with an open batch id.
+- **The control room help text changed** (the `!room adopt [lobby]` line), so it is posted and pinned
+  once more after the upgrade.
 - **The same `!announce` twice within 60 seconds asks first (review S18, ONB-11):** the bot answers
   with an id; `!confirm <id>` from the same admin within 10 minutes sends it, `!reject <id>` drops it.
 - **A shutdown interrupts an announcement visibly (review S18, W5R-04):** an `!announce` arriving while
@@ -256,6 +270,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   troubleshooting.
 
 ### Fixed
+- **Group pks match in any UUID form everywhere (review W6R-01):** also in
+  `authentik_group_id_ignore_list`, `only_for_children_of_groups_with_uid` and `!lobby reopen`. Before,
+  the documented 32-hex example of the ignore list ignored nothing: the group got a room and its
+  members were invited. Hex-form keys of `per_authentik_group_pk_matrix_room_settings` now match where
+  they silently did not before, so a forgotten override there starts to apply.
+- **One download per picture (review W6R-02):** an avatar host whose bytes differ per request was
+  downloaded once per room and pass and never set; the image just fetched is now the one uploaded.
+- **The "shutting down, not sent" reply to `!announce` is posted (review W6R-03);** before, the second
+  stop cancelled it.
+- **Notice boards welcomed while the bot avatar could not be fetched get the picture once it can be
+  fetched (review W6R-07),** without a restart.
 - **A lost room DELETE no longer fails while Synapse still has the deletion scheduled (review S18):**
   the delete status is asked again on 404.
 - **A room that wore a picture from before image hashes were recorded gets the current picture when it
@@ -360,6 +385,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   model forbids unknown keys, so remove these two settings if present.
 
 ### Security
+- **The bot no longer re-signs control room marker content somebody above the marker lock wrote
+  (review W6R-08, D20).**
+- **A room avatar chosen by a human, possibly on another server, is no longer handed to every room that
+  wears the same picture (review W6R-06).**
 - **The sync scope's group filter is re-checked on each user object (review S18, SEC-09):** users
   whose own groups name none of `sync_only_users_of_groups_with_id` are left out and logged as an
   error. If Authentik stops naming groups, the empty scope is held by guard layer 1 and nobody is
