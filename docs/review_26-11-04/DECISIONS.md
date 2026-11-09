@@ -312,3 +312,18 @@ New work (session S18):
   startup with exit code 2 and a message naming the new field (old names are never reused with another
   meaning, so an old config can never be silently reinterpreted). Implementation: S14 part 2; the
   production template (`infra-node-conf-com`) must be updated in the same deployment.
+
+## D28 S14 part 2 confirmations (decided 2026-11-09)
+
+- The default topics (control room, `visitor_lobby_topic`, notice boards) lose their em dashes; the
+  one-time topic rewrite in existing rooms is accepted. Work for W8R.
+- Withdrawing the bot's grants in a switched-off lobby counts one guard action per withdrawal (N
+  global admins plus the close: N+1 actions against layer 2).
+- A failing control room command is not retried; the admin gets the "last command failed" note.
+- Stale space links are cleaned up only when the current link has to be written (plus the W8R-03
+  retry); the extra Authentik requests of the discovery poll are accepted (W8R-05 still trims the
+  unfiltered group listing).
+- Orchestrator call (conservative, W8R-02): the switched-off lobby withdrawal runs only when the bot
+  manages membership and levels at all (user sync on and identity available), like every other level
+  change.
+- Two configurations sharing one bot account and one group room are unsupported (W8R-08): document it.

@@ -53,6 +53,7 @@ Start a session by pointing Claude at this file and the session ID, for example:
 | 15 | S13 | Security hardening and config validation | M | S0 | done (merged in wave 1b) |
 | 16 | S15 | CI and release hardening | M | S0 | done (merged in wave 1b) |
 | 17 | S14 | Docs, dead code, cleanup | M | last | done (both parts merged in wave 5) |
+| 17a | W8R | S14 part 2 review fixups: blocked switched-off lobbies, space link cleanup, poll cost, avatar cache race, default topics | S | S14 | open |
 | 18 | S17 | Bot-driven room upgrades (D20) | M | S6, S7 | deferred: later iteration, not before the next release |
 
 S1 to S3 should land before the next release: together they close every known way the bot can
@@ -239,6 +240,38 @@ moved here from S14 because they sit in the same files.
   the lock wrote (D20). Build it from the marker the resolver trusts or a fresh one. While there
   (moved from S14, S7 leftover): give the control room the marker, alias and lock repair the other
   managed rooms have.
+
+---
+
+## W8R S14 part 2 review fixups
+
+From the cold review of S14 part 2 (`git diff e21df31 c5bd4cb`), 2026-11-09. No critical or high
+finding. Experiments (asserting the current behaviour): orchestrator scratchpad
+`review-s14p2/test_w8r_experiments.py` (exp1 to exp7).
+
+- **W8R-01 (medium):** `_converge_switched_off_lobbies` (`engine.py`) closes a switched-off lobby and
+  now withdraws the bot's grants there even when someone else blocked it (D23); the block check only
+  runs for wanted lobbies. Read the block once per switched-off lobby; skip close and withdrawal when
+  it is somebody else's block or the read fails (W4R-04 semantics); report once.
+- **W8R-02 (low, D28):** run that withdrawal only under the same `manage_members` condition as the
+  normal lobby levels step (user sync on, identity available).
+- **W8R-03 (low):** a failed stale space link removal is never retried (the cleanup only runs in the
+  pass that writes the current parent). Remember pending cleanups in process and retry on later
+  passes, or run the cleanup once per room per process start.
+- **W8R-04 (low):** the old space's `m.space.child` is removed whoever wrote it; remove only a child
+  the bot wrote (read with the sender).
+- **W8R-05 (low, performance):** the discovery poll's new power-level group listing is unfiltered and
+  embeds `users_obj` every 15 s; request `include_users=false` (or equivalent) and fingerprint only
+  `pk`, `attributes` and the member pk list.
+- **W8R-06 (low):** the listener's welcomed cache records the digest at the end of the welcome, not
+  the one the board got; a concurrent daily re-fetch hides a stale board. Record what the welcome
+  applied (or `None` when start and end differ).
+- **W8R-07 (low):** `NoticeBoardsUnreadable(str(exc))` quotes the raw `ApiError` (URL, unbounded
+  payload) into the `!room adopt` reply; use the bounded `describe_error`.
+- **W8R-08 (low, D28):** two configurations sharing one bot account and group room fight over space
+  links. Document as unsupported (deployment docs); no code change unless trivial and safe.
+- **D28 topics:** remove the em dashes from the default topics (control room, `visitor_lobby_topic`,
+  notice boards); note the one-time topic rewrite in the CHANGELOG proposal and the upgrade notes.
 
 ---
 
