@@ -54,3 +54,24 @@ async def test_list_groups_strips_inactive_and_filters_attributes() -> None:
 
     assert [g["pk"] for g in groups] == ["g1"]  # g2 lacks the attribute
     assert groups[0]["users_obj"] == [{"pk": 1, "is_active": True}]  # inactive removed
+
+
+@respx.mock
+async def test_list_groups_without_user_objects() -> None:
+    """W8R-05: `include_users=false` leaves out `users_obj` (Authentik sends null); `users` stays."""
+    group = {"pk": "g1", "attributes": {"chat-powerlevel": 50}, "users": [1, 2], "users_obj": None}
+    route = respx.get("https://authentik.test/api/v3/core/groups/").mock(
+        return_value=httpx.Response(200, json={"pagination": {"next": 0}, "results": [group]})
+    )
+    client = ApiClientAuthentik(url="https://authentik.test", api_key="k")
+    try:
+        groups = await client.list_groups(
+            filter_has_non_empty_attributes=["chat-powerlevel"], include_users=False
+        )
+        await client.list_groups()
+    finally:
+        await client.aclose()
+
+    assert route.calls[0].request.url.params["include_users"] == "false"
+    assert "include_users" not in route.calls[1].request.url.params  # the default asks for them
+    assert groups == [group]

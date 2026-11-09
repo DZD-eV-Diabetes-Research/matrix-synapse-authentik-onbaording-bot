@@ -320,3 +320,33 @@ async def test_a_user_joining_a_sync_group_triggers_a_reconcile() -> None:
         newcomer["groups_obj"] = [{"pk": "other"}, {"pk": "staff"}]
 
     assert await _polls_until_changed(authentik, join, _group_scoped_config())
+
+
+async def test_the_group_listings_leave_out_the_member_objects() -> None:
+    """W8R-05: every poll listed all groups with every member's user object embedded, although only
+    the members' pks are fingerprinted."""
+
+    class Recording(FakeAuthentik):
+        def __init__(self) -> None:
+            super().__init__()
+            self.group_kwargs: list[dict[str, Any]] = []
+
+        async def list_groups(self, **kwargs: Any) -> list[dict[str, Any]]:
+            self.group_kwargs.append(kwargs)
+            return await super().list_groups(**kwargs)
+
+    authentik = Recording()
+    poller = DiscoveryPoller(authentik, _config(), lambda: None)  # type: ignore[arg-type]
+
+    await poller.poll_once()
+
+    assert len(authentik.group_kwargs) == 2  # the room groups and the power level groups
+    assert all(kwargs.get("include_users") is False for kwargs in authentik.group_kwargs)
+
+
+def test_the_power_level_fingerprint_reads_only_the_member_pks() -> None:
+    group = {"pk": "mods", "attributes": {"matrix-power-level": 50}, "users": ["1"]}
+    with_objects = group | {"users_obj": [{"pk": "1", "last_login": "2026-11-09T10:00:00Z"}]}
+    assert fingerprint([], [], ATTR, power_level_groups=[group]) == fingerprint(
+        [], [], ATTR, power_level_groups=[with_objects]
+    )
