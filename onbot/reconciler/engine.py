@@ -23,6 +23,7 @@ from typing import Any, TypeVar
 
 from pydantic import ValidationError
 
+from onbot.admin.admins import in_groups, names_no_groups
 from onbot.clients.authentik import ApiClientAuthentik
 from onbot.clients.base import ApiError
 from onbot.clients.synapse_admin import ApiClientSynapseAdmin, RoomBlock
@@ -228,6 +229,8 @@ class ReconcilerEngine:
         # Matrix accounts that several Authentik users resolve to this pass: nobody joins, kicks,
         # changes the power level of, locks or erases them (D8, fail closed).
         self._held_mxids: frozenset[str] = frozenset()
+        # Authentik user pks the group re-check of the sync scope left out and logged (SEC-09).
+        self._group_scope_strays: set[str] = set()
         # Which room is which, by creator and marker (D20). Shared with the admin room and the welcome
         # flow in the service, so the room identities are read once per process.
         self.rooms = rooms or RoomIdentityResolver(
@@ -597,7 +600,45 @@ class ReconcilerEngine:
                     continue
                 seen_pks.add(user["pk"])
                 users.append(user)
+        if cfg.sync_only_users_of_groups_with_id:
+            users = self._recheck_group_scope(users, cfg.sync_only_users_of_groups_with_id)
         return users
+
+    def _recheck_group_scope(self, users: list[dict[str, Any]], group_pks: Sequence[str]) -> list[dict[str, Any]]:
+        """Keep the users whose own user object names a sync group (SEC-09); log the others as an error.
+
+        ``groups_by_pk`` is only a narrowing hint: an Authentik that does not know the filter drops it
+        and answers with every user. A user the filter should have excluded is therefore dropped here.
+        An Authentik that stops naming the groups in its user objects drops everybody; the empty scope
+        is then held and reported by the guard's plausibility check (D4 layer 1), never acted on.
+        """
+        members = in_groups(users, group_pks)
+        kept = {str(u["pk"]) for u in members}
+        strays = [u for u in users if str(u["pk"]) not in kept]
+        # Each stray is logged once while it stays one, not on every pass (the room sync and the
+        # lifecycle both ask); a user who is a member again is forgotten, so a relapse is logged.
+        self._group_scope_strays -= kept
+        fresh = {str(u["pk"]) for u in strays} - self._group_scope_strays
+        self._group_scope_strays |= fresh
+        if fresh:
+            names = [str(u.get("username", u.get("pk"))) for u in strays]
+            hint = (
+                " None of them names any group at all: does this Authentik leave the groups out of its "
+                "user objects?"
+                if all(names_no_groups(u) for u in strays)
+                else " Did the server ignore the groups_by_pk filter?"
+            )
+            listed = sorted(names)
+            log.error(
+                "Authentik answered the sync scope query with %d user(s) whose own user object names none "
+                "of the groups in sync_only_users_of_groups_with_id (%s): %s. They are left out of the sync "
+                "scope.%s",
+                len(strays),
+                ", ".join(group_pks),
+                ", ".join(listed[:10]) + (", ..." if len(listed) > 10 else ""),
+                hint,
+            )
+        return members
 
     async def _gather_group_room_maps(self) -> list[GroupRoomMap]:
         settings = self.config.sync_matrix_rooms_based_on_authentik_groups

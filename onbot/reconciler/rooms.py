@@ -20,7 +20,7 @@ from onbot.config import MatrixDynamicRoomSettings, OnbotConfig
 from onbot.identity import build_canonical
 from onbot.logging import get_logger
 from onbot.models import GroupRoomMap, RoomCreateAttributes
-from onbot.utils import get_nested_dict_val_by_path
+from onbot.utils import get_nested_dict_val_by_path, normalize_group_pk
 
 log = get_logger(__name__)
 
@@ -54,7 +54,12 @@ def resolve_room_settings(group_pk: str, config: OnbotConfig) -> MatrixDynamicRo
     is thrown away entirely (the config field's description promises the opposite).
     """
     defaults = config.matrix_room_default_settings
-    override = config.per_authentik_group_pk_matrix_room_settings.get(group_pk)
+    overrides = config.per_authentik_group_pk_matrix_room_settings
+    override = overrides.get(group_pk)
+    if override is None:
+        # The key may name the group's UUID in another form (32 hex digits, upper case; W5R-02).
+        wanted = normalize_group_pk(group_pk)
+        override = next((v for k, v in overrides.items() if normalize_group_pk(k) == wanted), None)
     if override is None:
         return defaults
     return MatrixDynamicRoomSettings.model_validate(

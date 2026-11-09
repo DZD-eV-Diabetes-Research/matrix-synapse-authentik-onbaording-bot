@@ -8,6 +8,7 @@ authenticated media). The ``Any``-as-sentinel hack is replaced with an explicit 
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Sequence
 from typing import Any, Final
 
@@ -59,3 +60,18 @@ def dict_has_nested_attr(
     if must_have_val:
         return bool(current)
     return True
+
+
+def normalize_group_pk(pk: object) -> str:
+    """An Authentik group pk in one comparable form (W5R-02).
+
+    Authentik's group pks are UUIDs. Its user objects name them hyphenated and in lower case, while
+    the configuration examples (and what the ``groups_by_pk`` filter accepts) also use the 32 hex
+    digit form without hyphens, or upper case. Every form of one UUID becomes the same string; a pk
+    that is not a UUID is kept as it is.
+    """
+    text = str(pk).strip()
+    try:
+        return str(uuid.UUID(text))
+    except ValueError:
+        return text

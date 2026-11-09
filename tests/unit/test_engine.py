@@ -670,7 +670,8 @@ class FakeLifecycle:
 
 
 _DISABLED = [
-    {"username": "dave", "pk": "dave-pk", "is_active": False},  # disabled, has a Matrix account
+    # disabled, has a Matrix account
+    {"username": "dave", "pk": "dave-pk", "is_active": False, "groups_obj": [{"pk": "g1"}]},
     {"username": "eve", "pk": "eve-pk", "is_active": False},  # disabled, no Matrix account
 ]
 

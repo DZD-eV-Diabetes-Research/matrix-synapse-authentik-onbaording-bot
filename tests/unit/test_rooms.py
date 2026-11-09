@@ -181,6 +181,17 @@ def test_per_group_override_inherits_unset_defaults() -> None:
     assert resolved.topic_prefix == "Group — "
 
 
+def test_per_group_override_matches_the_group_uuid_in_any_form() -> None:
+    """W5R-02: Authentik names a group hyphenated; the config may name it as 32 hex digits."""
+    cfg = _config(
+        per_authentik_group_pk_matrix_room_settings={
+            "1120A6E1124F309BBE96C8BE5FB09EAB": {"name_prefix": "[Public] "}
+        },
+    )
+    assert resolve_room_settings("1120a6e1-124f-309b-be96-c8be5fb09eab", cfg).name_prefix == "[Public] "
+    assert resolve_room_settings("2220a6e1-124f-309b-be96-c8be5fb09eab", cfg).name_prefix != "[Public] "
+
+
 # --- visitor lobby (ADR-0012) ---
 
 
