@@ -41,6 +41,7 @@ from tests.integration.test_guard import _bot_messages, _confirm, _proposed_batc
 pytestmark = pytest.mark.integration
 
 GROUP_MARKER = event_type_name(S.SERVER_NAME, OnbotRoomType.group_room)
+LOBBY_MARKER = event_type_name(S.SERVER_NAME, OnbotRoomType.visitor_lobby)
 JOIN_RULES = "m.room.join_rules"
 
 
@@ -556,6 +557,48 @@ async def test_room_adopt_hands_a_room_whose_marker_was_removed_back_to_the_bot(
     assert marker is not None and marker["sender"] == S.BOT_USER_ID
     assert marker["content"]["group_id"] == str(group["pk"])
     assert newcomer.mxid in await admin_client.list_room_members(room_id)
+
+
+async def test_room_adopt_lobby_hands_a_lobby_whose_marker_was_removed_back_to_the_bot(
+    make_config,
+    authentik_admin: S.AuthentikAdmin,
+    matrix_client: ApiClientMatrix,
+) -> None:
+    """D25: the lobby's marker goes while the bot is stopped; a fresh process skips the lobby (D20)
+    until an allowlisted admin runs ``!room adopt lobby``, here naming the group in the 32 hex digit
+    form (W6R-01). Then the next pass manages the lobby again."""
+    prefix = S.uniq("adoptlb")
+    group = _lobby_group(authentik_admin, prefix, lobby=True)
+    _a, admin = S.provision(authentik_admin, S.uniq("adoptlbadmin"))
+    config = _with_space(_config(make_config, prefix))
+    config.admin_room.enabled = True
+    config.admin_room.alias = S.uniq("onbot-admin")
+    config.admin_room.admin_user_ids = [admin.mxid]
+    await run_reconcile_once(config)
+    lobby_id = await _lobby_of(matrix_client, config, group)
+    await matrix_client.put_room_state_event(lobby_id, LOBBY_MARKER, {})  # removed while stopped
+
+    async with _service(config) as app:  # a fresh process: it no longer knows the lobby
+        await app.engine.reconcile_once()
+        assert lobby_id not in app.engine.active_lobbies
+        assert await _lobby_of(matrix_client, config, group) == lobby_id  # no second lobby
+        assert app.control_room is not None and app.control_room.room_id is not None
+        control_room = app.control_room.room_id
+        assert S.join_room_status(admin.access_token, control_room) == 200
+
+        command = f"!room adopt lobby {str(group['pk']).replace('-', '').upper()} {lobby_id}"
+        assert S.send_message_status(admin.access_token, control_room, command) == 200
+        await app.control_room.handle_sync(await matrix_client.sliding_sync(None))
+        await app.engine.reconcile_once()
+        assert lobby_id in app.engine.active_lobbies
+
+    replies = await _bot_messages(matrix_client, control_room)
+    assert any(r.startswith(f"Adopted {lobby_id} as the visitor lobby of group") for r in replies), replies
+    marker = await matrix_client.get_room_state_event_with_sender(lobby_id, LOBBY_MARKER)
+    assert marker is not None and marker["sender"] == S.BOT_USER_ID
+    assert marker["content"]["group_id"] == str(group["pk"])
+    rule = await matrix_client.get_room_state_event(lobby_id, JOIN_RULES) or {}
+    assert rule.get("join_rule") == "restricted"
 
 
 async def test_room_adopt_refuses_a_room_the_bot_did_not_create(
