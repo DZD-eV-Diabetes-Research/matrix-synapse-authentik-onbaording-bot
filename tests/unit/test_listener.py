@@ -421,3 +421,31 @@ async def test_a_new_bot_avatar_has_every_board_looked_at_again() -> None:
     await _pass(events, ALICE, BOB)
     await listener.process_queued()
     assert len(welcome.welcomed) == 4
+
+
+async def test_boards_welcomed_before_the_bot_avatar_could_be_fetched_get_it_once_it_can() -> None:
+    """W6R-07: the first digest to appear cleared nothing, so those boards waited for a restart."""
+    welcome = _RecordingWelcome()  # the bot avatar URL cannot be fetched yet: no digest
+    listener, events = _listener(welcome)
+    await _pass(events, ALICE, BOB)
+    await listener.process_queued()
+    assert sorted(welcome.welcomed) == [ALICE, BOB]
+
+    welcome.board_avatar = "red"  # fetched at last
+    await _pass(events, ALICE, BOB)
+    await listener.process_queued()
+    assert sorted(welcome.welcomed) == [ALICE, ALICE, BOB, BOB]
+
+    await _pass(events, ALICE, BOB)
+    await listener.process_queued()
+    assert len(welcome.welcomed) == 4
+
+
+async def test_a_bot_avatar_known_from_the_start_costs_no_second_look() -> None:
+    welcome = _RecordingWelcome()
+    welcome.board_avatar = "red"  # fetched by the startup step, before the first pass
+    listener, events = _listener(welcome)
+    for _ in range(2):
+        await _pass(events, ALICE, BOB)
+        await listener.process_queued()
+    assert sorted(welcome.welcomed) == [ALICE, BOB]

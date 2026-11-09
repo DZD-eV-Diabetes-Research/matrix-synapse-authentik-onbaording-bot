@@ -168,12 +168,19 @@ class OnboardingListener:
                 self._enqueue(mxid)
 
     def _notice_new_board_avatar(self) -> None:
-        """Forget who was welcomed when the bot avatar's picture changed, so every board gets it."""
+        """Forget who was welcomed when the bot avatar's picture changed, so every board gets it.
+
+        That includes the first picture known at all: boards welcomed while the bot avatar URL could
+        not be fetched got no picture, and would otherwise only get it after a restart (W6R-07).
+        """
         current = self.welcome.board_avatar_sha256()
-        if current is None:
+        if current is None or current == self._board_avatar:
             return
-        if self._board_avatar is not None and current != self._board_avatar:
-            log.info("the bot avatar changed; checking every notice board for the new picture")
+        if self._welcomed:
+            if self._board_avatar is None:
+                log.info("the bot avatar can be fetched now; checking every notice board for the picture")
+            else:
+                log.info("the bot avatar changed; checking every notice board for the new picture")
             self._welcomed.clear()
         self._board_avatar = current
 
