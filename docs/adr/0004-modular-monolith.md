@@ -1,7 +1,7 @@
-# ADR-0004 — Separate concerns as a modular monolith
+# ADR-0004: Separate concerns as a modular monolith
 
 - **Status:** Accepted (2026-06-19)
-- **Context:** Three bounded domains — **reconciler**, **onboarding**, **lifecycle** — with
+- **Context:** Three bounded domains (**reconciler**, **onboarding**, **lifecycle**) with
   different triggers and risk profiles, but operating on the same systems at modest scale.
 
 ## Decision
@@ -21,3 +21,10 @@ preserving separability.
 
 - Boundaries must be enforced by discipline (and structure), since nothing physically prevents
   cross-domain imports. The signal bus is the sanctioned coupling point.
+
+## Amendment (2026-11-09, review S14)
+
+The bus grew beyond the two signals named above; `Signal` in `onbot/events.py` lists them with their
+payloads. "New user" became `users_mapped` (who the pass mapped, consumed by onboarding and
+broadcasts). "Drift detected" was never emitted or consumed by anything and was removed. Most later
+signals route reports into the admin control room.

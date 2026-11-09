@@ -1,4 +1,4 @@
-# ADR-0005 — Quarantine the destructive lifecycle
+# ADR-0005: Quarantine the destructive lifecycle
 
 - **Status:** Accepted (2026-06-19)
 - **Context:** Account deactivate/delete (with cooldowns) is the scariest code in the repo: it
@@ -17,7 +17,7 @@ Isolate the lifecycle domain in its own module (`lifecycle/`) with:
 
 `lifecycle/accounts.py` ships:
 
-- A **pure state machine** (`decide_account_action`) — the only place the cooldown logic lives,
+- A **pure state machine** (`decide_account_action`), the only place the cooldown logic lives,
   exhaustively unit-tested. Stages: detect → `mark` (start clock, no destructive action) →
   `logout` after `deactivate_after_n_sec` (revoke all sessions, G9.2) → `erase` after a further
   `delete_after_n_sec` (deactivate account + optional media, G9.4/G9.5). A user who reappears in
@@ -30,7 +30,7 @@ Isolate the lifecycle domain in its own module (`lifecycle/`) with:
   destructive action is written to the dedicated `onbot.lifecycle.audit` log channel instead of
   executed. Operators opt in explicitly (G12.2).
 - **No database (ADR-0001):** the per-user ledger is one versioned blob in the bot's Matrix account
-  data, keyed by MXID — decoupled from the onboarding DM.
+  data, keyed by MXID, decoupled from the onboarding DM.
 - **Scoped orphan detection:** the reconciler only feeds the manager MXIDs that map to a *disabled*
   Authentik user and that already have a Matrix account; the bot user and ignore lists (G12.1) are
   excluded, so the destructive path can never touch unrelated admin/service accounts. (Superseded
@@ -41,18 +41,18 @@ Isolate the lifecycle domain in its own module (`lifecycle/`) with:
 The live Synapse + MAS + Authentik harness (`tests/integration/`) answered the open question. When an
 Authentik user is disabled **upstream**:
 
-1. **Existing Matrix sessions persist.** MAS does **not** propagate the upstream disable — a token
+1. **Existing Matrix sessions persist.** MAS does **not** propagate the upstream disable: a token
    minted before the disable keeps passing `/whoami` indefinitely. (No automatic session revocation
    or account lock.)
 2. **New logins are blocked.** Authentik denies the disabled user at its auth flow
    (`ak-stage-access-denied`), so MAS can never mint a *new* session for them.
 3. **The Synapse admin API cannot revoke a MAS session.** Deleting the user's devices *and*
-   `POST /_synapse/admin/v1/deactivate` both leave the MAS-issued token valid — Synapse delegates
+   `POST /_synapse/admin/v1/deactivate` both leave the MAS-issued token valid: Synapse delegates
    token validation to MAS, which still considers the session active. Only **MAS** can revoke it
    (`POST /api/admin/v1/users/{id}/lock` or `/deactivate`; equivalently `mas-cli manage
    kill-sessions`/`lock-user`).
 
-**Conclusion — this module is the enforcement path, not a redundant backstop.** Because existing
+**Conclusion: this module is the enforcement path, not a redundant backstop.** Because existing
 sessions survive an upstream disable, onbot is the *only* thing that revokes them, and it must do so
 through MAS. The Synapse-admin effectors are insufficient under the MAS topology.
 
@@ -121,7 +121,8 @@ decision rules are now:
   goes into the audit line, so the Synapse fallback under MAS can no longer claim a revocation. A
   startup step logs the offboarding setup and asks the homeserver (`/_matrix/client/v1/auth_metadata`)
   whether it delegates logins; MAS-backed without `mas_admin` is logged as an error and emitted as
-  `lifecycle_attention`. Whether onbot should refuse the fallback under MAS outright is open.
+  `lifecycle_attention`. Whether onbot should refuse the fallback under MAS outright was open
+  then; review W2F decided it (D19, see the update below).
 - **Timing (LIV-03).** Synapse caches MAS token introspection for about two minutes, so a lock or an
   unlock reaches tokens in use only then; the audit line is immediate and says so.
 - **Media in pages (LIF-12).** Synapse deletes 100 files per request; erasure loops (50 requests per
@@ -140,3 +141,19 @@ decision rules are now:
 - Under MAS, configure `mas_admin` or **lifecycle enforcement is a no-op against live sessions**
   (the Synapse-admin path cannot end them; since S4 the startup check and the audit lines say so). The module only ever gives access back by
   lifting a lock it set itself, for a user positively active and in scope, and never in dry-run.
+
+## Implementation update (reviews W2F to S9, 2026-11-06)
+
+- **No fake offboarding under MAS (W2F, D19, LIF-09).** On a homeserver that delegates logins to MAS
+  but without `mas_admin`, onbot refuses to lock or erase through the Synapse fallback, logs it at
+  ERROR and reports it once in the admin room. Disabled users are still marked, so the locks follow
+  once `mas_admin` is configured.
+- **Test stack (D19).** The integration stack runs MAS 1.28.0, which has the session finish
+  endpoints and `skip_erase`; the MAS 0.14.1 notes above describe the older stack. The capability
+  check at runtime stays.
+- **Guard (S3, S5, D4, D13).** Locks and erasures of a pass go through the destructive-action guard:
+  an implausible Authentik answer or more than the per-pass limit pauses them, and erasures from
+  `confirm_irreversible_actions_from` on wait for `!confirm <id>` in the admin room.
+- **Identity (S9, D8, D21).** The `authentik pk -> MXID` binding is resolved through MAS upstream
+  links when `mas_admin` is set; renames and conflicts are reported, and a conflicting account is
+  neither locked nor erased.

@@ -1,36 +1,36 @@
-# Onbot — planned work
+# Onbot: planned work
 
-Two self-contained work packages, each written as a cold-start prompt for its own session. They
-touch disjoint files and can be done in either order, though **Session A first** is recommended:
-it settles what the per-user bot room *is* (a read-only notice board), which is the thing Session B
-broadcasts into.
+Work packages written as cold-start prompts, one session each. **All five (R, A, B, C, D) are done**
+and kept below as the record of what was asked for and decided. The one piece not built is Session
+A's `onbot recreate-dm-rooms` migration, which moved to [Deferred](#deferred).
 
-Read `docs/adr/` and `docs/project/BATTLE_PLAN.md` before starting either one — this codebase has
-explicit architectural decisions and both packages brush against them.
-
-**Do Session R (room-version readiness) first.** It is foundational: Session A's migration and
-Session D's lobby both depend on the bot reading power levels and room IDs correctly under the room
-version current Synapse now creates by default.
+Fixes from the 2026-11-04 code review are planned in
+[`docs/review_26-11-04/SESSIONS.md`](docs/review_26-11-04/SESSIONS.md); small known defects live in
+[`issues.md`](issues.md). Read `docs/adr/` before starting new work: this codebase has explicit
+architectural decisions.
 
 ---
 
-## Session R — make the whole bot room-version-12 ready
+## ~~Session R~~: done: make the whole bot room-version-12 ready
+
+**Shipped in 0.0.5.** See [ADR-0011](docs/adr/0011-room-version-12.md) and the setting
+`synapse_server.room_version`. The section below is kept as the record of what was asked for.
 
 Not tied to any one feature. This is due because the ecosystem moved: the Matrix spec now says servers
 SHOULD use **room version 12** as the default when creating rooms, so a current Synapse already hands
-the bot v12 rooms — through federation, through rooms an admin made by hand, and through the bot's own
+the bot v12 rooms, through federation, through rooms an admin made by hand, and through the bot's own
 `createRoom` calls, which inherit the server default. The bot has code that silently assumes the older
 shape. This session finds and fixes all of it, once, for the whole project.
 
-Verify every fact below against the spec before coding — `https://spec.matrix.org/latest/rooms/v12/`
-and the room-versions index — rather than trusting this summary.
+Verify every fact below against the spec before coding, `https://spec.matrix.org/latest/rooms/v12/`
+and the room-versions index, rather than trusting this summary.
 
 ### What v12 changes that the bot cares about
 
 1. **Room creators have an infinite, immutable power level, and do not appear in
    `m.room.power_levels`.** The user who sent `m.room.create`, plus anyone in the create event's
    `additional_creators` array, outranks every explicit power level and cannot be named in a
-   `m.room.power_levels` event at all — the authorization rules reject such an event. Consequence for
+   `m.room.power_levels` event at all, the authorization rules reject such an event. Consequence for
    this bot, which is the creator of every room it makes: **the bot is no longer in the `users` map of
    its own rooms.** Any logic that fetches the bot's own level from `power_levels` and compares now
    reads the bot as absent, i.e. as `users_default` (typically 0), and draws the wrong conclusion.
@@ -38,11 +38,11 @@ and the room-versions index — rather than trusting this summary.
 2. **Room IDs are now the hash of the create event, with no `:domain` component**
    (e.g. `!Nhcu5BS-UMnFX7hBVfVSoXiD7OgH6iRT-xyIuqDnpYQ`). Any code that splits a room ID on `:` to
    recover a server name breaks. Room *aliases* still carry a domain (`#name:server`); room *IDs* no
-   longer do. The distinction matters — fixing the wrong one reintroduces the bug.
+   longer do. The distinction matters, fixing the wrong one reintroduces the bug.
 
 3. State resolution iterated again (v2.1). Not bot-visible; note it and move on.
 
-### The audit — the whole codebase, not one module
+### The audit: the whole codebase, not one module
 
 * **Every read of `m.room.power_levels`.** Start from `onbot/clients/matrix.py`
   (`get_power_levels`/`set_power_levels`) and follow callers: the reconciler's power-level pass
@@ -50,7 +50,7 @@ and the room-versions index — rather than trusting this summary.
   (`onbot/rooms/admin.py`, `onbot/onboarding/notice_board.py`), and Session A's planned DM self-heal
   and `recreate-dm-rooms` predicate. Anywhere the code asks "what is the bot's level here?" or "is this
   user's level ≥ the bot's?", teach it that a creator (the bot, and anyone in `additional_creators`)
-  sits above the lattice and is absent from the map by design — not that an absent user is powerless.
+  sits above the lattice and is absent from the map by design, not that an absent user is powerless.
 
 * **Every parse of a room ID.** Grep for `":"` splits and `.split(":")` over values that are room IDs
   (as opposed to aliases or MXIDs, which keep their domain). Begin at `onbot/identity.py`, which
@@ -63,14 +63,14 @@ and the room-versions index — rather than trusting this summary.
 
 * **`createRoom` room-version handling.** Add one server-wide config field for the room version, unset
   by default so rooms inherit the server's own default (now v12). It exists for the operator whose
-  Synapse is too old, and to let a test force a specific version. Do **not** pin a number in code —
+  Synapse is too old, and to let a test force a specific version. Do **not** pin a number in code:
   pinning freezes the bot behind the ecosystem.
 
-### The opportunity — say this out loud, it changes Session A
+### The opportunity: say this out loud, it changes Session A
 
 Once the bot is the infinite-power *creator* of the rooms it makes, the failure mode that Session A's
-entire destructive `recreate-dm-rooms` migration exists to repair — a DM user who ended up at power
-level 100, equal to the bot, whom the bot then cannot demote — **cannot happen in any room created
+entire destructive `recreate-dm-rooms` migration exists to repair, a DM user who ended up at power
+level 100, equal to the bot, whom the bot then cannot demote, **cannot happen in any room created
 after the cutover.** The creator's power is unmatchable by construction. Session A's migration does not
 disappear (rooms made before the cutover, under `trusted_private_chat`, still need it) but it shrinks
 from a permanent feature to a one-shot cleanup. Sequence Session R before Session A so Session A can be
@@ -86,8 +86,8 @@ written against the smaller problem.
   (asserting the bot is still treated as authoritative), and a v12 room ID with **no** `:domain`
   (asserting nothing tries to extract a server name from it).
 * The integration Synapse bumped to a v12-defaulting release, and the existing suite green against it.
-* A short ADR or an amendment to an existing one recording the v12 assumptions the bot now makes —
-  creator-as-top-of-lattice and domainless room IDs — so the next person to touch power-level code
+* A short ADR or an amendment to an existing one recording the v12 assumptions the bot now makes:
+  creator-as-top-of-lattice and domainless room IDs, so the next person to touch power-level code
   does not reintroduce the "absent means powerless" bug.
 
 ### Decisions already made
@@ -100,10 +100,17 @@ written against the smaller problem.
 
 ---
 
-## Session A — the bot's DM room becomes a read-only notice board
+## ~~Session A~~: done except the migration: the bot's DM room becomes a read-only notice board
+
+**Shipped in 0.0.2:** items 1, 2, 3 and 5 below (the `private_chat` room with the power-level
+override, the force-join recorded as `force_joined_at`, name, topic and avatar, and the power-level
+self-heal), plus the troubleshooting note on pre-existing rooms. **Not built:** item 4, the
+`onbot recreate-dm-rooms` migration. It moved to [Deferred](#deferred); `docs/troubleshooting.md`
+describes the manual way (delete the room, the bot opens a new one). The section below is kept as
+the record of what was asked for.
 
 Covers the old todo items *"Bot room read only for users"* and *"User needs to accept bot room
-invitation — can we force the user into the room?"*. They are one change: both rewrite the same
+invitation, can we force the user into the room?"*. They are one change: both rewrite the same
 `createRoom` call and the same `DirectRoomState` schema, and both need the same migration for rooms
 that already exist.
 
@@ -135,10 +142,10 @@ Build the power-level content in a small pure function so it can be unit-tested 
 
 After `create_direct_message_room` returns, call `admin.add_user_to_room(room_id, mxid)`. This works
 on an invite-only room because the calling admin (the bot) is in the room and may invite. `WelcomeService`
-does not currently hold a `ApiClientSynapseAdmin` — thread one in from `build_app()` in `onbot/app.py`.
+does not currently hold a `ApiClientSynapseAdmin`, thread one in from `build_app()` in `onbot/app.py`.
 
 Gate it on a new config flag (`force_join_onboarding_room`, default `true`), and fall back to leaving
-the plain invite standing if the join returns 403/404 — log a warning, do not raise.
+the plain invite standing if the join returns 403/404, log a warning, do not raise.
 
 Join **exactly once, at room creation**, and record it in `DirectRoomState` as `force_joined_at:
 float | None`. Do not re-join on subsequent welcome calls: a user who deliberately leaves the room
@@ -157,21 +164,21 @@ from new config fields with sensible defaults, and reuse the existing avatar plu
 `trusted_private_chat` gave every existing DM user power level 100, the same as the bot. Matrix
 forbids changing a power-level entry greater than or equal to your own, so **the bot cannot demote
 them**, and it cannot raise itself past 100 because nobody outranks it. Synapse's `make_room_admin`
-does not help; it also tops out at 100. Do not waste time trying — verify the rule in the spec and
+does not help; it also tops out at 100. Do not waste time trying, verify the rule in the spec and
 move on.
 
 The only migration is to destroy and recreate. Add `onbot recreate-dm-rooms` to `onbot/cli.py`:
 
 * read the bot's `m.direct` account data;
 * for each room, read `m.room.power_levels` and select the rooms where the user's level is >= the
-  bot's — those are the legacy ones. Skip the rest, so the command is idempotent and re-runnable;
+  bot's, those are the legacy ones. Skip the rest, so the command is idempotent and re-runnable;
 * `--dry-run` (default) prints what it would do; require an explicit `--yes` to act;
 * for each selected room: `admin.delete_room(room_id, purge=True)`, drop the `m.direct` entry, and
   let the normal welcome flow recreate it on the next reconcile.
 
 Recreation re-sends the welcome messages, because the per-message content hashes in
 `welcome_messages_sent` live in the state of the room being destroyed. That is expected. Say so in
-the command's help text and in the docs — an operator running this on a live server will page every
+the command's help text and in the docs, an operator running this on a live server will page every
 user on it.
 
 **5. Self-healing.**
@@ -179,7 +186,7 @@ user on it.
 `welcome_user()` already reads the DM's onbot state event on every call. Along that path, also read
 `m.room.power_levels` and re-apply the desired content when it has drifted, skipping the write when
 it already matches. This is cheap (one state read the flow was making anyway) and it repairs a room
-where somebody hand-edited the levels — but it can only repair rooms where the bot still outranks
+where somebody hand-edited the levels, but it can only repair rooms where the bot still outranks
 the user, i.e. rooms created after this change.
 
 ### Definition of done
@@ -201,7 +208,7 @@ the user, i.e. rooms created after this change.
 
 ---
 
-## ~~Session B~~ — done: `onbot broadcast` and the `#onbot-admin` control room
+## ~~Session B~~: done: `onbot broadcast` and the `#onbot-admin` control room
 
 **Shipped.** See `docs/adr/0010-admin-control-room.md`. Three commits: the broadcast CLI, the
 `SyncPump` refactor, then the control room. The section below is kept as the record of what was
@@ -215,14 +222,14 @@ independently shippable; the control room second, on top of the same service.
 The control room is deliberately built as **general admin surface**, not as a broadcast feature with
 a room bolted on. Broadcast is its first command; there will be others.
 
-### Commit 1 — `BroadcastService` and the CLI
+### Commit 1: `BroadcastService` and the CLI
 
 The bot's `m.direct` account data *is* the list of every user's bot room. That is the fan-out target,
 and it needs no new bookkeeping.
 
 Add `onbot/admin/broadcast.py` with a `BroadcastService` that reads `m.direct`, sends the message to
 every room as `m.notice` (the convention for bot-originated messages; `send_text_message` in
-`onbot/clients/matrix.py` currently hardcodes `m.text` — generalise it with a `msgtype` parameter
+`onbot/clients/matrix.py` currently hardcodes `m.text`, generalise it with a `msgtype` parameter
 rather than adding a near-duplicate method), and returns a result object carrying the counts of rooms
 sent, rooms failed, and the failures themselves.
 
@@ -232,14 +239,14 @@ or wanted: anyone who can exec into the container can already read the bot's acc
 Synapse rate-limits message sends per user, so a fan-out across a few hundred rooms will start
 returning 429. Three things:
 
-* the shared `BaseApiClient` already retries 429 via tenacity — check `RETRYABLE_STATUS_CODES` in
+* the shared `BaseApiClient` already retries 429 via tenacity, check `RETRYABLE_STATUS_CODES` in
   `onbot/clients/base.py` and confirm the backoff is sane for this, rather than assuming;
 * bound the send concurrency (a semaphore, not an unbounded `gather`);
 * on startup, best-effort call Synapse's `override_ratelimit` admin endpoint for the bot user
-  (`POST /_synapse/admin/v1/users/<user_id>/override_ratelimit` — verify the verb against the Synapse
+  (`POST /_synapse/admin/v1/users/<user_id>/override_ratelimit`: verify the verb against the Synapse
   admin API docs before implementing). Never let its failure block startup; the bot works without it.
 
-### Commit 2 — the control room
+### Commit 2: the control room
 
 **The sync refactor comes first.** `OnboardingListener.run()` in `onbot/onboarding/listener.py` owns
 the sliding-sync loop today and only extracts `m.room.member` events. The control room needs
@@ -267,10 +274,10 @@ Write a unit test that feeds the same `SyncResult` twice and asserts one send.
 configurable), marked with a new `OnbotRoomType.admin_room` state event so it is recognisably
 bot-managed, unencrypted (ADR-0009), created with `m.federate: false`, and with power levels that let
 the bot (100) manage state while members can talk (`events_default: 0`, `state_default: 100`,
-`invite: 100`, `kick: 100`). Invite the admins — no force-join, they are humans.
+`invite: 100`, `kick: 100`). Invite the admins, no force-join, they are humans.
 
 **Who is an admin.** An explicit MXID allowlist in config (`admin_room.admin_user_ids`). Deriving it
-from Authentik superusers is tempting — the reconciler already computes `is_superuser` — but an
+from Authentik superusers is tempting, the reconciler already computes `is_superuser`, but an
 allowlist is the safer default for a capability that reaches every user on the server. Note the
 derived option in the config field's description as a possible future addition; do not build it now.
 
@@ -283,7 +290,7 @@ power levels are the fence.
 the room without accidentally paging everyone. `!announce <text>` fans out via `BroadcastService`;
 the bot replies in the control room with `sent to 42 rooms, 1 failed` and names the failures. Also
 add `!help` (prints the same text as the pinned message) and `!status` (bot version, last reconcile
-time, number of managed DM rooms). Keep parsing in a pure function with its own unit tests — do not
+time, number of managed DM rooms). Keep parsing in a pure function with its own unit tests, do not
 regex inside the handler.
 
 Ignore events sent by the bot itself, or the reply to `!announce` will be re-parsed.
@@ -291,7 +298,7 @@ Ignore events sent by the bot itself, or the reply to `!announce` will be re-par
 **Pinned documentation.** On startup, post a help message listing the available commands and pin it
 via the `m.room.pinned_events` state event. `send_text_message` returns the event id, so pinning is a
 `put_room_state_event` away. Make it idempotent: store a hash of the help text in the room's onbot
-state event and only re-post + re-pin when the text changes — otherwise every restart posts another
+state event and only re-post + re-pin when the text changes, otherwise every restart posts another
 copy. This mirrors the per-message hashing that `welcome.py` already does for welcome messages; read
 that first and follow the same shape.
 
@@ -319,7 +326,7 @@ Set the room topic to a one-line version of the same thing, so it is visible wit
 
 ---
 
-## ~~Session C~~ — done: bot admins may also come from an Authentik group
+## ~~Session C~~: done: bot admins may also come from an Authentik group
 
 **Shipped.** `onbot/admin/admins.py` holds the pure `resolve_admin_mxids()` and the `AdminResolver`
 that caches it; `ControlRoomHandler` and `AdminRoomProvisioner` both take the resolver instead of
@@ -329,7 +336,7 @@ refresh TTL **reuses `server_tick_rate_sec`** rather than adding a knob, on the 
 already the operator's answer to "how stale may the bot's view of Authentik be?".
 
 Sessions A and B are merged. This is a follow-up to Session B, and it partially reverses one of its
-decisions, so read `docs/adr/0010-admin-control-room.md` first — you will be amending it.
+decisions, so read `docs/adr/0010-admin-control-room.md` first, you will be amending it.
 
 ### Where things stand
 
@@ -342,7 +349,7 @@ into `self.admins`, which `_handle_message()` then checks the sender against.
 Keeping the list by hand is the friction we are removing. Authentik already knows who the
 administrators are, and `ApiClientAuthentik.list_users(filter_groups_by_pk=...)` already returns a
 group's members. `onbot.identity.compute_mxid()` already maps an Authentik user to the MXID their
-account will have under MAS — it is the same mapping the reconciler uses, so it cannot drift.
+account will have under MAS, it is the same mapping the reconciler uses, so it cannot drift.
 
 ### What to build
 
@@ -354,7 +361,7 @@ the existing `admin_user_ids`, which stays and is still the right home for Matri
 Authentik has never heard of (a break-glass admin, another bot).
 
 `admin_user_ids` keeps its meaning; only its docstring changes, since it is no longer the only
-source. The generic name — `admin_authentik_group_pk` — was rejected on purpose: the field says what
+source. The generic name, `admin_authentik_group_pk`, was rejected on purpose: the field says what
 membership *grants*, because a reader of `config.yml` needs to see the capability, not the plumbing.
 
 **Do not add a fallback to Authentik superusers.** An empty union means *nobody may command the bot*;
@@ -363,7 +370,7 @@ This is the whole point: `!announce` reaches every employee, and people are made
 superusers to administer an identity provider, not to page the company. A superuser fallback would
 make the most dangerous capability in the bot the implicit default, and would silently extend it to
 whoever is granted superuser next month. Say this in the config field's description, and record it in
-the ADR amendment below — otherwise somebody will helpfully add the fallback back.
+the ADR amendment below, otherwise somebody will helpfully add the fallback back.
 
 **2. Resolution is pure; fetching is not.**
 
@@ -371,13 +378,13 @@ Add `onbot/admin/admins.py` with a pure `resolve_admin_mxids(config, group_membe
 taking the raw Authentik user dicts and returning the union. It must:
 
 * map each member with `compute_mxid()`, using the same `authentik_username_mapping_attribute` the
-  reconciler uses. `compute_mxid` raises `KeyError` on an unmappable user — **catch it, log a
+  reconciler uses. `compute_mxid` raises `KeyError` on an unmappable user, **catch it, log a
   warning, and drop that user.** A user we cannot map deterministically must never be granted
   anything, and must never take the bot down either;
 * drop users on `authentik_user_ignore_list` (matched on the raw `username`, as everywhere else). A
   service account someone parked in the admin group is not an admin. `matrix_user_ignore_list` does
-  *not* apply here — those are the Matrix-only accounts `admin_user_ids` exists for;
-* leave inactive users out — `list_users` already defaults to `filter_is_active=True`, so let it, but
+  *not* apply here, those are the Matrix-only accounts `admin_user_ids` exists for;
+* leave inactive users out, `list_users` already defaults to `filter_is_active=True`, so let it, but
   assert it in a test so a change to that default cannot silently re-admit a disabled account.
 
 Around it, an `AdminResolver` holding the Authentik client and a cached set, refreshed on demand.
@@ -385,10 +392,10 @@ Around it, an `AdminResolver` holding the Authentik client and a cached set, ref
 **3. The set is now dynamic, and that is the hard part.**
 
 Removing someone from the Authentik admin group must revoke their command access **without a bot
-restart** — otherwise this is worse than the hand-maintained list it replaces, because it *looks*
+restart**, otherwise this is worse than the hand-maintained list it replaces, because it *looks*
 revocable. So `ControlRoomHandler` may no longer freeze `self.admins` at construction: it consults
 the resolver when authorising, and the resolver refreshes on a TTL (a config field, or reuse
-`server_tick_rate_sec` — pick one and say why in a comment).
+`server_tick_rate_sec`, pick one and say why in a comment).
 
 Authorise against a set that is at most one TTL stale. Do not authorise against a set that is one
 process-lifetime stale.
@@ -397,12 +404,12 @@ Note in passing what this does *not* do: a demoted admin stays in the control ro
 read it. Kicking them is a separate decision. Do not make it here; leave a comment saying so.
 
 `AdminRoomProvisioner` invites the resolved union too, so a new group member finds the room waiting.
-It runs on startup only, which is fine — an admin added later is invited on the next restart, and can
+It runs on startup only, which is fine, an admin added later is invited on the next restart, and can
 be invited by hand meanwhile. Do not turn the provisioner into a loop for this.
 
 **4. A failure to reach Authentik must not open the gate.**
 
-If the refresh raises, keep the previous set and log — never fall back to an empty set that refuses
+If the refresh raises, keep the previous set and log, never fall back to an empty set that refuses
 everyone (a self-inflicted outage of the control room) and never to a permissive one. On the very
 first resolution, before any successful fetch, the set is `admin_user_ids` alone: the explicit list
 is the floor, and it does not depend on Authentik being up.
@@ -420,7 +427,7 @@ is the floor, and it does not depend on Authentik being up.
   configured group runs `!announce` and it lands in a provisioned user's welcome room; the same user,
   removed from the group, is refused after a refresh.
 * **Amend `docs/adr/0010-admin-control-room.md`.** Its "Decisions" section says the allowlist is
-  explicit and not derived from Authentik; that is now half-wrong. Do not rewrite history — add a
+  explicit and not derived from Authentik; that is now half-wrong. Do not rewrite history, add a
   dated amendment recording that an Authentik *group* is an accepted second source (it is still an
   explicit opt-in: somebody must create the group and put people in it), that deriving from
   *superusers* remains rejected, and why the two are not the same argument.
@@ -433,10 +440,13 @@ is the floor, and it does not depend on Authentik being up.
 
 ---
 
-## Session D — lobby rooms: an open front door in front of a closed group room
+## ~~Session D~~: done: lobby rooms, an open front door in front of a closed group room
+
+**Shipped in 0.0.5.** See [ADR-0012](docs/adr/0012-lobby-rooms.md) and the `visitor_lobby_*`
+settings. The section below is kept as the record of what was asked for.
 
 The wanted semantics, in one sentence: the group room `#duesseldorf` stays exactly as private as it
-is today, and beside it the bot maintains a second room — its **lobby** — which every member of the
+is today, and beside it the bot maintains a second room, its **lobby**, which every member of the
 parent space can find and join of their own accord, and which nobody is ever kicked out of.
 
 This replaces an earlier draft of this section that proposed making the group room itself visitable.
@@ -466,12 +476,12 @@ the private room's ID, and space state is readable by any space member; likewise
 `#duesseldorf:server` to a room ID through the directory. What a non-member cannot do is join it,
 read its history, see its name or topic, or enumerate its members. Element will not show it to them.
 A curious person with `curl` can learn that a room with that ID exists. If that is unacceptable the
-answer is not this feature, it is a second space — say so plainly and do not try to paper over it.
+answer is not this feature, it is a second space, say so plainly and do not try to paper over it.
 
 *(Worth ten minutes during implementation: check whether Element still files a room under its space
 when only the room's `m.space.parent` is set and the space's `m.space.child` is omitted. If it does,
 private group rooms could skip the child event and stop leaking even their IDs. Treat this as
-unverified — do not build on it without testing both Element Web and Element X.)*
+unverified, do not build on it without testing both Element Web and Element X.)*
 
 ### Naming the thing
 
@@ -480,18 +490,18 @@ door*, not *these are more people*. `& Friends` and `& Visitors` were the first 
 fail on that: the ampersand reads as a statement about membership ("Düsseldorf, and also some
 friends"), which invites exactly the confusion where nobody knows which of the two rooms to post in.
 
-Default to **`" (Lobby)"`**, alias suffix **`"-lobby"`** — `Düsseldorf (Lobby)` / `#duesseldorf-lobby`.
+Default to **`" (Lobby)"`**, alias suffix **`"-lobby"`**, `Düsseldorf (Lobby)` / `#duesseldorf-lobby`.
 A lobby is unambiguously the room you pass through, it is understood in English and German alike, and
 it carries no promise that anything happens there. Ship the suffix as a config field, obviously, and
 name these alternatives in its description so the operator picks deliberately:
 
-* `" (Foyer)"` — the same idea, reads more naturally to a German-speaking org, and is what a DZD
+* `" (Foyer)"`, the same idea, reads more naturally to a German-speaking org, and is what a DZD
   reader would probably choose;
-* `" (Open)"` — shortest, and says the property rather than the metaphor;
-* `" & Guests"` — if you want the room to feel like the group hosting, not the group hiding.
+* `" (Open)"`, shortest, and says the property rather than the metaphor;
+* `" & Guests"`, if you want the room to feel like the group hosting, not the group hiding.
 
 Set the lobby's **topic** from a template, defaulting to something that states the arrangement in the
-one place every visitor looks: *"Open lobby for the Düsseldorf group — anyone in the space may join.
+one place every visitor looks: *"Open lobby for the Düsseldorf group, anyone in the space may join.
 The group's working room is private."* A visitor who reads that never wonders why the room is quiet.
 
 Note for whoever implements the alias: `compute_room_attributes()` strips dashes
@@ -503,7 +513,7 @@ a problem.
 ### What this buys, structurally
 
 Nothing about the group room changes. It keeps its join rule, its history, its encryption, and its
-membership — which stays a pure projection of the Authentik group, kicks and all. ADR-0002 survives
+membership, which stays a pure projection of the Authentik group, kicks and all. ADR-0002 survives
 intact for it.
 
 The lobby is **add-only**. Nobody is ever kicked from it. That is one line: `diff_room_membership()`
@@ -525,13 +535,13 @@ where they are now indistinguishable from any other visitor. That is what a lobb
 
 **Prerequisite 0: Session R (room-version readiness) is done.** The lobby's `restricted` join rule
 needs the room-version floor Session R establishes, and the join-rule reconcile pass reads
-`m.room.power_levels` to confirm the bot may write state — a read Session R makes v12-correct. Do not
+`m.room.power_levels` to confirm the bot may write state, a read Session R makes v12-correct. Do not
 start the lobby before Session R lands; it is written up as its own top-level section above.
 
 **Two prerequisite bug fixes, each its own commit, before any of the feature.**
 
 *1. `initial_state` is silently clobbered.* `ApiClientMatrix.create_room()`
-(`onbot/clients/matrix.py`) builds its own `initial_state` list — space parent, encryption — then
+(`onbot/clients/matrix.py`) builds its own `initial_state` list, space parent, encryption, then
 assigns `body["initial_state"] = initial_state` *after* spreading `room_params` into `body`. Anything
 an operator passes under that key is dropped without a warning. Merge the two lists, caller's events
 last. The lobby needs its join rule as an `initial_state` event at creation, so this blocks the
@@ -553,20 +563,20 @@ On `MatrixDynamicRoomSettings`, so that per-group overrides come for free throug
 
 Every field carries the `visitor_lobby_` prefix. `lobby_*` alone was rejected: standing in a config
 file the word says nothing about *whose* lobby or *why*, and this whole file is about rooms. The
-prefix names the intent — a room a *visitor* from the wider space may walk into — and echoes the
+prefix names the intent, a room a *visitor* from the wider space may walk into, and echoes the
 operator's own word for the feature ("visit Düsseldorf").
 
-* `visitor_lobby_enabled: bool = False` — off by default. A lobby is a decision, not a migration.
+* `visitor_lobby_enabled: bool = False`, off by default. A lobby is a decision, not a migration.
 * `visitor_lobby_name_suffix: str = " (Lobby)"`, `visitor_lobby_alias_suffix: str = "-lobby"`.
-* `visitor_lobby_topic_template: str` — with `{name}` interpolated from the group room's name.
-* `visitor_lobby_end2end_encryption_enabled: bool = False` — see below; this is a real default, not
+* `visitor_lobby_topic_template: str`, with `{name}` interpolated from the group room's name.
+* `visitor_lobby_end2end_encryption_enabled: bool = False`, see below; this is a real default, not
   a copy of the group room's.
-* `visitor_lobby_inject_group_members: bool = True` — see below.
+* `visitor_lobby_inject_group_members: bool = True`, see below.
 
 Plus `matrix_room_visitor_lobby_from_authentik_attribute` (default `attributes.chatroom_visitor_lobby`),
 so the person who owns the group in Authentik can open a lobby without a config deploy. That is the
 ergonomic that decides whether this feature is used at all. Parse it as a bool, fall back to the
-configured default on garbage, and log a warning naming the group — the same shape as the existing
+configured default on garbage, and log a warning naming the group, the same shape as the existing
 create-params JSON path.
 
 Reject `visitor_lobby_enabled` at config-validation time when `create_matrix_rooms_in_a_matrix_space` is
@@ -582,8 +592,8 @@ first impression is a screen of "unable to decrypt". Let the operator turn it on
 them. (Note honestly in the docs that this is a *weaker* default than the group room's, and why.)
 
 *Power levels: visitors can talk.* A lobby where the visitor cannot speak is a notice board, and this
-codebase already has one of those. Keep the preset defaults — `users_default: 0`, `events_default:
-0` — with the bot at 100 and `state_default: 100` so only the bot rewrites room state.
+codebase already has one of those. Keep the preset defaults, `users_default: 0`, `events_default:
+0`, with the bot at 100 and `state_default: 100` so only the bot rewrites room state.
 
 *`m.space.child` with `suggested: true` for the lobby.* `create_room()` currently hardcodes
 `suggested: True` for every room it files under the space. Make it a parameter: `true` for lobbies,
@@ -594,7 +604,7 @@ rooms, which they cannot join anyway.
 
 Add `onbot/reconciler/join_rules.py`, shaped like the existing `power_levels.py`: a pure
 `desired_join_rules(room_kind, space_id) -> dict | None`, and a diff against the room's current
-`m.room.join_rules` content. Write only on difference — a no-op tick must send no state events. For a
+`m.room.join_rules` content. Write only on difference, a no-op tick must send no state events. For a
 lobby the content is
 
     {"join_rule": "restricted",
@@ -603,13 +613,13 @@ lobby the content is
 which is why this can never be expressed as static config: the space's room ID is resolved at runtime
 from its alias. Pass the same content as `initial_state` at creation, so a lobby is never briefly
 invite-only nor briefly open. Wire the pass into `ReconcilerEngine` beside the power-level pass, over
-existing lobbies as well as new ones — that is what lets an operator close a lobby again by flipping
+existing lobbies as well as new ones, that is what lets an operator close a lobby again by flipping
 the flag, which a create-time-only parameter would not.
 
 **Room version: do not pin a number here.** A `restricted` rule needs room version 8+ and
 `knock_restricted` needs 10+; below that, `createRoom` accepts the rule and then silently ignores it,
 permanently, unfixable without recreating the room. But pinning `"10"` (as an earlier draft of this
-line did) freezes the bot at 10 forever while servers move on — the spec now says servers SHOULD
+line did) freezes the bot at 10 forever while servers move on, the spec now says servers SHOULD
 default to **v12**. Leave `room_version` unset so a lobby inherits the server default, and rely on the
 single server-wide room-version config field introduced by the **v12-readiness prerequisite below**.
 The only hard requirement this feature adds is a *floor* of 10, which any Synapse new enough to run
@@ -633,7 +643,7 @@ the group vanishes. A blocked group room beside a live, joinable lobby is the wo
 
 **7. Membership.**
 
-If `visitor_lobby_inject_group_members` is true — the default — the group's members are joined into the lobby
+If `visitor_lobby_inject_group_members` is true, the default, the group's members are joined into the lobby
 as well as the group room, so a visitor who walks in finds somebody there. This is the whole bet, and
 it is a social one: it works when the group room is where the group *works* and the lobby is where
 the group is *reachable*, and it fails, producing two half-dead rooms and doubled notifications, when
@@ -665,13 +675,13 @@ Visitors are never injected anywhere. They joined on purpose.
   still sits in the lobby. Then: a deactivated user is gone from both, with no onbot code involved.
 * A `docs/troubleshooting.md` note on the room-ID leak described above, and on encryption being
   irreversible in both directions of this decision.
-* **An ADR — `docs/adr/0012-lobby-rooms.md`.** (0011 was taken by Session R's room-version-12 ADR.)
+* **An ADR, `docs/adr/0012-lobby-rooms.md`.** (0011 was taken by Session R's room-version-12 ADR.)
   ADR-0002 makes Authentik the source of truth and the
   reconciler total over room membership. A lobby is the first room where that is deliberately false:
   its membership is bot-injected group members *plus* people who exist only in Matrix, and the
   reconciler adds without ever removing. Record that the carve-out is confined to lobby rooms, that
   it needs no new state because "never kick" is a weaker invariant than "kick only whom we added",
-  and that account deactivation — not the reconciler — is what removes a departing human from a lobby.
+  and that account deactivation, not the reconciler, is what removes a departing human from a lobby.
 
 ### Decisions already made
 
@@ -692,10 +702,17 @@ Visitors are never injected anywhere. They joined on purpose.
 
 ## Deferred
 
-* **Debug room** — a room where admins watch onbot's log messages. Shelved deliberately, not
+* **`onbot recreate-dm-rooms`** (Session A, item 4): delete every welcome room whose user still
+  outranks or matches the bot (rooms from before 0.0.2, created as `trusted_private_chat`) and let the
+  welcome flow open a new notice board. Not built because it re-sends every welcome message to every
+  affected user; the manual way is in `docs/troubleshooting.md`. Its selection predicate exists
+  already, `legacy_user_matches_or_outranks_creator()` in `onbot/reconciler/power_levels.py`
+  (unit-tested, otherwise unused), and is kept for this command. Delete it if the command is dropped
+  for good.
+* **Debug room**, a room where admins watch onbot's log messages. Shelved deliberately, not
   forgotten. The mechanics are easy (a `logging.Handler` feeding a bounded queue, drained by a task
   that batches records into `m.notice` messages); the hazards are that the handler must never do I/O
   inline, must not feed itself (posting logs through `httpx`, which logs, which posts), and that at
-  `DEBUG` the bot logs every API call it makes — including bearer tokens — into a plaintext,
+  `DEBUG` the bot logs every API call it makes, including bearer tokens, into a plaintext,
   unencrypted room that admins read on their phones and that cannot be un-synced once leaked. If this
   comes back: default the room's level to `WARNING`, and reuse `onbot/rooms/admin.py` from Session B.

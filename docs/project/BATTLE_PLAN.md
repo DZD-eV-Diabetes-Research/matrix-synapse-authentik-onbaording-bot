@@ -6,12 +6,17 @@ targeting the modern Matrix protocol (MAS / next-gen auth, authenticated media, 
 dependencies and a real test suite (unit + integration against a live Matrix stack).
 **Approach:** **Clean slate.** We design the architecture we want and port only the *valuable logic* from the
 old code; we do not preserve the old structure.
-**Plan authored:** 2026-06-19 · **Revised:** 2026-06-19 (architecture decisions agreed; Phase 1–2 executed —
-PDM + Python 3.14 chosen over uv/3.11–3.13)
+**Plan authored:** 2026-06-19 · **Revised:** 2026-06-19 (architecture decisions agreed; Phases 1 and 2
+executed; PDM + Python 3.14 chosen over uv/3.11 to 3.13)
+**Status (2026-11-09):** all eight phases are done. Phase 1 was closed after the 2026-11-04 code review
+(decisions D1 and D2 in `docs/review_26-11-04/DECISIONS.md`). This file is kept as the record of the
+revival; open work lives in [`todo.md`](../../todo.md), [`issues.md`](../../issues.md) and the review
+sessions in [`docs/review_26-11-04/`](../review_26-11-04/SESSIONS.md). The `AD-n` numbers below were
+promoted to the ADR files in [`docs/adr/`](../adr/README.md) (AD-1 is ADR-0001, and so on).
 
 ---
 
-## 0. TL;DR — Phase Overview
+## 0. TL;DR: Phase Overview
 
 | Phase | Theme | Outcome |
 |-------|-------|---------|
@@ -24,8 +29,8 @@ PDM + Python 3.14 chosen over uv/3.11–3.13)
 | **7** | Test suite | Unit + contract + integration (Synapse+MAS+Authentik containers) |
 | **8** | Packaging, docs & release | Docker, docs, CI publish |
 
-Phases 1–2 are prerequisites. Phase 6 (MAS/auth) underpins 3–5 and should be spiked early. Phase 7 grows
-*alongside* 3–5, not after.
+Phases 1 and 2 are prerequisites. Phase 6 (MAS/auth) underpins 3 to 5 and should be spiked early. Phase 7 grows
+*alongside* 3 to 5, not after.
 
 ---
 
@@ -33,12 +38,12 @@ Phases 1–2 are prerequisites. Phase 6 (MAS/auth) underpins 3–5 and should be
 
 These supersede the old design. Captured here as lightweight ADRs; promote to `docs/adr/` during Phase 2.
 
-### AD-1 — Clean slate, reuse logic not structure
+### AD-1: Clean slate, reuse logic not structure
 We rebuild from a designed architecture and port valuable *business logic* (group→room mapping rules,
 power-level computation, the custom-room-state persistence idea, the config model). The old plumbing
 (sync/async bridge, god-object `Bot`, per-call client churn) is discarded.
 
-### AD-2 — Reconciliation, not events, for Authentik→Matrix state (level-triggered)
+### AD-2: Reconciliation, not events, for Authentik→Matrix state (level-triggered)
 The Authentik sync is a **convergence problem**, modeled as a Kubernetes-style controller: compute *desired*
 state (from Authentik) vs *actual* state (Matrix/Synapse) and apply the diff. Reasons we do **not** rely on
 events here: Authentik gives no reliable, ordered, complete event stream; we must converge on restart and heal
@@ -46,38 +51,38 @@ out-of-band drift; destructive actions must derive from *current* state, never a
 **Principle: the reconcile is idempotent and convergent; any event is only a trigger that runs the same
 reconcile sooner.** Implementation: run on a schedule **and** on demand (replacing the old `while True: sleep`).
 
-### AD-3 — The onboarding bot **is** event-driven
+### AD-3: The onboarding bot **is** event-driven
 Welcome/onboarding reacts to Matrix events via `/sync` (Simplified Sliding Sync, MSC4186): user appears/joins →
 onboard. Triggered by the reconciler's "user provisioned/new" signal and/or membership events. This gives
 instant onboarding (no tick latency) and is the natural Matrix model.
 
-### AD-4 — Separate the concerns as a **modular monolith**
-Three bounded domains — **reconciler**, **onboarding**, **lifecycle** — in one repo/process, sharing async
+### AD-4: Separate the concerns as a **modular monolith**
+Three bounded domains (**reconciler**, **onboarding**, **lifecycle**) in one repo/process, sharing async
 API clients, behind clean internal boundaries. We do **not** start with microservices (distributed-systems
 tax with no payoff at this scale), but each domain is designed to be *separable into its own process later*.
 Coupling is explicit: reconciler emits a "new user" signal that onboarding consumes.
 
-### AD-5 — Quarantine the destructive lifecycle
+### AD-5: Quarantine the destructive lifecycle
 Account deactivate/delete (with cooldowns) is the scariest code in the repo. It lives in its own isolated
 module with **dry-run + audit-log defaults**, separate credentials boundary, and the highest test rigor.
 
-### AD-6 — Auth topology: Authentik is an **upstream IdP to MAS**
+### AD-6: Auth topology: Authentik is an **upstream IdP to MAS**
 Chain: *Matrix client → MAS (the Matrix-facing OAuth2/OIDC provider) → Authentik (upstream IdP)*.
 Consequences that reshape scope:
-- **MAS auto-provisions Matrix accounts on first login.** The bot **no longer pre-creates accounts** — a whole
+- **MAS auto-provisions Matrix accounts on first login.** The bot **no longer pre-creates accounts**: a whole
   category of old code and risk is deleted. The sync layer reduces to **group→room projection + membership +
   power levels** (plus quarantined lifecycle).
 - **MXID mapping is owned by MAS, not the bot.** The bot must compute a user's MXID using the *same localpart
   template MAS uses* (derived from the Authentik claim, e.g. `preferred_username`/`sub`). The old
   `authentik_username_mapping_attribute` must be defined to *agree with* MAS config, not guess. This is the
-  critical integration contract — get it wrong and users won't match.
+  critical integration contract: get it wrong and users won't match.
 - **Bot credentials under MAS:** admin token for the Synapse Admin API + a bot user for the CS API, obtained
   via `mas-cli manage issue-compatibility-token` (near-term) or OAuth2 client-credentials + refresh (future).
 - **Lifecycle re-evaluation:** when Authentik disables a user, the *upstream* blocks new logins, but existing
   Matrix sessions/accounts may persist. Whether MAS propagates deactivation/lock is an **open question to
   verify** (§7 Q1); the lifecycle module remains valuable as the enforcement backstop either way.
 
-### AD-7 — Async everything, one HTTP base client
+### AD-7: Async everything, one HTTP base client
 Fully `async`; drop `synchronize_async_helper`. One pooled `httpx.AsyncClient` base (auth injection, retries,
 pagination, typed errors) shared by the Authentik, Synapse-Admin, and Matrix-CS clients.
 
@@ -86,7 +91,7 @@ pagination, typed errors) shared by the Authentik, Synapse-Admin, and Matrix-CS 
 ## 2. What the project is today (legacy overview)
 
 A **polling reconciliation bot** syncing Synapse with [Authentik](https://goauthentik.io/). It runs an
-infinite tick loop (`Bot.server_tik`, [onbot/bot.py](onbot/bot.py)) that each tick: mirrors Authentik
+infinite tick loop (`Bot.server_tik`, [onbot/bot.py](../../legacy/onbot/bot.py)) that each tick: mirrors Authentik
 groups→rooms, mirrors users→room membership, creates per-user DMs with welcome messages, maintains a parent
 space, deactivates/deletes orphaned accounts, applies power levels, and sets avatars.
 
@@ -95,42 +100,46 @@ events** `org.<reversed-server-name>.onbot.<type>`. This idea is good and we kee
 
 | File | Role | Fate |
 |------|------|------|
-| [onbot/main.py](onbot/main.py) | entry point, wiring | rewrite |
-| [onbot/bot.py](onbot/bot.py) | god-object reconciliation engine (~1000 lines) | **split** into reconciler/onboarding/lifecycle |
-| [onbot/config.py](onbot/config.py) | pydantic-settings YAML config | **port & refine** |
-| [onbot/api_client_matrix.py](onbot/api_client_matrix.py) | CS API (nio + raw requests) | rewrite on async base client |
-| [onbot/api_client_synapse_admin.py](onbot/api_client_synapse_admin.py) | Admin API | rewrite on async base client |
-| [onbot/api_client_authentik.py](onbot/api_client_authentik.py) | Authentik API | rewrite on async base client |
-| [onbot/power_level_manager.py](onbot/power_level_manager.py) | per-room power levels | **port logic** |
-| [onbot/utils.py](onbot/utils.py) | helpers + async/sync bridge | keep dict helpers, drop bridge |
-| [onbot/test.py](onbot/test.py), [test_.py](test_.py) | scratch scripts w/ **real creds** | **delete** |
+| [onbot/main.py](../../legacy/onbot/main.py) | entry point, wiring | rewrite |
+| [onbot/bot.py](../../legacy/onbot/bot.py) | god-object reconciliation engine (~1000 lines) | **split** into reconciler/onboarding/lifecycle |
+| [onbot/config.py](../../legacy/onbot/config.py) | pydantic-settings YAML config | **port & refine** |
+| [onbot/api_client_matrix.py](../../legacy/onbot/api_client_matrix.py) | CS API (nio + raw requests) | rewrite on async base client |
+| [onbot/api_client_synapse_admin.py](../../legacy/onbot/api_client_synapse_admin.py) | Admin API | rewrite on async base client |
+| [onbot/api_client_authentik.py](../../legacy/onbot/api_client_authentik.py) | Authentik API | rewrite on async base client |
+| [onbot/power_level_manager.py](../../legacy/onbot/power_level_manager.py) | per-room power levels | **port logic** |
+| [onbot/utils.py](../../legacy/onbot/utils.py) | helpers + async/sync bridge | keep dict helpers, drop bridge |
+| `onbot/test.py`, `test_.py` | scratch scripts w/ **real creds** | **deleted** |
 
 ---
 
-## 3. Findings — the audit (still relevant for security + what to port)
+## 3. Findings: the audit (still relevant for security + what to port)
 
 ### 🔴 Critical (security)
-1. **Live credentials committed.** [config.yml](config.yml) (tracked) has a real `bot_access_token` +
-   Authentik `api_key`; [onbot/test.py](onbot/test.py) hard-codes real `syt_…` tokens. Rotate + scrub history.
-2. **Plaintext passwords on disk.** [get_access_token.sh](get_access_token.sh) has real admin/bot passwords
-   (gitignored but real — rotate).
+1. **Live credentials committed.** `onbot/test.py` hard-codes a real `syt_` token of the bot account.
+   *Corrected by the 2026-11-04 review (SUP-01):* the leaked items were two `syt_` tokens, the bot's
+   (in `onbot/test.py` and `onbot/matrix_api_client.py`, 2023) and a personal operator token (in
+   `onbot/readme_feat_room_avatar.txt`, 2024). Every committed `config.yml` only held placeholders.
+   Both tokens were already invalid (D1); the history was scrubbed on 2026-11-06 (D2).
+2. **Plaintext passwords on disk.** `get_access_token.sh` has real admin/bot passwords. It was never
+   committed (gitignored, like `config.dev.yml` with the Authentik `api_key`), so these never left
+   the maintainer's disk.
 3. No secret-scanning guardrails.
 
 ### 🟠 Logic/correctness bugs to avoid carrying over
-- `access_token.lstrip("Bearer ")` ([api_client_matrix.py:92](onbot/api_client_matrix.py#L92)) strips
+- `access_token.lstrip("Bearer ")` ([api_client_matrix.py:92](../../legacy/onbot/api_client_matrix.py#L92)) strips
   *characters*, corrupting tokens.
 - Membership check uses substring `in` instead of `==`
-  ([bot.py:496](onbot/bot.py#L496)).
-- `delete_room` builds a body it never sends ([synapse_admin.py:111](onbot/api_client_synapse_admin.py#L111));
-  `set_room_admin` ignores args ([:75](onbot/api_client_synapse_admin.py#L75)).
+  ([bot.py:496](../../legacy/onbot/bot.py#L496)).
+- `delete_room` builds a body it never sends ([synapse_admin.py:111](../../legacy/onbot/api_client_synapse_admin.py#L111));
+  `set_room_admin` ignores args ([:75](../../legacy/onbot/api_client_synapse_admin.py#L75)).
 - **No pagination anywhere** → silently truncates users/rooms/members/media past page 1.
 - `get_room_state_event` fetches *all* room state and linear-scans it
-  ([api_client_matrix.py:331](onbot/api_client_matrix.py#L331)).
+  ([api_client_matrix.py:331](../../legacy/onbot/api_client_matrix.py#L331)).
 - Dead/`NotImplementedError` code, stray `print()` debugging, sticky power levels (never withdrawn).
 
 ### ✅ Worth porting (the value)
 - Group→room mapping & attribute rules (`_get_matrix_room_attrs_from_authentik_group`).
-- Power-level computation ([power_level_manager.py](onbot/power_level_manager.py)).
+- Power-level computation ([power_level_manager.py](../../legacy/onbot/power_level_manager.py)).
 - Custom-room-state persistence pattern (give it versioned, validated schemas).
 - Pydantic config model & YAML generation.
 - The catalogue of *which* Synapse Admin / Authentik / CS endpoints are needed.
@@ -182,24 +191,31 @@ desired-vs-actual result, behind dry-run. All three share `clients/` + `auth/`.
 
 ## 5. Phase-by-phase plan
 
-### Phase 1 — 🔴 Security triage (blocks everything)  ⚠️ partially done 2026-06-19
-- [ ] **⚠️ MAINTAINER:** Rotate every exposed credential — @dzd-bot Synapse tokens, the @admin/@dzd-bot
-      login passwords (`get_access_token.sh`), and the Authentik `api_key` (`config.dev.yml`). *(only you can.)*
+### Phase 1: 🔴 Security triage (blocks everything)  ✅ closed 2026-11-06 (review D1, D2)
+- [x] **MAINTAINER:** Rotate every exposed credential. *Closed by review decision D1:* the two leaked
+      `syt_` tokens (the bot's, 2023, and a personal operator token, 2024) were already invalid. The
+      Authentik `api_key` and the `@admin`/`@dzd-bot` passwords were never committed (review finding
+      SUP-01); rotating them is only needed if `config.dev.yml` or `get_access_token.sh` ever left the
+      workstation.
 - [x] `git rm --cached config.yml`; ship `config.example.yml` only; gitignore real configs (`config*.yml`).
 - [x] Delete scratch scripts with secrets (`git rm onbot/test.py`; legacy run scripts removed).
-- [ ] **⚠️ MAINTAINER:** Scrub history with `git filter-repo`; coordinate force-push (shared repo — open Q6).
-- [x] Add `pre-commit` + `gitleaks` (pre-commit hook **and** CI job).
+- [x] **MAINTAINER:** Scrub history with `git filter-repo`; coordinate force-push. *Done 2026-11-06*
+      (review decision D2, session S16): both tokens replaced in every commit, `main` and all tags
+      force-pushed, so every commit SHA changed. Re-clone instead of pulling.
+- [x] Add `pre-commit` + `gitleaks` (pre-commit hook **and** CI job). The CI job was lost in Phase 3
+      and the hook config broke (review finding SUP-03); both were restored in review session S0, and
+      the CI scan covers the whole history since S16.
 
-### Phase 2 — Project skeleton & tooling  ✅ done 2026-06-19
+### Phase 2: Project skeleton & tooling  ✅ done 2026-06-19
 - [x] Create the package layout (§4). `pyproject.toml` (PEP 621), package name `onbot`, console entry point.
 - [x] **`PDM`** (`pdm-backend`) for deps + committed `pdm.lock` (dropped `setup.py`/`reqs.txt`/run scripts).
 - [x] `ruff` (lint+format), `mypy`, `pytest` (+`pytest-asyncio`, `respx`, `pytest-cov`), `pre-commit`.
 - [x] GitHub Actions CI: lint → typecheck → unit + secret scan. **Python 3.14** (`requires-python >=3.14`).
 - [x] `docs/adr/` with AD-1…AD-7 from §1. Removed hard-coded absolute paths (deleted legacy run scripts).
 
-### Phase 3 — Reconciler core (AD-2, AD-7)  ✅ done 2026-06-19
+### Phase 3: Reconciler core (AD-2, AD-7)  ✅ done 2026-06-19
 - [x] Async `clients/base.py` (httpx + tenacity retries + **pagination** + typed `ApiError`).
-- [x] Authentik + Synapse-Admin clients on the base (paginated; §3 bugs fixed — token no longer
+- [x] Authentik + Synapse-Admin clients on the base (paginated; §3 bugs fixed: token no longer
       `lstrip`-corrupted, `delete_room` sends its body, `make_room_admin`/`set_user_server_admin_state`
       hit real endpoints, `room_is_blocked` returns a bool).
 - [x] `reconciler/engine.py`: idempotent desired-vs-actual convergence; **scheduled + on-demand**
@@ -214,34 +230,34 @@ desired-vs-actual result, behind dry-run. All three share `clients/` + `auth/`.
       concrete impl (`clients/matrix.py::CSApiEffectors`); `app.py` wires it in place of
       `DryRunEffectors` (which stays for tests/`reconcile` dry-runs).
 
-### Phase 4 — Onboarding bot (AD-3)  ✅ done 2026-06-19
-- [x] Matrix CS client (`clients/matrix.py`, `ApiClientMatrix` on the async base client — AD-7,
+### Phase 4: Onboarding bot (AD-3)  ✅ done 2026-06-19
+- [x] Matrix CS client (`clients/matrix.py`, `ApiClientMatrix` on the async base client: AD-7,
       *not* a new library; that's the Phase 6 ADR) + **Simplified Sliding Sync** stream (MSC4186),
       normalised to `SyncResult` so the listener is transport-agnostic. Also resolves the Phase 3
       deferral: concrete `CSApiEffectors` (room/space create, kick, power levels, name/topic, custom
       state events).
 - [x] `onboarding/listener.py` consuming the sync stream (welcomes on join events) **and**
-      subscribing to the reconciler signal; `welcome.py` flow idempotent two ways — one DM per user
+      subscribing to the reconciler signal; `welcome.py` flow idempotent two ways, one DM per user
       (via `m.direct` account data) and each message once (content-hashed in the `direct_room`
       onbot state event, G4.3).
-- [x] MXID computation matching the MAS localpart template (AD-6) — provided by the shared
+- [x] MXID computation matching the MAS localpart template (AD-6), provided by the shared
       `onbot/identity.py` (built in Phase 3), reused by onboarding (no separate `onboarding/identity.py`).
 - [x] Wired reconciler "user provisioned" signal → onboarding via `events.py` (`Signal.user_synced`);
       `app.py` runs the reconcile loop + sliding-sync listener concurrently.
 - [x] Tests: Matrix client contract tests (`respx`), welcome idempotency + listener unit tests
       (61 tests total, gate green: ruff/format/mypy/pytest under Python 3.14).
-- ⏭️ **Deferred to Phase 6:** the sliding-sync endpoint is still unstable — CS-API version
+- ⏭️ **Deferred to Phase 6:** the sliding-sync endpoint is still unstable, CS-API version
       negotiation and the MAS-auth/library ADR (kept behind `ApiClientMatrix.sliding_sync`).
       Placing onboarding DMs inside the managed space (G4.5) and the admin control room (G4.6) are
       not yet implemented.
 
-### Phase 5 — Lifecycle, quarantined (AD-5)  ✅ done 2026-06-19
-- [x] `lifecycle/accounts.py`: a **pure state machine** (`decide_account_action`) — detect →
+### Phase 5: Lifecycle, quarantined (AD-5)  ✅ done 2026-06-19
+- [x] `lifecycle/accounts.py`: a **pure state machine** (`decide_account_action`), detect →
       `mark` (start cooldown, no destructive action) → `logout` after `deactivate_after_n_sec`
       (revoke sessions, G9.2) → `erase` after `delete_after_n_sec` (deactivate + optional media,
       G9.4/G9.5) → `reenable` if the user returns first (G9.6). Effects isolated behind a
       `LifecycleEffectors` seam (`AdminApiLifecycleEffectors`) + a `LifecycleLedgerStore`
-      (per-user bookkeeping as one versioned blob in the bot's Matrix **account data** — no DB,
+      (per-user bookkeeping as one versioned blob in the bot's Matrix **account data**: no DB,
       decoupled from the onboarding DM).
 - [x] **Dry-run + audit-log default (Q6, AD-5):** new `dry_run` config flag (defaults `true`);
       while dry-run only non-destructive timestamps are recorded and every would-be destructive
@@ -253,7 +269,7 @@ desired-vs-actual result, behind dry-run. All three share `clients/` + `auth/`.
       dry-run/live + multi-tick progression + ledger round-trip + effectors); engine orphan-scoping
       tests. Full gate green (ruff/format/mypy/pytest, 88 tests). Also fixed pre-existing mypy slips
       in `test_power_levels.py`/`test_skeleton.py` that were failing the gate.
-- 🔬 **§7 Q1 — decision (2026-06-19): answer empirically, not by guesswork.** Whether MAS itself
+- 🔬 **§7 Q1, decision (2026-06-19): answer empirically, not by guesswork.** Whether MAS itself
       revokes sessions / locks the account on upstream Authentik disable will be settled by a
       dedicated experiment in the **Phase 7 integration harness** (real Synapse + MAS + Authentik),
       then this module's exact responsibility finalized from the observed facts. The module is the
@@ -262,7 +278,7 @@ desired-vs-actual result, behind dry-run. All three share `clients/` + `auth/`.
 - ⏭️ **Deferred:** the rich, self-documenting `config.example.yml` regeneration (the new field
       `dry_run` is live in `config.py` but the example file's doc-generator is a Phase 8 deliverable).
 
-### Phase 6 — Matrix 2.0 / MAS integration  ✅ done 2026-06-19
+### Phase 6: Matrix 2.0 / MAS integration  ✅ done 2026-06-19
 - [x] `auth/token_provider.py`: `StaticTokenProvider` (compat/legacy token) **and**
       `OAuth2ClientCredentialsTokenProvider` (client-credentials + transparent refresh, falling back
       to a fresh grant if a refresh is rejected). Behind one `TokenProvider` protocol that
@@ -274,37 +290,37 @@ desired-vs-actual result, behind dry-run. All three share `clients/` + `auth/`.
       `onbot/media.py::MediaUploader` fetches a remote URL → uploads → **dedupes by source URL**
       (G10.1/G10.2). Bot avatar applied on startup from `bot_avatar_url` (G6.8). Needed `base.request_raw`
       for byte bodies + absolute-URL passthrough (media repo lives off the CS base path). *Room/space
-      avatar **application** during reconcile (G6.4/G6.9) is a small reconciler follow-up — the
+      avatar **application** during reconcile (G6.4/G6.9) is a small reconciler follow-up, the
       capability (`set_room_avatar`/`MediaUploader`) is in place; the engine just doesn't call it yet.*
 - [x] **Library decision (ADR-0008):** drive the CS API over the shared httpx base client; do **not**
       adopt `matrix-nio`/`mautrix` (MAS/OAuth fit, unstable sliding sync, no e2ee need, async base).
-- [x] **E2EE stance (ADR-0009):** bot operates **outside** encrypted rooms — plaintext welcome DMs
+- [x] **E2EE stance (ADR-0009):** bot operates **outside** encrypted rooms, plaintext welcome DMs
       (unencrypted `trusted_private_chat`) + state-only writes in encrypted group rooms; drop libolm.
       Answers §7 Q3. Revisit (rust-sdk) only if the bot must read/post inside e2ee rooms.
 - [x] CS API version negotiation: `clients/versions.py` (`ServerVersions`) + `negotiate_versions()`
-      against `/_matrix/client/versions`, run at startup. `sliding_sync` is now **gated** — raises
+      against `/_matrix/client/versions`, run at startup. `sliding_sync` is now **gated**, raises
       `SyncNotSupportedError` when MSC4186 is unadvertised, and the listener falls back to the
       reconciler-signal path instead of looping on errors (resolves the Phase 4 sliding-sync deferral).
 - [x] **Phase 4 deferral G4.5:** opt-in `place_onboarding_rooms_in_space` places freshly created
       onboarding DMs in the managed space (alias-resolved + `link_room_to_space`).
 - [x] **G4.6 admin control/broadcast room (ADR-0010):** resolved. The mechanism question GOALS hedged
       on is settled two ways: `onbot broadcast` (CLI, no new machinery) and an opt-in `#onbot-admin`
-      control room, sharing one `BroadcastService`. The ADR-0009 collision does not arise — broadcasts
+      control room, sharing one `BroadcastService`. The ADR-0009 collision does not arise, broadcasts
       land in the per-user onboarding rooms, which are unencrypted notice boards, and the control room
       is created unencrypted so the bot can read it. Authorisation is an explicit MXID allowlist, not
       the sender's room power level.
 
-### Phase 7 — Test suite (grows during 3–5)
+### Phase 7: Test suite (grows during 3 to 5)
 
 **Split decision (2026-06-23):** Phase 7 is divided into **7a (fast tiers, no infra)** and **7b (live
 integration harness).** Rationale: 7b carries everything slow/uncertain (Docker images, version drift,
 network flakiness, a separate CI job, and the §7 Q1 *research* question); it must not hold the fast,
 deterministic wins hostage. **Both are now done (7a 2026-06-23, 7b 2026-06-23).**
 
-#### Phase 7a — fast tiers + coverage gate  ✅ done 2026-06-23
+#### Phase 7a: fast tiers + coverage gate  ✅ done 2026-06-23
 - [x] **Unit:** mapping rules, power-level calc, identity/MXID, config, room-state (de)serialization
-      (grown through Phases 3–5; `tests/unit/`).
-- [x] **Contract:** each client via `respx`. Filled the remaining gaps —
+      (grown through Phases 3 to 5; `tests/unit/`).
+- [x] **Contract:** each client via `respx`. Filled the remaining gaps:
       `clients/synapse_admin.py` 72→**100%** (lifecycle ops, membership, media pagination, room
       details, block/admin state), `clients/matrix.py` 76→**95%** (DM creation, alias resolve,
       kick-with-reason, room name/topic/avatar, account-data error paths, `_parse_mxc`,
@@ -314,7 +330,7 @@ deterministic wins hostage. **Both are now done (7a 2026-06-23, 7b 2026-06-23).*
       sits ~91%); `app.py` + `__main__.py` omitted as integration-only composition root (covered by
       7b). The gate fires in the existing CI `--cov` step. Floor, meant to ratchet up.
 
-#### Phase 7b — live integration harness  ✅ done 2026-06-23
+#### Phase 7b: live integration harness  ✅ done 2026-06-23
 - [x] **Integration:** `testcontainers` (compose) brings up **Synapse + MAS + Postgres + Authentik**
       (Authentik as MAS upstream IdP, ADR-0006), images pinned by digest, Authentik OIDC provider
       blueprint-provisioned (`tests/integration/stack/`). Session fixtures yield ready
@@ -322,29 +338,31 @@ deterministic wins hostage. **Both are now done (7a 2026-06-23, 7b 2026-06-23).*
       MAS→Authentik **OIDC login helper** provisions accounts (no admin pre-create). End-to-end
       tests (all `@pytest.mark.integration`, own CI job) assert: group→room, membership, idempotent
       welcome DM, power levels, deactivation cooldowns (dry-run + live), authenticated media, and the
-      **MXID localpart contract** (Q2 — provisioned localpart == `compute_mxid`).
+      **MXID localpart contract** (Q2: provisioned localpart == `compute_mxid`).
 - [x] **🔬 §7 Q1 resolved empirically** (see §7 Q1 + ADR-0005): upstream Authentik disable does **not**
       revoke existing Matrix sessions (only blocks new logins); the **Synapse admin API cannot revoke**
-      a MAS session — only MAS can. ⇒ the lifecycle module is the **enforcement path** and now acts via
+      a MAS session, only MAS can. ⇒ the lifecycle module is the **enforcement path** and now acts via
       the MAS admin API (`clients/mas_admin.py` + `MasLifecycleEffectors`, config `mas_admin`).
 - [x] Composition root covered: `app.py`/`__main__.py` `omit`s dropped; the full-suite coverage gate
       (`fail_under = 88`, ~90% actual) runs in the integration CI job where app.py executes end-to-end.
 - 🐞 **Two real MAS-integration bugs surfaced + fixed:** `synapse_admin.list_users` must pass
       `guests=false` under MSC3861; the bot must register its device (`ApiClientMatrix.ensure_device_registered`,
-      run at startup) or welcome DM sends 500 (`event_txn_id_device_id` FK) — MAS-issued devices aren't
+      run at startup) or welcome DM sends 500 (`event_txn_id_device_id` FK), MAS-issued devices aren't
       in Synapse's `devices` table until keys are uploaded.
 
-### Phase 8 — Packaging, docs & release
-- [ ] Rewrite `Dockerfile`: multi-stage, pinned digest, non-root, `.dockerignore`, `pdm install`, healthcheck.
-- [ ] CI publish image (DockerHub `dzdde/onbot`) + PyPI on release; beta pre-releases / latest full releases; CHANGELOG.
-- [ ] Rewrite `README.md`: MAS-era setup (Authentik-as-upstream topology, MXID/localpart contract), config
+### Phase 8: Packaging, docs & release  ✅ done 2026-07-08 (released as 0.0.1)
+- [x] Rewrite `Dockerfile`: multi-stage, pinned digest, non-root, `.dockerignore`, `pdm install`, healthcheck.
+- [x] CI publish image (DockerHub `dzdde/onbot`) + PyPI on release; beta pre-releases / latest full releases; CHANGELOG.
+- [x] Rewrite `README.md`: MAS-era setup (Authentik-as-upstream topology, MXID/localpart contract), config
       reference (auto-gen from pydantic), Docker/compose deploy, troubleshooting.
-- [ ] Overhaul all config meta data in `onbot/config.py`: Add meaningfull desc. Add meaningfull examples. Check typing hints.
-- [ ] Generate config markdown docs with https://pypi.org/project/psyplus/
-- [ ] Generate yaml template config with https://pypi.org/project/psyplus/ and provide examples how to use ut
+- [x] Overhaul all config meta data in `onbot/config.py`: meaningful descriptions and examples, typing checked.
+- [x] Generate config markdown docs with https://pypi.org/project/psyplus/ (`docs/CONFIG_REFERENCE.md`).
+- [x] Generate a YAML template config with psyplus (`config.example.yml`), with usage in
+      `docs/configuration.md`. Both are regenerated with `pdm run gen-config-docs`.
+
 ---
 
-## 6. Reuse vs. rebuild — quick reference
+## 6. Reuse vs. rebuild: quick reference
 
 | Item | Decision |
 |------|----------|
@@ -353,9 +371,9 @@ deterministic wins hostage. **Both are now done (7a 2026-06-23, 7b 2026-06-23).*
 | Custom-room-state persistence | **Keep** pattern, versioned schemas |
 | Pydantic config model | **Port & refine** |
 | Endpoint catalogue (which APIs) | **Reuse** as knowledge |
-| Account pre-provisioning | **Delete** — MAS handles it (AD-6) |
-| `synchronize_async_helper` / per-call nio churn | **Delete** — go async (AD-7) |
-| God-object `Bot`, tick loop | **Delete** — reconciler + listener |
+| Account pre-provisioning | **Delete**, MAS handles it (AD-6) |
+| `synchronize_async_helper` / per-call nio churn | **Delete**, go async (AD-7) |
+| God-object `Bot`, tick loop | **Delete**, reconciler + listener |
 | Scratch tests with creds | **Delete** |
 
 ---
@@ -365,7 +383,7 @@ deterministic wins hostage. **Both are now done (7a 2026-06-23, 7b 2026-06-23).*
 1. **MAS deactivation propagation:** when Authentik disables a user upstream, does MAS revoke sessions / lock
    the Matrix account automatically, or must the lifecycle module enforce it?
    *✅ ANSWERED EMPIRICALLY (Phase 7b, 2026-06-23, live Synapse+MAS+Authentik harness):*
-   - *MAS does **not** propagate the upstream disable — **existing Matrix sessions persist** (the
+   - *MAS does **not** propagate the upstream disable, **existing Matrix sessions persist** (the
      token keeps working). New logins **are** blocked (Authentik denies the disabled user).*
    - *The **Synapse admin API cannot revoke** a MAS session: device deletion and
      `/_synapse/admin/v1/deactivate` both leave the MAS token valid. Only **MAS** revokes it
@@ -379,7 +397,7 @@ deterministic wins hostage. **Both are now done (7a 2026-06-23, 7b 2026-06-23).*
    enough? (Decides whether we drop libolm.)
 4. **Library preference:** open to replacing `matrix-nio`, or prefer to keep it?
 5. **Scale:** rough user/group/room counts? (Tunes caching/diffing vs. simple full reconcile.)
-6. **History rewrite OK?** Force-push of scrubbed history affects collaborators/forks — acceptable?
+6. **History rewrite OK?** Force-push of scrubbed history affects collaborators/forks, acceptable?
 7. **Authentik version** in use? (API v3 shape has evolved.)
 
 *Resolved:* Authentik is an **upstream IdP to MAS** → bot does not pre-create accounts; sync scope is
@@ -389,29 +407,29 @@ group→room projection + membership + power levels + (quarantined) lifecycle.
 
 ## 8. Suggested execution order (first PRs)
 
-1. **PR1 — Security:** rotate, remove tracked secrets, secret-scan pre-commit. (History scrub coordinated.)
-2. **PR2 — Skeleton & tooling:** layout + `pyproject`/PDM (Py 3.14) + ruff/mypy/pytest + CI + ADRs. No behavior.
-3. **PR3 — Base client + Authentik/Admin clients (async, paginated) + first unit/contract tests.**
-4. **PR4 — Auth/TokenProvider spike + MAS topology validation (ADR).**
-5. **PR5 — Reconciler engine + ported rooms/membership/power-level logic.**
-6. **PR6 — Onboarding listener (sliding sync) + welcome flow + identity mapping.**
-7. **PR7 — Lifecycle module (dry-run/audit) + authenticated media.**
-8. **PR8 — Integration harness (Synapse+MAS+Authentik) + Docker + docs + release.**
+1. **PR1, security:** rotate, remove tracked secrets, secret-scan pre-commit. (History scrub coordinated.)
+2. **PR2, skeleton & tooling:** layout + `pyproject`/PDM (Py 3.14) + ruff/mypy/pytest + CI + ADRs. No behavior.
+3. **PR3: Base client + Authentik/Admin clients (async, paginated) + first unit/contract tests.**
+4. **PR4: Auth/TokenProvider spike + MAS topology validation (ADR).**
+5. **PR5: Reconciler engine + ported rooms/membership/power-level logic.**
+6. **PR6: Onboarding listener (sliding sync) + welcome flow + identity mapping.**
+7. **PR7: Lifecycle module (dry-run/audit) + authenticated media.**
+8. **PR8: Integration harness (Synapse+MAS+Authentik) + Docker + docs + release.**
 
 ---
 
 ### Primary protocol references
-- [Matrix API playground / spec](https://playground.matrix.org/#overview) — Client-Server API (endpoints,
-  versions, sliding sync) for Phases 3–6.
+- [Matrix API playground / spec](https://playground.matrix.org/#overview), Client-Server API (endpoints,
+  versions, sliding sync) for Phases 3 to 6.
 - [Synapse Source Code](https://github.com/element-hq/synapse) - Clone it for easy inspection
-- [Synapse documentation](https://element-hq.github.io/synapse/latest/welcome_and_overview.html) — Admin API;
+- [Synapse documentation](https://element-hq.github.io/synapse/latest/welcome_and_overview.html), Admin API;
   re-validate every endpoint (paths/params have drifted). MAS/Synapse docs also mirrored on `element-hq.github.io`.
 - [The latest api spec, machin readable](https://spec.matrix.org/latest/client-server-api/api.json)
 
 ### Matrix 2.0 / MAS context
-- [MAS — Authorization & sessions](https://element-hq.github.io/matrix-authentication-service/topics/authorization.html)
-- [MAS — Get an access token](https://element-hq.github.io/matrix-authentication-service/topics/access-token.html)
-- [MAS — upstream OAuth2/OIDC providers](https://element-hq.github.io/matrix-authentication-service/setup/sso.html)
+- [MAS: Authorization & sessions](https://element-hq.github.io/matrix-authentication-service/topics/authorization.html)
+- [MAS: Get an access token](https://element-hq.github.io/matrix-authentication-service/topics/access-token.html)
+- [MAS: upstream OAuth2/OIDC providers](https://element-hq.github.io/matrix-authentication-service/setup/sso.html)
 - [Better auth, sessions & permissions in Matrix](https://matrix.org/blog/2023/09/better-auth/)
 - [matrix.org is now running MAS](https://matrix.org/blog/2025/04/morg-now-running-mas/)
 </content>
