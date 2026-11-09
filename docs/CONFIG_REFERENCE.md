@@ -1,5 +1,5 @@
-<!-- GENERATED FILE — do not edit by hand.
-     Regenerate with `./gen_config_docs.sh` after changing onbot/config.py. -->
+<!-- GENERATED FILE, do not edit by hand.
+     Regenerate with `pdm run gen-config-docs` after changing onbot/config.py. -->
 
 # Configuration Reference — `OnbotConfig`
 
@@ -11,7 +11,7 @@ This document is auto-generated from the pydantic-settings model. All settings c
 
 *Logging verbosity*
 
-How much the bot logs. `DEBUG` is noisy — it includes every API call it makes — but
+How much the bot logs. `DEBUG` is noisy (it includes every API call it makes), but
 it is the fastest way to see why a user or group is not being picked up while wiring
 the bot up. `WARNING` keeps a quiet production log. The `--log-level` command-line
 flag overrides this.
@@ -31,8 +31,8 @@ flag overrides this.
 *Reconcile interval (seconds)*
 
 How often, in seconds, the bot re-converges Authentik state onto Matrix. A
-reconcile reads the whole Matrix side — every managed room's members, power levels
-and state — so it is the expensive operation, and this is the interval that costs
+reconcile reads the whole Matrix side (every managed room's members, power levels
+and state), so it is the expensive operation, and this is the interval that costs
 Synapse traffic.
 
 It does not set how quickly new users are onboarded. A reconcile also runs on demand
@@ -68,7 +68,7 @@ server_tick_rate_sec: 900
 
 *Authentik poll interval (seconds)*
 
-How often, in seconds, the bot asks Authentik whether anything changed — a new
+How often, in seconds, the bot asks Authentik whether anything changed: a new
 user, a group membership, a renamed room group. When something did, it runs a
 reconcile immediately; when nothing did, it does nothing at all.
 
@@ -125,7 +125,7 @@ APIs. The bot authenticates with `bot_access_token`.
 
 *Matrix server name*
 
-Synapse's public facing domain — the part after the colon in a Matrix ID such as
+Synapse's public facing domain: the part after the colon in a Matrix ID such as
 `@alice:company.org`. This is not necessarily the domain under which the Synapse
 server is reachable; that is `server_url`. See
 https://element-hq.github.io/synapse/latest/usage/configuration/config_documentation.html#server_name
@@ -178,7 +178,7 @@ server_url: https://matrix.company.org
 *Bot Matrix ID*
 
 Full Matrix user ID of an existing account; the bot acts as this user. The account
-must already exist — the bot does not register itself — and its localpart must be on
+must already exist (the bot does not register itself), and its localpart must be on
 `server_name`.
 
 | Property | Value |
@@ -273,7 +273,7 @@ admin_api_path: _synapse/admin/
 *Room version for rooms the bot creates*
 
 Room version passed to `POST /createRoom` for every room and space the bot
-creates. Leave unset (`null`) — the default — so new rooms inherit the homeserver's
+creates. Leave unset (`null`, the default) so new rooms inherit the homeserver's
 own default room version, which the Matrix spec says SHOULD now be `12`. Room
 version 12 changes two things the bot depends on: the room creator (the bot) holds an
 infinite power level and is deliberately absent from `m.room.power_levels`, and room
@@ -282,7 +282,7 @@ pinning a number here is only for two cases: an operator whose Synapse is too ol
 default to a version this bot needs (it requires at least version 8 for the features
 it uses; `restricted` join rules need 8 and `knock_restricted` needs 10), or a test
 that must force a specific version. Do not pin a number to freeze the bot behind the
-ecosystem — prefer upgrading Synapse.
+ecosystem; prefer upgrading Synapse.
 
 | Property | Value |
 |---|---|
@@ -536,11 +536,11 @@ becomes a link on its own. Embedded HTML is not passed through.
 
 A message may also use these placeholders, filled in as it is sent:
 
-- `{space_link}` — a `matrix.to` link to the parent space, ready to put in
+- `{space_link}`: a `matrix.to` link to the parent space, ready to put in
   `[our space]({space_link})`
-- `{space_alias}` — the space's alias, e.g. `#myspace:matrix.company.org`
-- `{space_name}` — the space's display name
-- `{user_id}` — the recipient's Matrix ID
+- `{space_alias}`: the space's alias, e.g. `#myspace:matrix.company.org`
+- `{space_name}`: the space's display name
+- `{user_id}`: the recipient's Matrix ID
 
 The three space placeholders need `create_matrix_rooms_in_a_matrix_space` to be
 enabled; a message using one while it is disabled is held back (and logged) rather
@@ -559,7 +559,7 @@ than sent with a gap in it. Any other `{...}` is left as written.
 ```yaml
 welcome_new_users_messages:
 - Welcome aboard! I will invite you to the rooms for your groups.
-- "Everything else lives in **[{space_name}]({space_link})** \u2014 have a look around."
+- 'Everything else lives in **[{space_name}]({space_link})**: have a look around.'
 ```
 
 *Example 2:*
@@ -579,7 +579,7 @@ welcome_new_users_messages:
 Display name of the 1:1 welcome room the bot opens with each user. The room needs a
 name because the bot joins the user directly instead of waiting for them to accept an
 invitation, and a Matrix client only tags a room as a direct message when its user
-accepted such an invitation — without a name the room would appear in their room list
+accepted such an invitation; without a name the room would appear in their room list
 as an untitled room. Only read when a room is created; renaming later does not rewrite
 existing rooms.
 
@@ -611,7 +611,7 @@ onboarding_room_name: Company Chat Bot
 *Welcome room topic*
 
 Matrix topic (tagline) of the 1:1 welcome room. A good place to say where a user
-should turn with questions, since they cannot ask them in this room — it is read-only.
+should turn with questions, since they cannot ask them in this room: it is read-only.
 Only read when a room is created.
 
 | Property | Value |
@@ -636,7 +636,7 @@ onboarding_room_topic: Notices from the onboarding bot. You cannot write here.
 Join users into their welcome room directly, through the Synapse admin API, instead
 of leaving them an invitation they have to accept. On by default: the room is a notice
 board the bot posts to, so an unaccepted invitation means a user who never receives
-the welcome messages. The join happens exactly once, when the room is created — a user
+the welcome messages. The join happens exactly once, when the room is created; a user
 who then leaves the room is not dragged back in. Turn this off to send a plain
 invitation instead; the bot also falls back to the invitation when the join fails.
 
@@ -769,7 +769,7 @@ topic: Bot control room. !help for commands.
 
 Full Matrix IDs permitted to run commands in the control room, listed by hand.
 These are added to whatever `authentik_group_pks_granting_bot_admin` resolves to, and
-this list is the right home for accounts Authentik has never heard of — a break-glass
+this list is the right home for accounts Authentik has never heard of: a break-glass
 admin, another bot. It is also the floor the bot falls back on: it needs no Authentik
 call, so these administrators keep their commands when Authentik is unreachable.
 Everyone not in the union of the two lists is refused, even if they are somehow in the
@@ -835,7 +835,7 @@ authentik_group_pks_granting_bot_admin:
 *Put welcome rooms in the space*
 
 Gather the 1:1 onboarding/welcome rooms under the managed parent space as well. Off
-by default — whether direct rooms belong in a space is a matter of taste. Only applies
+by default: whether direct rooms belong in a space is a matter of taste. Only applies
 when `create_matrix_rooms_in_a_matrix_space` is enabled.
 
 | Property | Value |
@@ -929,7 +929,7 @@ authentik_username_mapping_attribute: attributes.matrix_name
 
 When a user leaves an Authentik group, kick them from the corresponding Matrix
 room so membership stays a faithful mirror. Disable to let the bot only ever *add*
-members and never remove them — users then keep access to rooms after losing the
+members and never remove them; users then keep access to rooms after losing the
 group that granted it.
 
 | Property | Value |
@@ -946,7 +946,7 @@ group that granted it.
 *Filter: Authentik directory paths*
 
 Only sync users that live under one of these Authentik directory paths. Paths are
-matched exactly, so a parent path does not imply its children — list both if you want
+matched exactly, so a parent path does not imply its children: list both if you want
 both. `null` syncs users regardless of path.
 
 | Property | Value |
@@ -1071,17 +1071,18 @@ run with the default first and read the audit log before switching it off.
 
 ---
 
-#### `sync_authentik_users_with_matrix_rooms.deactivate_disabled_authentik_users_in_matrix.deactivate_after_n_sec`
+#### `sync_authentik_users_with_matrix_rooms.deactivate_disabled_authentik_users_in_matrix.lock_after_n_sec`
 
 *Grace period before the lock*
 
 Seconds a user must stay disabled in (or deleted from) Authentik before their
-Matrix account is locked. Despite the name nothing is deactivated at this stage: with
+Matrix account is locked. Nothing is deactivated at this stage: with
 `mas_admin` the MAS user is locked (no new logins) and its sessions are ended, without
 it the user's Synapse devices are deleted. Reversible: re-enabling the Authentik
 account unlocks it. Within this window a re-enable simply cancels the pending lock.
 Tokens already in use stop working only once Synapse's token cache lapses (about two
-minutes under MAS). The default is 24 hours.
+minutes under MAS). The default is 24 hours. Formerly `deactivate_after_n_sec`; a
+config that still uses the old name is refused at startup.
 
 | Property | Value |
 |---|---|
@@ -1089,37 +1090,38 @@ minutes under MAS). The default is 24 hours.
 | Required | No |
 | Default | `86400` |
 | Constraints | Ge(ge=0) |
-| Environment variable | `ONBOT_SYNC_AUTHENTIK_USERS_WITH_MATRIX_ROOMS__DEACTIVATE_DISABLED_AUTHENTIK_USERS_IN_MATRIX__DEACTIVATE_AFTER_N_SEC` |
+| Environment variable | `ONBOT_SYNC_AUTHENTIK_USERS_WITH_MATRIX_ROOMS__DEACTIVATE_DISABLED_AUTHENTIK_USERS_IN_MATRIX__LOCK_AFTER_N_SEC` |
 
 **Examples:**
 
 *Example 1:*
 
 ```yaml
-deactivate_after_n_sec: 86400
+lock_after_n_sec: 86400
 ```
 
 *Example 2:*
 
 ```yaml
-deactivate_after_n_sec: 3600
+lock_after_n_sec: 3600
 ```
 
 ---
 
-#### `sync_authentik_users_with_matrix_rooms.deactivate_disabled_authentik_users_in_matrix.delete_after_n_sec`
+#### `sync_authentik_users_with_matrix_rooms.deactivate_disabled_authentik_users_in_matrix.remove_after_n_sec`
 
 *Grace period before erasure*
 
 Seconds after the lock before the Matrix account is erased, that is deactivated
 for good (irreversible). Counted from the lock, so erasure happens
-`deactivate_after_n_sec + delete_after_n_sec` after the user was first seen disabled
+`lock_after_n_sec + remove_after_n_sec` after the user was first seen disabled
 or deleted. Whether the profile is GDPR-erased as well is
 `gdpr_erase_on_delete`, whether uploaded media goes too is
 `include_user_media_on_delete`. `null` disables erasure entirely and leaves accounts
 locked. The default is 365 days. From
 `destructive_action_guard.confirm_irreversible_actions_from` irreversible actions in
-one pass on, the erasures wait for an administrator's `!confirm <id>`.
+one pass on, the erasures wait for an administrator's `!confirm <id>`. Formerly
+`delete_after_n_sec`; a config that still uses the old name is refused at startup.
 
 | Property | Value |
 |---|---|
@@ -1127,20 +1129,20 @@ one pass on, the erasures wait for an administrator's `!confirm <id>`.
 | Required | No |
 | Default | `31536000` |
 | Constraints | Ge(ge=0) |
-| Environment variable | `ONBOT_SYNC_AUTHENTIK_USERS_WITH_MATRIX_ROOMS__DEACTIVATE_DISABLED_AUTHENTIK_USERS_IN_MATRIX__DELETE_AFTER_N_SEC` |
+| Environment variable | `ONBOT_SYNC_AUTHENTIK_USERS_WITH_MATRIX_ROOMS__DEACTIVATE_DISABLED_AUTHENTIK_USERS_IN_MATRIX__REMOVE_AFTER_N_SEC` |
 
 **Examples:**
 
 *Example 1:*
 
 ```yaml
-delete_after_n_sec: 31536000
+remove_after_n_sec: 31536000
 ```
 
 *Example 2:*
 
 ```yaml
-delete_after_n_sec: null
+remove_after_n_sec: null
 ```
 
 ---
@@ -1334,7 +1336,7 @@ topic: Space for authentik group rooms
 
 HTTP(S) URL to a picture used as the space avatar (icon). The image is downloaded
 and re-uploaded to the homeserver's media repository on every reconcile, but only
-when the URL changed — so this also updates an already existing space. `null` leaves
+when the URL changed, so this also updates an already existing space. `null` leaves
 the space without an avatar.
 
 | Property | Value |
@@ -1483,7 +1485,7 @@ room_avatar_url_attribute: chatroom_avatar_url
 
 *Filter: group name prefix*
 
-Only mirror Authentik groups whose name starts with this prefix — a lightweight way
+Only mirror Authentik groups whose name starts with this prefix, a lightweight way
 to opt specific groups into chat without custom attributes. The prefix stays part of
 the group name and therefore of the room name unless you override the name template.
 `null` disables the filter.
@@ -1515,8 +1517,8 @@ only_for_groupnames_starting_with: matrix_
 
 *Disable orphaned rooms*
 
-If a mapped Authentik group disappears — deleted, or it no longer passes the
-filters above — kick all members from the corresponding room and block it. Note that
+If a mapped Authentik group disappears (deleted, or it no longer passes the
+filters above), kick all members from the corresponding room and block it. Note that
 loosening a filter therefore re-enables nothing: the room stays blocked.
 
 | Property | Value |
@@ -1646,7 +1648,7 @@ alias_prefix: grp-
 *Group attribute used as the room alias*
 
 Authentik group attribute (dotted path) used as the room's alias localpart. The
-default `pk` is the most stable choice, because it survives a group being renamed —
+default `pk` is the most stable choice, because it survives a group being renamed:
 an alias derived from the group name would not, and a Matrix alias cannot be changed
 once the room is created.
 
@@ -1742,7 +1744,7 @@ Prefix prepended to the room's topic. `null` for no prefix.
 **Examples:**
 
 ```yaml
-topic_prefix: "Group chat \u2014 "
+topic_prefix: 'Group chat: '
 ```
 
 ---
@@ -1792,7 +1794,7 @@ cannot be turned off again for a room once it is on.
 
 *Room creation parameters*
 
-Parameters merged into the Matrix `POST /createRoom` call for group rooms — preset,
+Parameters merged into the Matrix `POST /createRoom` call for group rooms: preset,
 visibility, federation, and so on. Only read when a room is actually created; changing
 them later does not rewrite existing rooms. See the Client-Server API
 `POST /createRoom`.
@@ -1865,11 +1867,11 @@ change.
 
 *Open a visitor lobby beside the group room*
 
-Maintain a second, open room — a lobby — beside each private group room. Every
+Maintain a second, open room (a lobby) beside each private group room. Every
 member of the parent space can find the lobby in the space listing and join it of
 their own accord, and nobody is ever kicked from it, so it is a front door in front of
 the closed group room. The group room itself is untouched: same members, same history,
-same privacy. Off by default — a lobby is a deliberate decision, not a migration.
+same privacy. Off by default: a lobby is a deliberate decision, not a migration.
 
 Requires the parent space (`create_matrix_rooms_in_a_matrix_space`), because a lobby is
 joinable precisely by space members and to nobody else; enabling a lobby without a
@@ -1889,7 +1891,7 @@ space is rejected at startup. A single group can opt in without a config change 
 
 *Lobby name suffix*
 
-Appended to the group room's name to name its lobby — `Düsseldorf` becomes
+Appended to the group room's name to name its lobby: `Düsseldorf` becomes
 `Düsseldorf (Lobby)`. The suffix is the whole user-facing explanation of what the
 second room is, so it should say *this is a door*, not *these are more people*.
 Alternatives worth a deliberate choice: ` (Foyer)` (reads naturally to a
@@ -1930,7 +1932,7 @@ visitor_lobby_name_suffix: ' (Open)'
 
 *Lobby alias suffix*
 
-Appended to the group room's alias localpart to form the lobby's alias —
+Appended to the group room's alias localpart to form the lobby's alias:
 `#duesseldorf` gets a `#duesseldorf-lobby` beside it. Unlike the group alias, dashes
 here are kept. A Matrix alias cannot be changed after the room is created, so changing
 this later makes the bot build a second, empty lobby rather than rename the first.
@@ -2013,12 +2015,12 @@ the lobby exists rather than after.
 *Seed the lobby with the group's members*
 
 Join the group's members into the lobby as well, so a visitor who walks in finds
-somebody there. On by default: an empty lobby is a dead lobby. This is a social bet —
+somebody there. On by default: an empty lobby is a dead lobby. This is a social bet:
 it works when the group room is where the group *works* and the lobby is where the
 group is *reachable*, and it fails, producing two half-dead rooms and doubled
 notifications, when both are general-purpose. Turn it off for a large group that would
-rather staff an empty lobby deliberately. Visitors are never injected anywhere — they
-joined on purpose — and members are only ever added, never kicked.
+rather staff an empty lobby deliberately. Visitors are never injected anywhere (they
+joined on purpose), and members are only ever added, never kicked.
 
 | Property | Value |
 |---|---|
@@ -2120,7 +2122,7 @@ alias_prefix: grp-
 *Group attribute used as the room alias*
 
 Authentik group attribute (dotted path) used as the room's alias localpart. The
-default `pk` is the most stable choice, because it survives a group being renamed —
+default `pk` is the most stable choice, because it survives a group being renamed:
 an alias derived from the group name would not, and a Matrix alias cannot be changed
 once the room is created.
 
@@ -2216,7 +2218,7 @@ Prefix prepended to the room's topic. `null` for no prefix.
 **Examples:**
 
 ```yaml
-topic_prefix: "Group chat \u2014 "
+topic_prefix: 'Group chat: '
 ```
 
 ---
@@ -2266,7 +2268,7 @@ cannot be turned off again for a room once it is on.
 
 *Room creation parameters*
 
-Parameters merged into the Matrix `POST /createRoom` call for group rooms — preset,
+Parameters merged into the Matrix `POST /createRoom` call for group rooms: preset,
 visibility, federation, and so on. Only read when a room is actually created; changing
 them later does not rewrite existing rooms. See the Client-Server API
 `POST /createRoom`.
@@ -2339,11 +2341,11 @@ change.
 
 *Open a visitor lobby beside the group room*
 
-Maintain a second, open room — a lobby — beside each private group room. Every
+Maintain a second, open room (a lobby) beside each private group room. Every
 member of the parent space can find the lobby in the space listing and join it of
 their own accord, and nobody is ever kicked from it, so it is a front door in front of
 the closed group room. The group room itself is untouched: same members, same history,
-same privacy. Off by default — a lobby is a deliberate decision, not a migration.
+same privacy. Off by default: a lobby is a deliberate decision, not a migration.
 
 Requires the parent space (`create_matrix_rooms_in_a_matrix_space`), because a lobby is
 joinable precisely by space members and to nobody else; enabling a lobby without a
@@ -2363,7 +2365,7 @@ space is rejected at startup. A single group can opt in without a config change 
 
 *Lobby name suffix*
 
-Appended to the group room's name to name its lobby — `Düsseldorf` becomes
+Appended to the group room's name to name its lobby: `Düsseldorf` becomes
 `Düsseldorf (Lobby)`. The suffix is the whole user-facing explanation of what the
 second room is, so it should say *this is a door*, not *these are more people*.
 Alternatives worth a deliberate choice: ` (Foyer)` (reads naturally to a
@@ -2404,7 +2406,7 @@ visitor_lobby_name_suffix: ' (Open)'
 
 *Lobby alias suffix*
 
-Appended to the group room's alias localpart to form the lobby's alias —
+Appended to the group room's alias localpart to form the lobby's alias:
 `#duesseldorf` gets a `#duesseldorf-lobby` beside it. Unlike the group alias, dashes
 here are kept. A Matrix alias cannot be changed after the room is created, so changing
 this later makes the bot build a second, empty lobby rather than rename the first.
@@ -2487,12 +2489,12 @@ the lobby exists rather than after.
 *Seed the lobby with the group's members*
 
 Join the group's members into the lobby as well, so a visitor who walks in finds
-somebody there. On by default: an empty lobby is a dead lobby. This is a social bet —
+somebody there. On by default: an empty lobby is a dead lobby. This is a social bet:
 it works when the group room is where the group *works* and the lobby is where the
 group is *reachable*, and it fails, producing two half-dead rooms and doubled
 notifications, when both are general-purpose. Turn it off for a large group that would
-rather staff an empty lobby deliberately. Visitors are never injected anywhere — they
-joined on purpose — and members are only ever added, never kicked.
+rather staff an empty lobby deliberately. Visitors are never injected anywhere (they
+joined on purpose), and members are only ever added, never kicked.
 
 | Property | Value |
 |---|---|
@@ -2592,7 +2594,7 @@ global_room_admins:
 
 Full Matrix IDs the bot never touches: it will not onboard them, invite them,
 change their power level, kick them from a room, or deactivate them. Use it to protect
-accounts that exist only in Matrix — server admins, other bots, bridge users — from a
+accounts that exist only in Matrix (server admins, other bots, bridge users) from a
 sync that would otherwise see them as unknown to Authentik. The bot's own
 `synapse_server.bot_user_id` is always ignored and need not be listed.
 
@@ -2887,7 +2889,7 @@ confirmation_expiry_sec: 259200
 *Irreversible actions in one pass that need a confirmation*
 
 From how many irreversible actions in one pass on the bot asks first: erasing
-accounts (offboarding's `delete_after_n_sec`) and deleting rooms
+accounts (offboarding's `remove_after_n_sec`) and deleting rooms
 (`delete_disabled_rooms`). A pass with this many or more pauses all of them and
 reports them in the admin control room as a batch for an administrator to release with
 `!confirm <id>`; fewer run on their own. Locking an account, kicking members and

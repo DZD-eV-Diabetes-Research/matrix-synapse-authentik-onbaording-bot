@@ -54,6 +54,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   would make, offboarding included, without changing anything or saving state.
 
 ### Changed
+- **Breaking: the offboarding delays are renamed (review S14, D27). Check before upgrading.**
+  `deactivate_disabled_authentik_users_in_matrix.deactivate_after_n_sec` is now `lock_after_n_sec` and
+  `delete_after_n_sec` is now `remove_after_n_sec`. A config or `ONBOT_*` variable that still uses an
+  old name stops the bot at startup with exit code 2 and a message naming the new key; the old names
+  are never read.
+- **Closing a switched-off lobby also withdraws the power levels the bot granted there (review S14, S7
+  leftover):** the global room admins; each withdrawal goes through the guard (layer 2). Switching the
+  lobby on again seats them again.
+- **The Authentik discovery poll watches every engine input (review S14, REC-15):** power-level groups
+  (also those that map to no room), group parents and the global room admins. One more group listing
+  per poll plus one user lookup per global admin.
+- **`!room adopt` refuses any room that carries an onbot `direct_room` marker (even a removed one) or
+  another onbot marker type, and adopts nothing while the bot's `m.direct` cannot be read (review S14,
+  W7R-02, W7R-03).**
+- **`!status` uses plain punctuation (review S14).**
 - **Group pks match in any UUID form everywhere (review S18 and W6R, W5R-02, W6R-01). Check before
   upgrading.** `authentik_group_pks_granting_bot_admin`, `sync_only_users_of_groups_with_id`,
   `authentik_group_id_ignore_list`, `only_for_children_of_groups_with_uid`,
@@ -247,6 +262,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   isolated stack so several checkouts can run the integration suite at the same time.
 
 ### Fixed
+- **A room whose space was recreated loses the parent link the bot wrote to the old space (review S14,
+  S7 leftover)** and is taken out of the old space where the bot still can.
+- **A guard state read error no longer leaves `!announce`, `!status` or `!pending` unanswered (review
+  S14, W7R-04),** and a failing command no longer drops the rest of that sync slice; the admin gets a
+  "last command failed" note.
+- **After a restart, the first known avatar picture re-checks only the notice boards that do not wear
+  it yet (review S14, W7R-05).**
 - **One download per picture (review W6R-02):** an avatar host whose bytes differ per request was
   downloaded once per room and pass and never set; the image just fetched is now the one uploaded.
 - **The "shutting down, not sent" reply to `!announce` is posted (review W6R-03);** before, the second

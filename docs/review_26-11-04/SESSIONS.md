@@ -52,7 +52,7 @@ Start a session by pointing Claude at this file and the session ID, for example:
 | 14 | S12 | Broadcast and admin room | S | S8 | done (merged in wave 4) |
 | 15 | S13 | Security hardening and config validation | M | S0 | done (merged in wave 1b) |
 | 16 | S15 | CI and release hardening | M | S0 | done (merged in wave 1b) |
-| 17 | S14 | Docs, dead code, cleanup | M | last | part 1 done (merged in wave 5), part 2 open |
+| 17 | S14 | Docs, dead code, cleanup | M | last | done (both parts merged in wave 5) |
 | 18 | S17 | Bot-driven room upgrades (D20) | M | S6, S7 | deferred: later iteration, not before the next release |
 
 S1 to S3 should land before the next release: together they close every known way the bot can

@@ -1,5 +1,5 @@
-# Onbot configuration template — GENERATED from onbot/config.py.
-# Regenerate with `./gen_config_docs.sh`; do not edit by hand.
+# Onbot configuration template, GENERATED from onbot/config.py.
+# Regenerate with `pdm run gen-config-docs`; do not edit by hand.
 # Copy this to config.yml and fill in the required (Required: True) values. Every setting can
 # also be supplied via its ONBOT_* environment variable (shown per field below).
 
@@ -10,7 +10,7 @@
 # Default:      "INFO"
 # Allowed vals: ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']
 # Env-var:      'ONBOT_LOG_LEVEL'
-# Description:  How much the bot logs. `DEBUG` is noisy — it includes every API call it makes — but
+# Description:  How much the bot logs. `DEBUG` is noisy (it includes every API call it makes), but
 #               it is the fastest way to see why a user or group is not being picked up while wiring
 #               the bot up. `WARNING` keeps a quiet production log. The `--log-level` command-line
 #               flag overrides this.
@@ -23,8 +23,8 @@ log_level: INFO
 # Constraints: Gt(gt=0)
 # Env-var:     'ONBOT_SERVER_TICK_RATE_SEC'
 # Description: How often, in seconds, the bot re-converges Authentik state onto Matrix. A
-#              reconcile reads the whole Matrix side — every managed room's members, power levels
-#              and state — so it is the expensive operation, and this is the interval that costs
+#              reconcile reads the whole Matrix side (every managed room's members, power levels
+#              and state), so it is the expensive operation, and this is the interval that costs
 #              Synapse traffic.
 #
 #              It does not set how quickly new users are onboarded. A reconcile also runs on demand
@@ -43,7 +43,7 @@ server_tick_rate_sec: 300
 # Default:     15
 # Constraints: Ge(ge=0)
 # Env-var:     'ONBOT_AUTHENTIK_POLL_RATE_SEC'
-# Description: How often, in seconds, the bot asks Authentik whether anything changed — a new
+# Description: How often, in seconds, the bot asks Authentik whether anything changed: a new
 #              user, a group membership, a renamed room group. When something did, it runs a
 #              reconcile immediately; when nothing did, it does nothing at all.
 #
@@ -71,7 +71,7 @@ synapse_server:
   # Type:        str
   # Required:    True
   # Env-var:     'ONBOT_SYNAPSE_SERVER__SERVER_NAME'
-  # Description: Synapse's public facing domain — the part after the colon in a Matrix ID such as
+  # Description: Synapse's public facing domain: the part after the colon in a Matrix ID such as
   #              `@alice:company.org`. This is not necessarily the domain under which the Synapse
   #              server is reachable; that is `server_url`. See
   #              https://element-hq.github.io/synapse/latest/usage/configuration/config_documentation.html#server_name
@@ -98,7 +98,7 @@ synapse_server:
   # Required:    True
   # Env-var:     'ONBOT_SYNAPSE_SERVER__BOT_USER_ID'
   # Description: Full Matrix user ID of an existing account; the bot acts as this user. The account
-  #              must already exist — the bot does not register itself — and its localpart must be on
+  #              must already exist (the bot does not register itself), and its localpart must be on
   #              `server_name`.
   # Example:
   #  >bot_user_id: '@welcome-bot:company.org'
@@ -154,7 +154,7 @@ synapse_server:
   # Default:     null
   # Env-var:     'ONBOT_SYNAPSE_SERVER__ROOM_VERSION'
   # Description: Room version passed to `POST /createRoom` for every room and space the bot
-  #              creates. Leave unset (`null`) — the default — so new rooms inherit the homeserver's
+  #              creates. Leave unset (`null`, the default) so new rooms inherit the homeserver's
   #              own default room version, which the Matrix spec says SHOULD now be `12`. Room
   #              version 12 changes two things the bot depends on: the room creator (the bot) holds an
   #              infinite power level and is deliberately absent from `m.room.power_levels`, and room
@@ -163,7 +163,7 @@ synapse_server:
   #              default to a version this bot needs (it requires at least version 8 for the features
   #              it uses; `restricted` join rules need 8 and `knock_restricted` needs 10), or a test
   #              that must force a specific version. Do not pin a number to freeze the bot behind the
-  #              ecosystem — prefer upgrading Synapse.
+  #              ecosystem; prefer upgrading Synapse.
   # Example No. 1:
   #  >room_version: '12'
   # Example No. 2:
@@ -238,11 +238,11 @@ mas_admin:
 #
 #              A message may also use these placeholders, filled in as it is sent:
 #
-#              - `{space_link}` — a `matrix.to` link to the parent space, ready to put in
+#              - `{space_link}`: a `matrix.to` link to the parent space, ready to put in
 #                `[our space]({space_link})`
-#              - `{space_alias}` — the space's alias, e.g. `#myspace:matrix.company.org`
-#              - `{space_name}` — the space's display name
-#              - `{user_id}` — the recipient's Matrix ID
+#              - `{space_alias}`: the space's alias, e.g. `#myspace:matrix.company.org`
+#              - `{space_name}`: the space's display name
+#              - `{user_id}`: the recipient's Matrix ID
 #
 #              The three space placeholders need `create_matrix_rooms_in_a_matrix_space` to be
 #              enabled; a message using one while it is disabled is held back (and logged) rather
@@ -250,7 +250,7 @@ mas_admin:
 # Example No. 1:
 #  >welcome_new_users_messages:
 #  >- Welcome aboard! I will invite you to the rooms for your groups.
-#  >- "Everything else lives in **[{space_name}]({space_link})** \u2014 have a look around."
+#  >- 'Everything else lives in **[{space_name}]({space_link})**: have a look around.'
 # Example No. 2:
 #  >welcome_new_users_messages:
 #  >- id: intro
@@ -291,7 +291,7 @@ welcome_new_users_messages:
 # Description: Display name of the 1:1 welcome room the bot opens with each user. The room needs a
 #              name because the bot joins the user directly instead of waiting for them to accept an
 #              invitation, and a Matrix client only tags a room as a direct message when its user
-#              accepted such an invitation — without a name the room would appear in their room list
+#              accepted such an invitation; without a name the room would appear in their room list
 #              as an untitled room. Only read when a room is created; renaming later does not rewrite
 #              existing rooms.
 # Example No. 1:
@@ -306,7 +306,7 @@ onboarding_room_name: Announcements
 # Default:     "Notices from the onboarding bot. This room is read-only \u2014 you cannot write here."
 # Env-var:     'ONBOT_ONBOARDING_ROOM_TOPIC'
 # Description: Matrix topic (tagline) of the 1:1 welcome room. A good place to say where a user
-#              should turn with questions, since they cannot ask them in this room — it is read-only.
+#              should turn with questions, since they cannot ask them in this room: it is read-only.
 #              Only read when a room is created.
 # Example:
 #  >onboarding_room_topic: Notices from the onboarding bot. You cannot write here.
@@ -321,7 +321,7 @@ onboarding_room_topic: Notices from the onboarding bot. This room is read-only �
 # Description: Join users into their welcome room directly, through the Synapse admin API, instead
 #              of leaving them an invitation they have to accept. On by default: the room is a notice
 #              board the bot posts to, so an unaccepted invitation means a user who never receives
-#              the welcome messages. The join happens exactly once, when the room is created — a user
+#              the welcome messages. The join happens exactly once, when the room is created; a user
 #              who then leaves the room is not dragged back in. Turn this off to send a plain
 #              invitation instead; the bot also falls back to the invitation when the join fails.
 force_join_onboarding_room: true
@@ -398,7 +398,7 @@ admin_room:
   # Env-var:     'ONBOT_ADMIN_ROOM__ADMIN_USER_IDS'
   # Description: Full Matrix IDs permitted to run commands in the control room, listed by hand.
   #              These are added to whatever `authentik_group_pks_granting_bot_admin` resolves to, and
-  #              this list is the right home for accounts Authentik has never heard of — a break-glass
+  #              this list is the right home for accounts Authentik has never heard of: a break-glass
   #              admin, another bot. It is also the floor the bot falls back on: it needs no Authentik
   #              call, so these administrators keep their commands when Authentik is unreachable.
   #              Everyone not in the union of the two lists is refused, even if they are somehow in the
@@ -444,7 +444,7 @@ admin_room:
 # Default:     false
 # Env-var:     'ONBOT_PLACE_ONBOARDING_ROOMS_IN_SPACE'
 # Description: Gather the 1:1 onboarding/welcome rooms under the managed parent space as well. Off
-#              by default — whether direct rooms belong in a space is a matter of taste. Only applies
+#              by default: whether direct rooms belong in a space is a matter of taste. Only applies
 #              when `create_matrix_rooms_in_a_matrix_space` is enabled.
 place_onboarding_rooms_in_space: false
 
@@ -503,7 +503,7 @@ sync_authentik_users_with_matrix_rooms:
   # Env-var:     'ONBOT_SYNC_AUTHENTIK_USERS_WITH_MATRIX_ROOMS__KICK_MATRIX_ROOM_MEMBERS_NOT_IN_MAPPED_AUTHENTIK_GROUP_ANYMORE'
   # Description: When a user leaves an Authentik group, kick them from the corresponding Matrix
   #              room so membership stays a faithful mirror. Disable to let the bot only ever *add*
-  #              members and never remove them — users then keep access to rooms after losing the
+  #              members and never remove them; users then keep access to rooms after losing the
   #              group that granted it.
   kick_matrix_room_members_not_in_mapped_authentik_group_anymore: true
 
@@ -514,7 +514,7 @@ sync_authentik_users_with_matrix_rooms:
   # Default:     null
   # Env-var:     'ONBOT_SYNC_AUTHENTIK_USERS_WITH_MATRIX_ROOMS__SYNC_ONLY_USERS_IN_AUTHENTIK_PATHES'
   # Description: Only sync users that live under one of these Authentik directory paths. Paths are
-  #              matched exactly, so a parent path does not imply its children — list both if you want
+  #              matched exactly, so a parent path does not imply its children: list both if you want
   #              both. `null` syncs users regardless of path.
   # Example:
   #  >sync_only_users_in_authentik_pathes:
@@ -585,47 +585,49 @@ sync_authentik_users_with_matrix_rooms:
     #              run with the default first and read the audit log before switching it off.
     dry_run: true
 
-    # ## deactivate_after_n_sec - Grace period before the lock ###
-    # YAML-path:   sync_authentik_users_with_matrix_rooms.deactivate_disabled_authentik_users_in_matrix.deactivate_after_n_sec
+    # ## lock_after_n_sec - Grace period before the lock ###
+    # YAML-path:   sync_authentik_users_with_matrix_rooms.deactivate_disabled_authentik_users_in_matrix.lock_after_n_sec
     # Type:        int
     # Required:    False
     # Default:     86400
     # Constraints: Ge(ge=0)
-    # Env-var:     'ONBOT_SYNC_AUTHENTIK_USERS_WITH_MATRIX_ROOMS__DEACTIVATE_DISABLED_AUTHENTIK_USERS_IN_MATRIX__DEACTIVATE_AFTER_N_SEC'
+    # Env-var:     'ONBOT_SYNC_AUTHENTIK_USERS_WITH_MATRIX_ROOMS__DEACTIVATE_DISABLED_AUTHENTIK_USERS_IN_MATRIX__LOCK_AFTER_N_SEC'
     # Description: Seconds a user must stay disabled in (or deleted from) Authentik before their
-    #              Matrix account is locked. Despite the name nothing is deactivated at this stage: with
+    #              Matrix account is locked. Nothing is deactivated at this stage: with
     #              `mas_admin` the MAS user is locked (no new logins) and its sessions are ended, without
     #              it the user's Synapse devices are deleted. Reversible: re-enabling the Authentik
     #              account unlocks it. Within this window a re-enable simply cancels the pending lock.
     #              Tokens already in use stop working only once Synapse's token cache lapses (about two
-    #              minutes under MAS). The default is 24 hours.
+    #              minutes under MAS). The default is 24 hours. Formerly `deactivate_after_n_sec`; a
+    #              config that still uses the old name is refused at startup.
     # Example No. 1:
-    #  >deactivate_after_n_sec: 86400
+    #  >lock_after_n_sec: 86400
     # Example No. 2:
-    #  >deactivate_after_n_sec: 3600
-    deactivate_after_n_sec: 86400
+    #  >lock_after_n_sec: 3600
+    lock_after_n_sec: 86400
 
-    # ## delete_after_n_sec - Grace period before erasure ###
-    # YAML-path:   sync_authentik_users_with_matrix_rooms.deactivate_disabled_authentik_users_in_matrix.delete_after_n_sec
+    # ## remove_after_n_sec - Grace period before erasure ###
+    # YAML-path:   sync_authentik_users_with_matrix_rooms.deactivate_disabled_authentik_users_in_matrix.remove_after_n_sec
     # Type:        int
     # Required:    False
     # Default:     31536000
     # Constraints: Ge(ge=0)
-    # Env-var:     'ONBOT_SYNC_AUTHENTIK_USERS_WITH_MATRIX_ROOMS__DEACTIVATE_DISABLED_AUTHENTIK_USERS_IN_MATRIX__DELETE_AFTER_N_SEC'
+    # Env-var:     'ONBOT_SYNC_AUTHENTIK_USERS_WITH_MATRIX_ROOMS__DEACTIVATE_DISABLED_AUTHENTIK_USERS_IN_MATRIX__REMOVE_AFTER_N_SEC'
     # Description: Seconds after the lock before the Matrix account is erased, that is deactivated
     #              for good (irreversible). Counted from the lock, so erasure happens
-    #              `deactivate_after_n_sec + delete_after_n_sec` after the user was first seen disabled
+    #              `lock_after_n_sec + remove_after_n_sec` after the user was first seen disabled
     #              or deleted. Whether the profile is GDPR-erased as well is
     #              `gdpr_erase_on_delete`, whether uploaded media goes too is
     #              `include_user_media_on_delete`. `null` disables erasure entirely and leaves accounts
     #              locked. The default is 365 days. From
     #              `destructive_action_guard.confirm_irreversible_actions_from` irreversible actions in
-    #              one pass on, the erasures wait for an administrator's `!confirm <id>`.
+    #              one pass on, the erasures wait for an administrator's `!confirm <id>`. Formerly
+    #              `delete_after_n_sec`; a config that still uses the old name is refused at startup.
     # Example No. 1:
-    #  >delete_after_n_sec: 31536000
+    #  >remove_after_n_sec: 31536000
     # Example No. 2:
-    #  >delete_after_n_sec: null
-    delete_after_n_sec: 31536000
+    #  >remove_after_n_sec: null
+    remove_after_n_sec: 31536000
 
     # ## gdpr_erase_on_delete - GDPR-erase on erasure ###
     # YAML-path:   sync_authentik_users_with_matrix_rooms.deactivate_disabled_authentik_users_in_matrix.gdpr_erase_on_delete
@@ -735,7 +737,7 @@ create_matrix_rooms_in_a_matrix_space:
     # Env-var:     'ONBOT_CREATE_MATRIX_ROOMS_IN_A_MATRIX_SPACE__CREATE_MATRIX_SPACE_IF_NOT_EXISTS__AVATAR_URL'
     # Description: HTTP(S) URL to a picture used as the space avatar (icon). The image is downloaded
     #              and re-uploaded to the homeserver's media repository on every reconcile, but only
-    #              when the URL changed — so this also updates an already existing space. `null` leaves
+    #              when the URL changed, so this also updates an already existing space. `null` leaves
     #              the space without an avatar.
     # Example:
     #  >avatar_url: https://sillyimages.com/space.png
@@ -833,7 +835,7 @@ sync_matrix_rooms_based_on_authentik_groups:
   # Required:    False
   # Default:     null
   # Env-var:     'ONBOT_SYNC_MATRIX_ROOMS_BASED_ON_AUTHENTIK_GROUPS__ONLY_FOR_GROUPNAMES_STARTING_WITH'
-  # Description: Only mirror Authentik groups whose name starts with this prefix — a lightweight way
+  # Description: Only mirror Authentik groups whose name starts with this prefix, a lightweight way
   #              to opt specific groups into chat without custom attributes. The prefix stays part of
   #              the group name and therefore of the room name unless you override the name template.
   #              `null` disables the filter.
@@ -849,8 +851,8 @@ sync_matrix_rooms_based_on_authentik_groups:
   # Required:    False
   # Default:     false
   # Env-var:     'ONBOT_SYNC_MATRIX_ROOMS_BASED_ON_AUTHENTIK_GROUPS__DISABLE_ROOMS_WHEN_MAPPED_AUTHENTIK_GROUP_DISAPPEARS'
-  # Description: If a mapped Authentik group disappears — deleted, or it no longer passes the
-  #              filters above — kick all members from the corresponding room and block it. Note that
+  # Description: If a mapped Authentik group disappears (deleted, or it no longer passes the
+  #              filters above), kick all members from the corresponding room and block it. Note that
   #              loosening a filter therefore re-enables nothing: the room stays blocked.
   disable_rooms_when_mapped_authentik_group_disappears: false
 
@@ -923,7 +925,7 @@ matrix_room_default_settings:
   # Default:     "pk"
   # Env-var:     'ONBOT_MATRIX_ROOM_DEFAULT_SETTINGS__MATRIX_ALIAS_FROM_AUTHENTIK_ATTRIBUTE'
   # Description: Authentik group attribute (dotted path) used as the room's alias localpart. The
-  #              default `pk` is the most stable choice, because it survives a group being renamed —
+  #              default `pk` is the most stable choice, because it survives a group being renamed:
   #              an alias derived from the group name would not, and a Matrix alias cannot be changed
   #              once the room is created.
   # Example No. 1:
@@ -967,7 +969,7 @@ matrix_room_default_settings:
   # Env-var:     'ONBOT_MATRIX_ROOM_DEFAULT_SETTINGS__TOPIC_PREFIX'
   # Description: Prefix prepended to the room's topic. `null` for no prefix.
   # Example:
-  #  >topic_prefix: "Group chat \u2014 "
+  #  >topic_prefix: 'Group chat: '
   topic_prefix:
 
   # ## matrix_topic_from_authentik_attribute - Group attribute used as the room topic ###
@@ -1000,7 +1002,7 @@ matrix_room_default_settings:
   # Type:        Dictionary of (str)
   # Required:    False
   # Env-var:     'ONBOT_MATRIX_ROOM_DEFAULT_SETTINGS__DEFAULT_ROOM_CREATE_PARAMS'
-  # Description: Parameters merged into the Matrix `POST /createRoom` call for group rooms — preset,
+  # Description: Parameters merged into the Matrix `POST /createRoom` call for group rooms: preset,
   #              visibility, federation, and so on. Only read when a room is actually created; changing
   #              them later does not rewrite existing rooms. See the Client-Server API
   #              `POST /createRoom`.
@@ -1060,11 +1062,11 @@ matrix_room_default_settings:
   # Required:    False
   # Default:     false
   # Env-var:     'ONBOT_MATRIX_ROOM_DEFAULT_SETTINGS__VISITOR_LOBBY_ENABLED'
-  # Description: Maintain a second, open room — a lobby — beside each private group room. Every
+  # Description: Maintain a second, open room (a lobby) beside each private group room. Every
   #              member of the parent space can find the lobby in the space listing and join it of
   #              their own accord, and nobody is ever kicked from it, so it is a front door in front of
   #              the closed group room. The group room itself is untouched: same members, same history,
-  #              same privacy. Off by default — a lobby is a deliberate decision, not a migration.
+  #              same privacy. Off by default: a lobby is a deliberate decision, not a migration.
   #
   #              Requires the parent space (`create_matrix_rooms_in_a_matrix_space`), because a lobby is
   #              joinable precisely by space members and to nobody else; enabling a lobby without a
@@ -1078,7 +1080,7 @@ matrix_room_default_settings:
   # Required:    False
   # Default:     " (Lobby)"
   # Env-var:     'ONBOT_MATRIX_ROOM_DEFAULT_SETTINGS__VISITOR_LOBBY_NAME_SUFFIX'
-  # Description: Appended to the group room's name to name its lobby — `Düsseldorf` becomes
+  # Description: Appended to the group room's name to name its lobby: `Düsseldorf` becomes
   #              `Düsseldorf (Lobby)`. The suffix is the whole user-facing explanation of what the
   #              second room is, so it should say *this is a door*, not *these are more people*.
   #              Alternatives worth a deliberate choice: ` (Foyer)` (reads naturally to a
@@ -1099,7 +1101,7 @@ matrix_room_default_settings:
   # Required:    False
   # Default:     "-lobby"
   # Env-var:     'ONBOT_MATRIX_ROOM_DEFAULT_SETTINGS__VISITOR_LOBBY_ALIAS_SUFFIX'
-  # Description: Appended to the group room's alias localpart to form the lobby's alias —
+  # Description: Appended to the group room's alias localpart to form the lobby's alias:
   #              `#duesseldorf` gets a `#duesseldorf-lobby` beside it. Unlike the group alias, dashes
   #              here are kept. A Matrix alias cannot be changed after the room is created, so changing
   #              this later makes the bot build a second, empty lobby rather than rename the first.
@@ -1147,12 +1149,12 @@ matrix_room_default_settings:
   # Default:     true
   # Env-var:     'ONBOT_MATRIX_ROOM_DEFAULT_SETTINGS__VISITOR_LOBBY_INJECT_GROUP_MEMBERS'
   # Description: Join the group's members into the lobby as well, so a visitor who walks in finds
-  #              somebody there. On by default: an empty lobby is a dead lobby. This is a social bet —
+  #              somebody there. On by default: an empty lobby is a dead lobby. This is a social bet:
   #              it works when the group room is where the group *works* and the lobby is where the
   #              group is *reachable*, and it fails, producing two half-dead rooms and doubled
   #              notifications, when both are general-purpose. Turn it off for a large group that would
-  #              rather staff an empty lobby deliberately. Visitors are never injected anywhere — they
-  #              joined on purpose — and members are only ever added, never kicked.
+  #              rather staff an empty lobby deliberately. Visitors are never injected anywhere (they
+  #              joined on purpose), and members are only ever added, never kicked.
   visitor_lobby_inject_group_members: true
 
   # ## matrix_room_visitor_lobby_from_authentik_attribute - Group attribute that opts a group into a lobby ###
@@ -1234,7 +1236,7 @@ global_room_admins: []
 # Env-var:     'ONBOT_MATRIX_USER_IGNORE_LIST'
 # Description: Full Matrix IDs the bot never touches: it will not onboard them, invite them,
 #              change their power level, kick them from a room, or deactivate them. Use it to protect
-#              accounts that exist only in Matrix — server admins, other bots, bridge users — from a
+#              accounts that exist only in Matrix (server admins, other bots, bridge users) from a
 #              sync that would otherwise see them as unknown to Authentik. The bot's own
 #              `synapse_server.bot_user_id` is always ignored and need not be listed.
 # Example:
@@ -1413,7 +1415,7 @@ destructive_action_guard:
   # Constraints: Ge(ge=1)
   # Env-var:     'ONBOT_DESTRUCTIVE_ACTION_GUARD__CONFIRM_IRREVERSIBLE_ACTIONS_FROM'
   # Description: From how many irreversible actions in one pass on the bot asks first: erasing
-  #              accounts (offboarding's `delete_after_n_sec`) and deleting rooms
+  #              accounts (offboarding's `remove_after_n_sec`) and deleting rooms
   #              (`delete_disabled_rooms`). A pass with this many or more pauses all of them and
   #              reports them in the admin control room as a batch for an administrator to release with
   #              `!confirm <id>`; fewer run on their own. Locking an account, kicking members and
