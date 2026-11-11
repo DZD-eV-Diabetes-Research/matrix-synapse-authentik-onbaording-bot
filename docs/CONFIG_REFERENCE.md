@@ -1518,8 +1518,10 @@ only_for_groupnames_starting_with: matrix_
 *Disable orphaned rooms*
 
 If a mapped Authentik group disappears (deleted, or it no longer passes the
-filters above), kick all members from the corresponding room and block it. Note that
-loosening a filter therefore re-enables nothing: the room stays blocked.
+filters above), kick all members from the corresponding room and block it. When the
+group passes the filters again, the bot unblocks the room and joins its members again,
+unless `delete_disabled_rooms` has deleted it. Only blocks the bot set itself are
+lifted: a room a server admin blocked stays blocked.
 
 | Property | Value |
 |---|---|

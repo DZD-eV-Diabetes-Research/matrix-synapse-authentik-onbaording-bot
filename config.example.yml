@@ -852,8 +852,10 @@ sync_matrix_rooms_based_on_authentik_groups:
   # Default:     false
   # Env-var:     'ONBOT_SYNC_MATRIX_ROOMS_BASED_ON_AUTHENTIK_GROUPS__DISABLE_ROOMS_WHEN_MAPPED_AUTHENTIK_GROUP_DISAPPEARS'
   # Description: If a mapped Authentik group disappears (deleted, or it no longer passes the
-  #              filters above), kick all members from the corresponding room and block it. Note that
-  #              loosening a filter therefore re-enables nothing: the room stays blocked.
+  #              filters above), kick all members from the corresponding room and block it. When the
+  #              group passes the filters again, the bot unblocks the room and joins its members again,
+  #              unless `delete_disabled_rooms` has deleted it. Only blocks the bot set itself are
+  #              lifted: a room a server admin blocked stays blocked.
   disable_rooms_when_mapped_authentik_group_disappears: false
 
   # ## delete_disabled_rooms - Delete disabled rooms ###
