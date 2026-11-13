@@ -24,7 +24,7 @@
 # --- builder: install the locked prod deps and the onbot wheel into /opt/venv -----------------
 # Base image: python:3.14.x-slim-trixie (Debian 13) by tag and digest. Dependabot updates both
 # (the same reference appears in the runtime stage below; keep the two identical).
-FROM python:3.14.10-slim-trixie@sha256:af8a5aa14780025dbfbcfbc81bd8a91ebd87711dd5b0f48ed71090949dd7cb1d AS builder
+FROM python:3.14.10-slim-trixie@sha256:9aaa474097d094040649f2162a627c0049b408f52138d980916788d80f04802f AS builder
 
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -78,7 +78,7 @@ RUN pip wheel --no-deps --no-build-isolation --wheel-dir /tmp/dist . \
     fi
 
 # --- runtime: slim image with just the venv + a non-root user --------------------------------
-FROM python:3.14.10-slim-trixie@sha256:af8a5aa14780025dbfbcfbc81bd8a91ebd87711dd5b0f48ed71090949dd7cb1d AS runtime
+FROM python:3.14.10-slim-trixie@sha256:9aaa474097d094040649f2162a627c0049b408f52138d980916788d80f04802f AS runtime
 
 LABEL org.opencontainers.image.title="onbot" \
       org.opencontainers.image.description="Keep a Matrix (Synapse) homeserver in sync with Authentik and onboard new users." \
